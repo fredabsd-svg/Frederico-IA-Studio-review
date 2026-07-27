@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelCatalog",
+  "description": "Catálogo embutido de modelos disponíveis no Frederico IA Studio. Ver ADR-0006.",
+  "type": "object",
+  "required": ["models"],
+  "additionalProperties": false,
+  "properties": {
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ModelDescriptor" }
+    }
+  },
+  "$defs": {
+    "ModelDescriptor": {
+      "type": "object",
+      "required": [
+        "provider",
+        "model",
+        "display_name",
+        "context_window",
+        "modalities",
+        "capabilities",
+        "pricing_per_million"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ProviderId. Mesmo conjunto aceito pelo `CredentialStore`."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ModelId dentro do provedor."
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "modalities": {
+          "type": "object",
+          "required": ["input", "output"],
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["text", "image", "audio"]
+              },
+              "uniqueItems": true
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["text", "image", "audio"]
+              },
+              "uniqueItems": true
+            }
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "tools",
+              "json_mode",
+              "parallel_tool_calls",
+              "vision",
+              "prompt_caching",
+              "reasoning_content"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "pricing_per_million": {
+          "type": "object",
+          "required": ["input_microcents", "output_microcents"],
+          "additionalProperties": false,
+          "properties": {
+            "input_microcents": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_microcents": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

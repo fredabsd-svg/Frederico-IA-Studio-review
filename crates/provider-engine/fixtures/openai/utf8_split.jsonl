@@ -1,0 +1,5 @@
+{"_fixture_header":{"provider":"openai","model":"gpt-4o","scenario":"utf8_split_across_chunks","recorded_at":"2026-07-27T00:00:00Z","recorder_version":"0.2.0","source_endpoint":"https://api.openai.com/v1/chat/completions"}}
+"data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\n"
+"data: {\"choices\":[{\"delta\":{\"content\":\"\u00e7\u00e3o\"}}]}\n\n"
+"data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"
+"data: [DONE]\n\n"

@@ -6,13 +6,34 @@ rust-version.workspace = true
 license.workspace = true
 
 [lints.rust]
-unsafe_code = "forbid"
+# `deny` em vez de `forbid` para permitir `#![allow(unsafe_code)]`
+# **apenas** no módulo `windows`, que é a única ponte com a Win32
+# (DPAPI / Credential Manager). Qualquer outro `unsafe` que surja em
+# outro lugar do crate quebra o build — exatamente o que queremos.
+# Ver ADR-0007 §Implementação Windows.
+unsafe_code = "deny"
 
 [dependencies]
 async-trait = { workspace = true }
 frederico-core = { workspace = true }
 frederico-storage = { workspace = true }
+secrecy = { workspace = true }
 thiserror = { workspace = true }
 
+# Implementação Windows do CredentialStore (DPAPI / Windows Credential
+# Manager) — gateada por target. É a **única** parte do núcleo que
+# depende de plataforma, conforme ADR-0003 e ADR-0007.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Security_Cryptography"] }
+
 [dev-dependencies]
+frederico-core = { workspace = true }
+secrecy = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
+
+# Re-expor `windows` para os integration tests (`#[cfg(windows)]`).
+# O `target.'cfg(windows)'.dependencies` acima só vale para a `lib`,
+# não para `tests/`.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

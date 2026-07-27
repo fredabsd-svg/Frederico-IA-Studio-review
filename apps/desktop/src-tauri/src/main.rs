@@ -4,7 +4,9 @@
 //   1. Inicializa logs.
 //   2. Resolve o caminho do banco de dados via diretórios do Windows.
 //   3. Abre o banco SQLite rodando as migrações.
-//   4. Expõe operações ao frontend via `tauri::command`.
+//   4. Monta o `ChatOrchestrator` (catálogo + adapters + RunRegistry
+//      + EventSink + Clock + DB).
+//   5. Expõe operações ao frontend via `tauri::command`.
 //
 // Toda a lógica de negócio vive nos crates de `crates/` — esta casca
 // não a duplica.
@@ -13,19 +15,36 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use frederico_diagnostics as diagnostics;
-use frederico_security::fake::FakePlatform;
-use frederico_shared_contracts::{AppOp, IpcRequest, IpcResponse};
-use frederico_storage::Database;
+use frederico_model_catalog::Catalog;
+use frederico_provider_engine::openai_compat::OpenAiCompatAdapter;
+use frederico_provider_engine::{
+    ChatOrchestrator, EventSink, ProviderMap, RunRegistry,
+};
+use frederico_security::windows::WindowsCredentialStore;
+use frederico_security::{Clock, CredentialStore, SystemClock};
+use frederico_shared_contracts::{
+    AppOp, ConversationView, IpcRequest, IpcResponse, MessageEventView, MessageSendResult,
+    MessageView, ModelDescriptorView, ProviderConfigView,
+};
+use frederico_storage::{ConversationRepo, Database, MessageRepo};
 use tauri::{Manager, State};
 
+mod sink;
+
 /// Estado compartilhado passado aos comandos Tauri.
+///
+/// O `credentials` é a instância **real** de
+/// `WindowsCredentialStore` (DPAPI / Credential Manager). Os adapters
+/// a recebem via `build_provider_map` e os comandos IPC
+/// `ProviderSetCredential`/`ProviderDeleteCredential` a usam
+/// diretamente — tudo passa por DPAPI, nunca por shim em memória.
 struct AppState {
     db: Arc<Database>,
+    orch: Arc<ChatOrchestrator>,
+    credentials: Arc<WindowsCredentialStore>,
 }
 
-/// Resolve o caminho do banco de dados. Em produção vai usar
-/// `directories::ProjectDirs` apontando para `%LOCALAPPDATA%`; por
-/// enquanto usamos o diretório de trabalho para a Fase 1.
+/// Resolve o caminho do banco de dados.
 fn resolve_db_path() -> PathBuf {
     let proj = directories::ProjectDirs::from("studio", "frederico", "ia")
         .expect("diretórios do projeto resolvem em Windows");
@@ -33,25 +52,63 @@ fn resolve_db_path() -> PathBuf {
     dir.join("frederico.db")
 }
 
-#[tauri::command]
-async fn ipc_dispatch(
-    request: IpcRequest,
-    state: State<'_, AppState>,
-) -> Result<IpcResponse, String> {
-    let response = match request.op {
-        AppOp::Ping => IpcResponse::ok(serde_json::json!({ "pong": true }))
-            .unwrap_or_else(|e| IpcResponse::err(e.to_string())),
-        AppOp::GetAppInfo => match state.db.app_info().await {
-            Ok(info) => IpcResponse::ok(info).unwrap_or_else(|e| IpcResponse::err(e.to_string())),
-            Err(e) => IpcResponse::err(e.to_string()),
-        },
-    };
-    Ok(response)
-}
-
-#[tauri::command]
-fn app_version() -> String {
-    frederico_core::APP_VERSION.to_string()
+/// Constrói o `ProviderMap` com adapters pré-registrados. O
+/// `simulated` está sempre disponível (testes + modo demo). Os
+/// reais (OpenAI, Anthropic) dependem de credencial cadastrada
+/// — o adapter retorna `ProviderErrorKind::Auth` até lá.
+fn build_provider_map(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderMap> {
+    let mut map = ProviderMap::new();
+    // simulated — sempre presente.
+    map.insert(Arc::new(
+        frederico_provider_engine::fake::trait_level::FakeProviderAdapter::new("simulated"),
+    ));
+    // OpenAI
+    map.insert(Arc::new(OpenAiCompatAdapter::with_bearer_auth(
+        "openai",
+        "https://api.openai.com/v1",
+        credentials.clone(),
+    )));
+    // OpenRouter — com `HTTP-Referer`/`X-Title` para atribuição.
+    map.insert(Arc::new(OpenAiCompatAdapter::with_openrouter_auth(
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        credentials.clone(),
+    )));
+    // DeepSeek
+    map.insert(Arc::new(OpenAiCompatAdapter::with_bearer_auth(
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        credentials.clone(),
+    )));
+    // Mistral
+    map.insert(Arc::new(OpenAiCompatAdapter::with_bearer_auth(
+        "mistral",
+        "https://api.mistral.ai/v1",
+        credentials.clone(),
+    )));
+    // NVIDIA NIM
+    map.insert(Arc::new(OpenAiCompatAdapter::with_bearer_auth(
+        "nvidia",
+        "https://integrate.api.nvidia.com/v1",
+        credentials.clone(),
+    )));
+    // Ollama (local, sem auth)
+    map.insert(Arc::new(OpenAiCompatAdapter::without_auth(
+        "ollama",
+        "http://localhost:11434/v1",
+        credentials.clone(),
+    )));
+    // LM Studio (local, sem auth)
+    map.insert(Arc::new(OpenAiCompatAdapter::without_auth(
+        "lmstudio",
+        "http://localhost:1234/v1",
+        credentials.clone(),
+    )));
+    // Anthropic
+    map.insert(Arc::new(frederico_provider_engine::anthropic::AnthropicAdapter::new(
+        credentials,
+    )));
+    Arc::new(map)
 }
 
 fn main() {
@@ -60,24 +117,49 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            let handle = app.handle().clone();
             let db_path = resolve_db_path();
             tracing::info!(?db_path, "abrindo banco SQLite");
 
-            // Runtime bloqueante para a abertura inicial do banco. Como
-            // `Database::open` é async, usamos `tauri::async_runtime::block_on`.
             let db = tauri::async_runtime::block_on(async { Database::open(&db_path).await })
                 .expect("abre o banco SQLite");
+            let db = Arc::new(db);
 
-            // Garante que o AppState é Drop-safe (Database é Clone e
-            // internamente Arc).
-            app.manage(AppState { db: Arc::new(db) });
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
-            // `FakePlatform` é suficiente na Fase 1 — o storage já
-            // resolve o path sozinho. A casca vai implementar
-            // `Platform` real na Fase 2.
-            let _platform = FakePlatform::new(db_path.parent().unwrap().to_path_buf(), {
-                use frederico_security::fake::FakeClock;
-                FakeClock::new()
+            // `WindowsCredentialStore` real (DPAPI / Credential
+            // Manager). Esta é a **única** instância no processo:
+            // os adapters a recebem via `build_provider_map` e os
+            // comandos IPC `ProviderSetCredential`/
+            // `ProviderDeleteCredential` a usam diretamente. Tudo
+            // passa por DPAPI — nunca por shim em memória. Ver
+            // ADR-0007 §Decisão.
+            let credentials = Arc::new(WindowsCredentialStore::new());
+            let credentials_dyn: Arc<dyn CredentialStore> = credentials.clone();
+
+            let providers = build_provider_map(credentials_dyn);
+            let runs = RunRegistry::new();
+            let catalog = Arc::new(Catalog::load().clone());
+
+            // Sink: TauriEventSink emite via `Window::emit`. Se a
+            // janela estiver fechada, `emit` falha silenciosa —
+            // o journal no SQLite é a fonte de verdade.
+            let sink: Arc<dyn EventSink> = Arc::new(sink::TauriEventSink::new(handle));
+
+            let orch = ChatOrchestrator::new(
+                providers,
+                runs,
+                sink,
+                db.clone(),
+                clock,
+                catalog,
+            );
+            let orch = Arc::new(orch);
+
+            app.manage(AppState {
+                db,
+                orch,
+                credentials,
             });
 
             Ok(())
@@ -85,4 +167,262 @@ fn main() {
         .invoke_handler(tauri::generate_handler![ipc_dispatch, app_version])
         .run(tauri::generate_context!())
         .expect("falha ao rodar app Tauri");
+}
+
+/// Dispatcher IPC. Despacha o `AppOp` para o orquestrador / storage.
+#[tauri::command]
+async fn ipc_dispatch(
+    request: IpcRequest,
+    state: State<'_, AppState>,
+) -> Result<IpcResponse, String> {
+    match request.op {
+        AppOp::Ping => Ok(IpcResponse::ok(serde_json::json!({ "pong": true })).unwrap()),
+        AppOp::GetAppInfo => match state.db.app_info().await {
+            Ok(info) => Ok(IpcResponse::ok(info).unwrap_or_else(|e| IpcResponse::err(e.to_string()))),
+            Err(e) => Ok(IpcResponse::err(e.to_string())),
+        },
+
+        // --- Etapa 1: Provedores (credenciais) ---
+        AppOp::ProviderList => {
+            // Lista provedores conhecidos do storage; por enquanto
+            // a tabela está vazia até o usuário cadastrar o primeiro.
+            let repo = frederico_storage::ProviderConfigRepo::new(&state.db);
+            let list: Vec<ProviderConfigView> = repo
+                .list()
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|c| ProviderConfigView {
+                    provider: c.provider_id,
+                    display_name: c.display_name,
+                    configured: c.configured,
+                    last_ok_at: c.last_ok_at,
+                    last_error_at: c.last_error_at,
+                    last_error: c.last_error,
+                })
+                .collect();
+            Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ProviderSetCredential { provider, value } => {
+            // DPAPI real: grava no Windows Credential Manager. A
+            // mesma instância configurada no `setup` é usada —
+            // nada de shim de memória.
+            let sec = secrecy::SecretString::new(value.into());
+            state
+                .credentials
+                .set(&provider, &sec)
+                .await
+                .map_err(|e| e.to_string())?;
+            // Marca o provider como configurado no storage.
+            frederico_storage::ProviderConfigRepo::new(&state.db)
+                .upsert(&provider, provider.as_str(), true)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ProviderDeleteCredential { provider } => {
+            // DPAPI real: remove do Windows Credential Manager.
+            // Delete é idempotente — ver `WindowsCredentialStore::delete`.
+            state
+                .credentials
+                .delete(&provider)
+                .await
+                .map_err(|e| e.to_string())?;
+            frederico_storage::ProviderConfigRepo::new(&state.db)
+                .upsert(&provider, provider.as_str(), false)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+
+        // --- Leva 2: Catálogo ---
+        AppOp::ModelCatalogList => {
+            let cat = Catalog::load();
+            let list: Vec<ModelDescriptorView> = cat
+                .list_all()
+                .into_iter()
+                .map(model_to_view)
+                .collect();
+            Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ModelCatalogForProvider { provider } => {
+            let cat = Catalog::load();
+            let list: Vec<ModelDescriptorView> = cat
+                .list_for_provider(&provider)
+                .into_iter()
+                .map(model_to_view)
+                .collect();
+            Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+
+        // --- Leva 3: Conversas ---
+        AppOp::ConversationCreate { provider, model, title } => {
+            let conv = ConversationRepo::new(&state.db)
+                .create(&provider, &model, title.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(conv_to_view(&conv))
+                .unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ConversationList => {
+            let list: Vec<ConversationView> = ConversationRepo::new(&state.db)
+                .list_recent(100)
+                .await
+                .map_err(|e| e.to_string())?
+                .iter()
+                .map(conv_to_view)
+                .collect();
+            Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ConversationGet { id } => {
+            let cid = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::ConversationId)
+                .map_err(|e| e.to_string())?;
+            let conv = ConversationRepo::new(&state.db)
+                .get(&cid)
+                .await
+                .map_err(|e| e.to_string())?;
+            let msgs: Vec<MessageView> = MessageRepo::new(&state.db)
+                .list_for_conversation(&cid)
+                .await
+                .map_err(|e| e.to_string())?
+                .iter()
+                .map(message_to_view)
+                .collect();
+            let payload = serde_json::json!({
+                "conversation": conv_to_view(&conv),
+                "messages": msgs,
+            });
+            Ok(IpcResponse::ok(payload).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ConversationRename { id, title } => {
+            let cid = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::ConversationId)
+                .map_err(|e| e.to_string())?;
+            ConversationRepo::new(&state.db)
+                .rename(&cid, title.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ConversationSetModel { id, provider, model } => {
+            let cid = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::ConversationId)
+                .map_err(|e| e.to_string())?;
+            ConversationRepo::new(&state.db)
+                .set_model(&cid, &provider, &model)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ConversationDelete { id } => {
+            let cid = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::ConversationId)
+                .map_err(|e| e.to_string())?;
+            ConversationRepo::new(&state.db)
+                .delete(&cid)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+
+        // --- Leva 3: Mensagem + Run ---
+        AppOp::MessageSend { conversation_id, content } => {
+            let cid = uuid::Uuid::parse_str(&conversation_id)
+                .map(frederico_core::ConversationId)
+                .map_err(|e| e.to_string())?;
+            let (user_msg, run_id) = state
+                .orch
+                .send_message(cid, content)
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let result = MessageSendResult {
+                user_message: message_to_view(&user_msg),
+                run_id: run_id.0.to_string(),
+            };
+            Ok(IpcResponse::ok(result).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::RunGetEvents { message_id, since_seq } => {
+            let mid = uuid::Uuid::parse_str(&message_id)
+                .map(frederico_core::MessageId)
+                .map_err(|e| e.to_string())?;
+            let events: Vec<MessageEventView> = state
+                .orch
+                .get_events(mid, since_seq)
+                .await
+                .map_err(|e| format!("{e:?}"))?
+                .into_iter()
+                .map(|e| MessageEventView {
+                    id: e.id,
+                    message_id: e.message_id.0.to_string(),
+                    seq: e.seq,
+                    kind: e.kind,
+                    data: e.data,
+                    created_at: e.created_at,
+                })
+                .collect();
+            Ok(IpcResponse::ok(events).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::RunCancel { run_id } => {
+            let rid = uuid::Uuid::parse_str(&run_id)
+                .map(frederico_core::RunId)
+                .map_err(|e| e.to_string())?;
+            state
+                .orch
+                .cancel_run(rid)
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+    }
+}
+
+#[tauri::command]
+fn app_version() -> String {
+    frederico_core::APP_VERSION.to_string()
+}
+
+// --- helpers de conversão -----------------------------------------------
+
+fn conv_to_view(c: &frederico_storage::Conversation) -> ConversationView {
+    ConversationView {
+        id: c.id.0.to_string(),
+        title: c.title.clone(),
+        provider_id: c.provider_id.as_str().to_string(),
+        model_id: c.model_id.as_str().to_string(),
+        created_at: c.created_at.clone(),
+        updated_at: c.updated_at.clone(),
+        total_cost_microcents: c.total_cost_microcents,
+    }
+}
+
+fn message_to_view(m: &frederico_storage::Message) -> MessageView {
+    MessageView {
+        id: m.id.0.to_string(),
+        conversation_id: m.conversation_id.0.to_string(),
+        role: m.role.clone(),
+        content: m.content.clone(),
+        status: m.status.clone(),
+        run_id: m.run_id.map(|r| r.0.to_string()),
+        prompt_tokens: m.prompt_tokens,
+        completion_tokens: m.completion_tokens,
+        cost_microcents: m.cost_microcents,
+        error: m.error.clone(),
+        created_at: m.created_at.clone(),
+        finished_at: m.finished_at.clone(),
+    }
+}
+
+fn model_to_view(m: &frederico_model_catalog::ModelDescriptor) -> ModelDescriptorView {
+    ModelDescriptorView {
+        provider: m.provider.clone(),
+        model: m.model.clone(),
+        display_name: m.display_name.clone(),
+        context_window: m.context_window,
+        modalities: serde_json::to_value(&m.modalities).unwrap_or(serde_json::Value::Null),
+        capabilities: serde_json::to_value(&m.capabilities)
+            .unwrap_or(serde_json::Value::Null),
+        pricing_input_microcents_per_million: m.pricing_per_million.input_microcents,
+        pricing_output_microcents_per_million: m.pricing_per_million.output_microcents,
+    }
 }

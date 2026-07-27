@@ -1,0 +1,8 @@
+{"_fixture_header":{"provider":"openai","model":"gpt-4o","scenario":"sse_keepalive_comments","recorded_at":"2026-07-27T00:00:00Z","recorder_version":"0.2.0","source_endpoint":"https://api.openai.com/v1/chat/completions"}}
+": keepalive\n\n"
+"data: {\"choices\":[{\"delta\":{\"content\":\"O\"}}]}\n\n"
+": keepalive\n\n"
+": another-keepalive\n\n"
+"data: {\"choices\":[{\"delta\":{\"content\":\"k\"}}]}\n\n"
+"data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"
+"data: [DONE]\n\n"

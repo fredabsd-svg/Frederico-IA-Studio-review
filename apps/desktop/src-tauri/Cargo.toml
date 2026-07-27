@@ -20,11 +20,15 @@ frederico-core = { workspace = true }
 frederico-storage = { workspace = true }
 frederico-diagnostics = { workspace = true }
 frederico-security = { workspace = true }
+frederico-provider-engine = { workspace = true }
+frederico-model-catalog = { workspace = true }
 frederico-shared-contracts = { workspace = true }
 tokio = { workspace = true }
 directories = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+secrecy = { workspace = true }
+uuid = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

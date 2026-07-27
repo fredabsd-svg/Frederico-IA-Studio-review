@@ -12,4 +12,5 @@ unsafe_code = "forbid"
 serde = { workspace = true }
 serde_json = { workspace = true }
 frederico-core = { workspace = true }
+secrecy = { workspace = true }
 thiserror = { workspace = true }

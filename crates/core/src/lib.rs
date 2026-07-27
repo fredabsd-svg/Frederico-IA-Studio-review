@@ -74,6 +74,99 @@ opaque_id!(
     ArtifactId,
     "Identificador opaco de um artefato gerado (PDF, DOCX, planilha, etc.)."
 );
+opaque_id!(
+    MessageId,
+    "Identificador opaco de uma mensagem em uma conversa."
+);
+
+/// Identificador de um provedor de LLM (e.g. `\"openai\"`, `\"anthropic\"`,
+/// `\"openrouter\"`, `\"simulated\"`). É uma string bem-conhecida, não um
+/// UUID, porque o conjunto de provedores é finito e versionado com o app
+/// (ver [ADR-0006](../decisions/0006-model-catalog-crate.md)).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderId(pub String);
+
+impl ProviderId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ProviderId {
+    fn default() -> Self {
+        Self::new("simulated")
+    }
+}
+
+impl fmt::Display for ProviderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for ProviderId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for ProviderId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// Identificador de um modelo dentro de um provedor (e.g. `\"gpt-4o\"`,
+/// `\"claude-3-5-sonnet-latest\"`). String bem-conhecida, igual ao
+/// `ProviderId`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelId(pub String);
+
+impl ModelId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ModelId {
+    fn default() -> Self {
+        Self::new("fake-model-v1")
+    }
+}
+
+impl fmt::Display for ModelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for ModelId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for ModelId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// Identificador opaco de um provedor. **Não** serializado como caminho
+/// do sistema de arquivos (preparação para multiusuário, [ADR-0003]).
+pub type EventId = i64;
 
 /// Versão semântica do produto, refletida no SQLite na primeira migração.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,5 +239,27 @@ mod tests {
     #[test]
     fn app_version_constant_is_stable() {
         assert_eq!(APP_VERSION.to_string(), "0.1.0");
+    }
+
+    #[test]
+    fn provider_id_roundtrip() {
+        let id = ProviderId::new("openai");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"openai\"");
+        let back: ProviderId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn model_id_default_is_simulated() {
+        assert_eq!(ModelId::default().as_str(), "fake-model-v1");
+    }
+
+    #[test]
+    fn message_id_roundtrip_json() {
+        let id = MessageId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: MessageId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
     }
 }

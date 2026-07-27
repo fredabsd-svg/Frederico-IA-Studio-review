@@ -1,0 +1,199 @@
+{
+  "models": [
+    {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "display_name": "GPT-4o",
+      "context_window": 128000,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode", "parallel_tool_calls", "vision"],
+      "pricing_per_million": {
+        "input_microcents": 500000,
+        "output_microcents": 1500000
+      }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "display_name": "GPT-4o mini",
+      "context_window": 128000,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode", "parallel_tool_calls", "vision"],
+      "pricing_per_million": {
+        "input_microcents": 15000,
+        "output_microcents": 60000
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-latest",
+      "display_name": "Claude 3.5 Sonnet",
+      "context_window": 200000,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "vision", "prompt_caching"],
+      "pricing_per_million": {
+        "input_microcents": 300000,
+        "output_microcents": 1500000
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-3-5-haiku-latest",
+      "display_name": "Claude 3.5 Haiku",
+      "context_window": 200000,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "prompt_caching"],
+      "pricing_per_million": {
+        "input_microcents": 80000,
+        "output_microcents": 400000
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "openai/gpt-4o",
+      "display_name": "OpenAI: GPT-4o (via OpenRouter)",
+      "context_window": 128000,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode", "vision"],
+      "pricing_per_million": {
+        "input_microcents": 500000,
+        "output_microcents": 1500000
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "anthropic/claude-3-5-sonnet",
+      "display_name": "Anthropic: Claude 3.5 Sonnet (via OpenRouter)",
+      "context_window": 200000,
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "vision"],
+      "pricing_per_million": {
+        "input_microcents": 300000,
+        "output_microcents": 1500000
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "meta-llama/llama-3.1-70b-instruct",
+      "display_name": "Meta: Llama 3.1 70B Instruct (via OpenRouter)",
+      "context_window": 131072,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode"],
+      "pricing_per_million": {
+        "input_microcents": 32000,
+        "output_microcents": 32000
+      }
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "display_name": "DeepSeek Chat",
+      "context_window": 64000,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode", "reasoning_content"],
+      "pricing_per_million": {
+        "input_microcents": 27000,
+        "output_microcents": 110000
+      }
+    },
+    {
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "display_name": "Mistral Large",
+      "context_window": 128000,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools", "json_mode"],
+      "pricing_per_million": {
+        "input_microcents": 200000,
+        "output_microcents": 600000
+      }
+    },
+    {
+      "provider": "nvidia",
+      "model": "meta/llama-3.1-70b-instruct",
+      "display_name": "NVIDIA NIM: Llama 3.1 70B",
+      "context_window": 131072,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools"],
+      "pricing_per_million": {
+        "input_microcents": 0,
+        "output_microcents": 0
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "llama3.1:8b",
+      "display_name": "Ollama: Llama 3.1 8B (local)",
+      "context_window": 131072,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": [],
+      "pricing_per_million": {
+        "input_microcents": 0,
+        "output_microcents": 0
+      }
+    },
+    {
+      "provider": "lmstudio",
+      "model": "qwen2.5-7b-instruct",
+      "display_name": "LM Studio: Qwen 2.5 7B (local)",
+      "context_window": 131072,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": [],
+      "pricing_per_million": {
+        "input_microcents": 0,
+        "output_microcents": 0
+      }
+    },
+    {
+      "provider": "simulated",
+      "model": "fake-model-v1",
+      "display_name": "Simulated Model v1 (tests)",
+      "context_window": 8192,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "capabilities": ["tools"],
+      "pricing_per_million": {
+        "input_microcents": 0,
+        "output_microcents": 0
+      }
+    }
+  ]
+}

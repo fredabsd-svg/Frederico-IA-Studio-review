@@ -1,0 +1,39 @@
+[package]
+name = "frederico-provider-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "recorder"
+path = "src/bin/recorder.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+frederico-core = { workspace = true }
+frederico-security = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-model-catalog = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+eventsource-stream = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+frederico-security = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }

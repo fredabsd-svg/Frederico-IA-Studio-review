@@ -1,13 +1,21 @@
-import { HashRouter, Link, Route, Routes } from "react-router-dom";
-import { Home } from "./routes/Home";
+import { HashRouter, Link, Navigate, Route, Routes } from "react-router-dom";
+import { Chat } from "./routes/Chat";
+import { Settings } from "./routes/Settings";
 import { About } from "./routes/About";
 
 /**
  * Frederico IA Studio — casca React.
  *
- * A Fase 1 entrega navegação básica com 2 rotas e 1 botão que dispara
- * IPC contra o núcleo (via `services/api.ts`). Sem chat, sem tools,
- * sem documentos — só a casca pra provar o caminho vertical.
+ * Rotas:
+ * - `/` — redireciona para `/chat`.
+ * - `/chat` — chat sem conversa selecionada (cria uma nova).
+ * - `/chat/:id` — chat com conversa selecionada.
+ * - `/settings` — configuração de credenciais de provedores.
+ * - `/sobre` — sobre (Fase 1 keep-alive).
+ *
+ * Camada `services/` é a **única** que faz `invoke` no Tauri e
+ * `listen` em eventos. Componentes React nunca importam
+ * `@tauri-apps/api` diretamente.
  */
 export function App() {
   return (
@@ -16,18 +24,22 @@ export function App() {
         <header className="topbar">
           <h1>Frederico IA Studio</h1>
           <nav>
-            <Link to="/">Início</Link>
+            <Link to="/chat">Chat</Link>
+            <Link to="/settings">Configurações</Link>
             <Link to="/sobre">Sobre</Link>
           </nav>
         </header>
         <main>
           <Routes>
-            <Route path="/" element={<Home />} />
+            <Route path="/" element={<Navigate to="/chat" replace />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/chat/:id" element={<Chat />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/sobre" element={<About />} />
           </Routes>
         </main>
         <footer>
-          <small>Frederico IA Studio — v0.1.0 (Fase 1: Fundação)</small>
+          <small>Frederico IA Studio — v0.2.0 (Fase 2: Chat e provedores)</small>
         </footer>
       </div>
     </HashRouter>
