@@ -91,11 +91,7 @@ pub struct ChatRequest {
 
 impl ChatRequest {
     #[must_use]
-    pub fn new(
-        provider: ProviderId,
-        model: ModelId,
-        messages: Vec<ChatMessage>,
-    ) -> Self {
+    pub fn new(provider: ProviderId, model: ModelId, messages: Vec<ChatMessage>) -> Self {
         Self {
             provider,
             model,
@@ -147,7 +143,10 @@ pub enum StreamEvent {
     Delta { content: String },
     /// Contagem de tokens do provedor. Disparado no fim, ou em intervalos
     /// (depende do provedor). É o que alimenta o cálculo de custo.
-    Usage { prompt_tokens: u32, completion_tokens: u32 },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    },
     /// O modelo pediu para chamar uma ferramenta. Fase 2 persiste este
     /// evento no journal, mas não executa — Fase 3 lê e age.
     ToolCall {

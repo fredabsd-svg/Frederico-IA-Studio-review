@@ -9,7 +9,6 @@
 //! real entrega.
 
 #![cfg(not(doctest))]
-
 #![allow(clippy::let_unit_value)]
 
 #[path = "common/mod.rs"]
@@ -20,9 +19,7 @@ use std::time::Duration;
 
 use frederico_core::{ModelId, ProviderId};
 use frederico_provider_engine::provider::ProviderAdapter;
-use frederico_provider_engine::types::{
-    ChatMessage, ChatRequest, Role, StopReason, StreamEvent,
-};
+use frederico_provider_engine::types::{ChatMessage, ChatRequest, Role, StopReason, StreamEvent};
 use frederico_security::fake::FakeCredentialStore;
 use tokio::time::timeout;
 

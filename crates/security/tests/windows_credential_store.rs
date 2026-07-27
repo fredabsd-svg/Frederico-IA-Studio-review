@@ -246,9 +246,7 @@ async fn list_providers_filters_by_prefix() {
     let listed = store.list_providers().await.expect("list");
 
     // 3. O seed "outro-app:..." NÃO pode aparecer.
-    let leak = listed
-        .iter()
-        .find(|p| p.as_str().starts_with("outro-app:"));
+    let leak = listed.iter().find(|p| p.as_str().starts_with("outro-app:"));
     assert!(
         leak.is_none(),
         "vazou credencial de outro app: {leak:?} em {listed:?}"

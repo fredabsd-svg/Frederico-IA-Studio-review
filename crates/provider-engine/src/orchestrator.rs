@@ -53,9 +53,15 @@ pub enum OrchestratorError {
     #[error("provedor '{0}' não tem adapter registrado")]
     ProviderNotFound(ProviderId),
     #[error("modelo '{provider}/{model}' não está no catálogo")]
-    ModelNotFound { provider: ProviderId, model: ModelId },
+    ModelNotFound {
+        provider: ProviderId,
+        model: ModelId,
+    },
     #[error("modelo '{provider}/{model}' sem preço cadastrado")]
-    ModelWithoutPrice { provider: ProviderId, model: ModelId },
+    ModelWithoutPrice {
+        provider: ProviderId,
+        model: ModelId,
+    },
     #[error("erro do provedor: {0}")]
     Provider(#[from] ProviderError),
 }
@@ -102,7 +108,9 @@ impl ChatOrchestrator {
         conversation_id: ConversationId,
         user_content: String,
     ) -> OrchestratorResult<(frederico_storage::Message, RunId)> {
-        let conv = ConversationRepo::new(&self.db).get(&conversation_id).await?;
+        let conv = ConversationRepo::new(&self.db)
+            .get(&conversation_id)
+            .await?;
 
         // Mensagem do usuário PRIMEIRO (regra de teste).
         let user_msg = MessageRepo::new(&self.db)
@@ -166,9 +174,7 @@ impl ChatOrchestrator {
             {
                 tracing::error!(?run_id, "stream loop terminou com erro: {e:?}");
                 let _ = this_for_err.runs.unregister(run_id).await;
-                this_for_err
-                    .sink
-                    .emit_run_status(run_id, RunStatus::Failed);
+                this_for_err.sink.emit_run_status(run_id, RunStatus::Failed);
             }
         });
 
@@ -281,8 +287,10 @@ impl ChatOrchestrator {
                     },
                 )
                 .await?;
-                self.sink
-                    .emit_run_event(run_id, to_value(StreamEvent::Error(ProviderError::network("journal"))));
+                self.sink.emit_run_event(
+                    run_id,
+                    to_value(StreamEvent::Error(ProviderError::network("journal"))),
+                );
                 self.sink.emit_run_status(run_id, RunStatus::Failed);
                 self.runs.unregister(run_id).await;
                 return Ok(());
@@ -306,19 +314,16 @@ impl ChatOrchestrator {
                 StreamEvent::Done { .. } => {
                     let cost = descriptor.cost_microcents(prompt_tokens, completion_tokens);
                     MessageRepo::new(&self.db)
-                        .set_usage_and_cost(
-                            &asst_msg_id,
-                            prompt_tokens,
-                            completion_tokens,
-                            cost,
-                        )
+                        .set_usage_and_cost(&asst_msg_id, prompt_tokens, completion_tokens, cost)
                         .await?;
                     if let Ok(conv_id) = RunRepo::new(&self.db)
                         .get(&run_id)
                         .await
                         .map(|r| r.conversation_id)
                     {
-                        let _ = ConversationRepo::new(&self.db).add_cost(&conv_id, cost).await;
+                        let _ = ConversationRepo::new(&self.db)
+                            .add_cost(&conv_id, cost)
+                            .await;
                     }
                     MessageRepo::new(&self.db)
                         .set_status(&asst_msg_id, MessageStatus::Completed)
@@ -369,7 +374,9 @@ impl ChatOrchestrator {
             .await
             .map(|r| r.conversation_id)
         {
-            let _ = ConversationRepo::new(&self.db).add_cost(&conv_id, cost).await;
+            let _ = ConversationRepo::new(&self.db)
+                .add_cost(&conv_id, cost)
+                .await;
         }
         if accumulated.is_empty() {
             self.finalize_error(
@@ -439,7 +446,10 @@ impl ChatOrchestrator {
         };
         let view = error_to_view(&err);
         MessageRepo::new(&self.db)
-            .set_error(&asst_msg_id, &serde_json::to_string(&view).unwrap_or_default())
+            .set_error(
+                &asst_msg_id,
+                &serde_json::to_string(&view).unwrap_or_default(),
+            )
             .await?;
         MessageRepo::new(&self.db)
             .set_status(&asst_msg_id, MessageStatus::Timeout)
@@ -462,7 +472,10 @@ impl ChatOrchestrator {
             .await?;
         let view = error_to_view(err);
         MessageRepo::new(&self.db)
-            .set_error(&asst_msg_id, &serde_json::to_string(&view).unwrap_or_default())
+            .set_error(
+                &asst_msg_id,
+                &serde_json::to_string(&view).unwrap_or_default(),
+            )
             .await?;
         MessageRepo::new(&self.db)
             .set_status(&asst_msg_id, MessageStatus::Failed)
@@ -776,10 +789,7 @@ mod tests {
             .await
             .unwrap();
         let r = orch.send_message(conv.id, "oi".to_string()).await;
-        assert!(matches!(
-            r,
-            Err(OrchestratorError::ProviderNotFound(_))
-        ));
+        assert!(matches!(r, Err(OrchestratorError::ProviderNotFound(_))));
     }
 
     #[test]

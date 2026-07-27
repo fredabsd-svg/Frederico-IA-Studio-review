@@ -16,9 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::provider::{AdapterCapabilities, CostModel, ProviderAdapter, RunHandle};
-use crate::types::{
-    ChatRequest, ChatResponse, ProviderError, StopReason, StreamEvent, Usage,
-};
+use crate::types::{ChatRequest, ChatResponse, ProviderError, StopReason, StreamEvent, Usage};
 
 /// Adapter fake. Emite um script de eventos quando `stream()` é
 /// chamado, e registra `cancel()` para asserção em teste.
@@ -101,10 +99,7 @@ impl ProviderAdapter for FakeProviderAdapter {
         self.cost
     }
 
-    async fn complete(
-        &self,
-        _request: ChatRequest,
-    ) -> Result<ChatResponse, ProviderError> {
+    async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         Ok(ChatResponse {
             content: "ok".to_string(),
             stop_reason: StopReason::Stop,

@@ -111,9 +111,10 @@ impl Args {
                 "--base-url" => base_url = Some(value()?),
                 "--max-tokens" => {
                     let v = value()?;
-                    max_tokens = Some(v.parse().map_err(|_| {
-                        format!("`--max-tokens` inválido: {v}")
-                    })?);
+                    max_tokens = Some(
+                        v.parse()
+                            .map_err(|_| format!("`--max-tokens` inválido: {v}"))?,
+                    );
                 }
                 "-h" | "--help" => {
                     print_usage();
@@ -179,7 +180,10 @@ async fn main() -> ExitCode {
 
     // Header opcional que o OpenRouter pede para atribuição.
     let extra_headers: Vec<(&str, &str)> = if args.provider == "openrouter" {
-        vec![("HTTP-Referer", "https://frederico.local"), ("X-Title", "Frederico IA Studio")]
+        vec![
+            ("HTTP-Referer", "https://frederico.local"),
+            ("X-Title", "Frederico IA Studio"),
+        ]
     } else {
         vec![]
     };
@@ -203,9 +207,7 @@ async fn main() -> ExitCode {
 
     // Envia a request. A chave **nunca** entra em log nem em
     // mensagem de erro — usamos closures que só logam o status.
-    let client = reqwest::Client::builder()
-        .build()
-        .expect("cliente reqwest");
+    let client = reqwest::Client::builder().build().expect("cliente reqwest");
     let mut req = client
         .post(format!("{base_url}/chat/completions"))
         .bearer_auth(&api_key)
@@ -295,7 +297,11 @@ async fn finalize(mut content: String, out: &PathBuf) -> ExitCode {
 
     match tokio::fs::write(out, content.as_bytes()).await {
         Ok(()) => {
-            eprintln!("[recorder] OK: gravado {} bytes em {}", content.len(), out.display());
+            eprintln!(
+                "[recorder] OK: gravado {} bytes em {}",
+                content.len(),
+                out.display()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

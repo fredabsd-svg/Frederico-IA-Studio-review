@@ -153,7 +153,10 @@ impl Catalog {
 
     #[must_use]
     pub fn list_for_provider(&self, provider: &ProviderId) -> Vec<&ModelDescriptor> {
-        self.models.iter().filter(|m| &m.provider == provider).collect()
+        self.models
+            .iter()
+            .filter(|m| &m.provider == provider)
+            .collect()
     }
 
     #[must_use]
@@ -163,7 +166,8 @@ impl Catalog {
 
     #[must_use]
     pub fn pricing_for(&self, provider: &ProviderId, model: &ModelId) -> Option<PriceTable> {
-        self.find_model(provider, model).map(|m| m.pricing_per_million)
+        self.find_model(provider, model)
+            .map(|m| m.pricing_per_million)
     }
 }
 
@@ -293,10 +297,7 @@ mod tests {
     fn pricing_for_returns_price_table() {
         let cat = Catalog::load();
         let p = cat
-            .pricing_for(
-                &ProviderId::new("openai"),
-                &ModelId::new("gpt-4o-mini"),
-            )
+            .pricing_for(&ProviderId::new("openai"), &ModelId::new("gpt-4o-mini"))
             .expect("gpt-4o-mini tem preço");
         // $0.15 / 1M input, $0.60 / 1M output.
         assert_eq!(p.input_microcents, 15_000);

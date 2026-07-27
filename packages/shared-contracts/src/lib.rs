@@ -14,8 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use frederico_core::{ModelId, ProviderId};
 use frederico_core::CoreError;
+use frederico_core::{ModelId, ProviderId};
 
 /// Envelope de requisição vinda da casca (Tauri) para o núcleo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,12 +59,19 @@ pub enum AppOp {
 
     // --- Etapa 1: Provedores ---
     ProviderList,
-    ProviderSetCredential { provider: ProviderId, value: String },
-    ProviderDeleteCredential { provider: ProviderId },
+    ProviderSetCredential {
+        provider: ProviderId,
+        value: String,
+    },
+    ProviderDeleteCredential {
+        provider: ProviderId,
+    },
 
     // --- Leva 2: Catálogo ---
     ModelCatalogList,
-    ModelCatalogForProvider { provider: ProviderId },
+    ModelCatalogForProvider {
+        provider: ProviderId,
+    },
 
     // --- Leva 3: Conversas ---
     ConversationCreate {
@@ -73,14 +80,21 @@ pub enum AppOp {
         title: Option<String>,
     },
     ConversationList,
-    ConversationGet { id: String },
-    ConversationRename { id: String, title: Option<String> },
+    ConversationGet {
+        id: String,
+    },
+    ConversationRename {
+        id: String,
+        title: Option<String>,
+    },
     ConversationSetModel {
         id: String,
         provider: ProviderId,
         model: ModelId,
     },
-    ConversationDelete { id: String },
+    ConversationDelete {
+        id: String,
+    },
 
     // --- Leva 3: Mensagem + Run ---
     MessageSend {
@@ -91,7 +105,9 @@ pub enum AppOp {
         message_id: String,
         since_seq: u32,
     },
-    RunCancel { run_id: String },
+    RunCancel {
+        run_id: String,
+    },
 }
 
 /// Status público de um provedor.
@@ -246,7 +262,10 @@ mod tests {
         assert!(json.contains("\"kind\":\"message_send\""));
         let back: AppOp = serde_json::from_str(&json).unwrap();
         match back {
-            AppOp::MessageSend { conversation_id, content } => {
+            AppOp::MessageSend {
+                conversation_id,
+                content,
+            } => {
                 assert_eq!(conversation_id, "abc-123");
                 assert_eq!(content, "olá");
             }

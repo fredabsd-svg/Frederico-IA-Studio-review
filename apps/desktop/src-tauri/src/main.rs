@@ -17,9 +17,7 @@ use std::sync::Arc;
 use frederico_diagnostics as diagnostics;
 use frederico_model_catalog::Catalog;
 use frederico_provider_engine::openai_compat::OpenAiCompatAdapter;
-use frederico_provider_engine::{
-    ChatOrchestrator, EventSink, ProviderMap, RunRegistry,
-};
+use frederico_provider_engine::{ChatOrchestrator, EventSink, ProviderMap, RunRegistry};
 use frederico_security::windows::WindowsCredentialStore;
 use frederico_security::{Clock, CredentialStore, SystemClock};
 use frederico_shared_contracts::{
@@ -105,9 +103,9 @@ fn build_provider_map(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderMap>
         credentials.clone(),
     )));
     // Anthropic
-    map.insert(Arc::new(frederico_provider_engine::anthropic::AnthropicAdapter::new(
-        credentials,
-    )));
+    map.insert(Arc::new(
+        frederico_provider_engine::anthropic::AnthropicAdapter::new(credentials),
+    ));
     Arc::new(map)
 }
 
@@ -146,14 +144,7 @@ fn main() {
             // o journal no SQLite é a fonte de verdade.
             let sink: Arc<dyn EventSink> = Arc::new(sink::TauriEventSink::new(handle));
 
-            let orch = ChatOrchestrator::new(
-                providers,
-                runs,
-                sink,
-                db.clone(),
-                clock,
-                catalog,
-            );
+            let orch = ChatOrchestrator::new(providers, runs, sink, db.clone(), clock, catalog);
             let orch = Arc::new(orch);
 
             app.manage(AppState {
@@ -178,7 +169,9 @@ async fn ipc_dispatch(
     match request.op {
         AppOp::Ping => Ok(IpcResponse::ok(serde_json::json!({ "pong": true })).unwrap()),
         AppOp::GetAppInfo => match state.db.app_info().await {
-            Ok(info) => Ok(IpcResponse::ok(info).unwrap_or_else(|e| IpcResponse::err(e.to_string()))),
+            Ok(info) => {
+                Ok(IpcResponse::ok(info).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+            }
             Err(e) => Ok(IpcResponse::err(e.to_string())),
         },
 
@@ -238,11 +231,8 @@ async fn ipc_dispatch(
         // --- Leva 2: Catálogo ---
         AppOp::ModelCatalogList => {
             let cat = Catalog::load();
-            let list: Vec<ModelDescriptorView> = cat
-                .list_all()
-                .into_iter()
-                .map(model_to_view)
-                .collect();
+            let list: Vec<ModelDescriptorView> =
+                cat.list_all().into_iter().map(model_to_view).collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
         AppOp::ModelCatalogForProvider { provider } => {
@@ -256,7 +246,11 @@ async fn ipc_dispatch(
         }
 
         // --- Leva 3: Conversas ---
-        AppOp::ConversationCreate { provider, model, title } => {
+        AppOp::ConversationCreate {
+            provider,
+            model,
+            title,
+        } => {
             let conv = ConversationRepo::new(&state.db)
                 .create(&provider, &model, title.as_deref())
                 .await
@@ -305,7 +299,11 @@ async fn ipc_dispatch(
                 .map_err(|e| e.to_string())?;
             Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
-        AppOp::ConversationSetModel { id, provider, model } => {
+        AppOp::ConversationSetModel {
+            id,
+            provider,
+            model,
+        } => {
             let cid = uuid::Uuid::parse_str(&id)
                 .map(frederico_core::ConversationId)
                 .map_err(|e| e.to_string())?;
@@ -327,7 +325,10 @@ async fn ipc_dispatch(
         }
 
         // --- Leva 3: Mensagem + Run ---
-        AppOp::MessageSend { conversation_id, content } => {
+        AppOp::MessageSend {
+            conversation_id,
+            content,
+        } => {
             let cid = uuid::Uuid::parse_str(&conversation_id)
                 .map(frederico_core::ConversationId)
                 .map_err(|e| e.to_string())?;
@@ -342,7 +343,10 @@ async fn ipc_dispatch(
             };
             Ok(IpcResponse::ok(result).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
-        AppOp::RunGetEvents { message_id, since_seq } => {
+        AppOp::RunGetEvents {
+            message_id,
+            since_seq,
+        } => {
             let mid = uuid::Uuid::parse_str(&message_id)
                 .map(frederico_core::MessageId)
                 .map_err(|e| e.to_string())?;
@@ -420,8 +424,7 @@ fn model_to_view(m: &frederico_model_catalog::ModelDescriptor) -> ModelDescripto
         display_name: m.display_name.clone(),
         context_window: m.context_window,
         modalities: serde_json::to_value(&m.modalities).unwrap_or(serde_json::Value::Null),
-        capabilities: serde_json::to_value(&m.capabilities)
-            .unwrap_or(serde_json::Value::Null),
+        capabilities: serde_json::to_value(&m.capabilities).unwrap_or(serde_json::Value::Null),
         pricing_input_microcents_per_million: m.pricing_per_million.input_microcents,
         pricing_output_microcents_per_million: m.pricing_per_million.output_microcents,
     }

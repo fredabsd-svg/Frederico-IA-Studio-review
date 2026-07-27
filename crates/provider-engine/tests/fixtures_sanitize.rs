@@ -61,9 +61,7 @@ fn every_fixture_passes_sanitization() {
     }
 
     if !failures.is_empty() {
-        let mut msg = String::from(
-            "fixtures contaminadas detectadas — ABORT antes do commit:\n",
-        );
+        let mut msg = String::from("fixtures contaminadas detectadas — ABORT antes do commit:\n");
         for (file, e) in &failures {
             msg.push_str(&format!("  - {}: {e}\n", file.display()));
         }

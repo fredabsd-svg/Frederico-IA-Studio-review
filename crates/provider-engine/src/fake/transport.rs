@@ -23,7 +23,7 @@ use bytes::Bytes;
 use futures::stream::{self, Stream};
 use thiserror::Error;
 
-use crate::parser::{FixtureHeader, FixtureHeaderInner, sse_stream, RawSseEvent};
+use crate::parser::{sse_stream, FixtureHeader, FixtureHeaderInner, RawSseEvent};
 
 #[derive(Debug, Error)]
 pub enum FakeError {
@@ -43,22 +43,29 @@ pub enum FakeError {
 /// pronto para ser passado ao [`crate::parser::sse_stream`].
 pub async fn load_golden_file(
     path: impl AsRef<Path>,
-) -> Result<(FixtureHeaderInner, impl Stream<Item = Result<Bytes, std::io::Error>>), FakeError> {
+) -> Result<
+    (
+        FixtureHeaderInner,
+        impl Stream<Item = Result<Bytes, std::io::Error>>,
+    ),
+    FakeError,
+> {
     let path = path.as_ref();
-    let content = tokio::fs::read_to_string(path).await.map_err(|source| FakeError::Open {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let (header, chunks) = parse_golden(&content).map_err(|e| FakeError::BadHeader(e.to_string()))?;
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|source| FakeError::Open {
+            path: path.display().to_string(),
+            source,
+        })?;
+    let (header, chunks) =
+        parse_golden(&content).map_err(|e| FakeError::BadHeader(e.to_string()))?;
     let body = stream::iter(chunks.into_iter().map(|c| Ok(Bytes::from(c))));
     Ok((header, body))
 }
 
 /// Lê um golden file de uma string em memória (útil para testes
 /// que não querem mexer no disco).
-pub fn parse_golden(
-    content: &str,
-) -> Result<(FixtureHeaderInner, Vec<String>), FakeError> {
+pub fn parse_golden(content: &str) -> Result<(FixtureHeaderInner, Vec<String>), FakeError> {
     let mut lines = content.lines();
     let header_line = lines
         .next()
@@ -94,7 +101,13 @@ pub fn serialize_golden(header: &FixtureHeaderInner, chunks: &[String]) -> Strin
 /// parser real".
 pub async fn golden_file_events(
     path: impl AsRef<Path>,
-) -> Result<(FixtureHeaderInner, impl Stream<Item = Result<RawSseEvent, crate::parser::SseParseError>>), FakeError> {
+) -> Result<
+    (
+        FixtureHeaderInner,
+        impl Stream<Item = Result<RawSseEvent, crate::parser::SseParseError>>,
+    ),
+    FakeError,
+> {
     let (header, body) = load_golden_file(path).await?;
     Ok((header, sse_stream(body)))
 }

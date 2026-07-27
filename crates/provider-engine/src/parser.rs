@@ -172,9 +172,7 @@ fn parse_event(bytes: &[u8]) -> Result<Option<RawSseEvent>, SseParseError> {
 /// formato OpenAI, devolve o `StreamEvent` correspondente. Retorna
 /// `None` se for o `[DONE]` sentinela (OpenAI-compat usa
 /// `data: [DONE]` para fechar).
-pub fn openai_compat_translate(
-    raw: RawSseEvent,
-) -> Result<Option<StreamEvent>, SseParseError> {
+pub fn openai_compat_translate(raw: RawSseEvent) -> Result<Option<StreamEvent>, SseParseError> {
     if raw.data.trim() == "[DONE]" {
         return Ok(Some(StreamEvent::Done {
             stop_reason: crate::types::StopReason::Stop,
@@ -206,7 +204,10 @@ pub fn openai_compat_translate(
         return Ok(None);
     };
     let delta = choice.get("delta");
-    if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+    if let Some(content) = delta
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str())
+    {
         if !content.is_empty() {
             return Ok(Some(StreamEvent::Delta {
                 content: content.to_string(),
@@ -412,7 +413,9 @@ mod tests {
         use futures::stream;
 
         let bytes = vec![
-            Ok(Bytes::from_static(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+            )),
             Ok(Bytes::from_static(b"data: [DONE]\n\n")),
         ];
         let mut s = Box::pin(sse_stream(stream::iter(bytes)));

@@ -119,12 +119,7 @@ impl Default for FakeCredentialStore {
 #[async_trait]
 impl CredentialStore for FakeCredentialStore {
     async fn get(&self, provider: &ProviderId) -> Result<Option<SecretString>, SecurityError> {
-        Ok(self
-            .inner
-            .lock()
-            .unwrap()
-            .get(provider)
-            .cloned())
+        Ok(self.inner.lock().unwrap().get(provider).cloned())
     }
 
     async fn set(&self, provider: &ProviderId, value: &SecretString) -> Result<(), SecurityError> {

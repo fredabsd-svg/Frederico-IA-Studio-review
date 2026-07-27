@@ -111,20 +111,20 @@ impl OpenAiCompatAdapter {
         Self::new(id, base_url, auth, credentials)
     }
 
-    async fn fetch_credential(
-        &self,
-    ) -> Result<SecretString, ProviderError> {
-        let creds = self.credentials.get(&self.id).await.map_err(provider_security_error)?;
-        creds.ok_or_else(|| {
-            ProviderError {
-                kind: ProviderErrorKind::Auth,
-                upstream_status: Some(401),
-                upstream_message: Some(format!(
-                    "credencial ausente para o provedor '{}'",
-                    self.id.as_str()
-                )),
-                retry_after: None,
-            }
+    async fn fetch_credential(&self) -> Result<SecretString, ProviderError> {
+        let creds = self
+            .credentials
+            .get(&self.id)
+            .await
+            .map_err(provider_security_error)?;
+        creds.ok_or_else(|| ProviderError {
+            kind: ProviderErrorKind::Auth,
+            upstream_status: Some(401),
+            upstream_message: Some(format!(
+                "credencial ausente para o provedor '{}'",
+                self.id.as_str()
+            )),
+            retry_after: None,
         })
     }
 
@@ -162,10 +162,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         CostModel::default()
     }
 
-    async fn complete(
-        &self,
-        request: ChatRequest,
-    ) -> Result<ChatResponse, ProviderError> {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let secret = self.fetch_credential().await?;
         let auth_headers = (self.auth_header)(&secret);
         let body = build_request_body(&request, /* stream = */ false);
@@ -182,8 +179,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             return Err(map_http_status(status, response).await);
         }
         let bytes = response.bytes().await.map_err(network_error)?;
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|e| ProviderError::network(format!("resposta não-JSON: {e}")))?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| ProviderError::network(format!("resposta não-JSON: {e}")))?;
         let choice = json
             .get("choices")
             .and_then(|c| c.as_array())
@@ -308,9 +305,13 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 Ok(raw) => match openai_compat_translate(raw) {
                     Ok(Some(ev)) => Some(ev),
                     Ok(None) => None, // keepalive / evento vazio — pula.
-                    Err(e) => Some(StreamEvent::Error(ProviderError::network(format!("parse SSE: {e}")))),
+                    Err(e) => Some(StreamEvent::Error(ProviderError::network(format!(
+                        "parse SSE: {e}"
+                    )))),
                 },
-                Err(e) => Some(StreamEvent::Error(ProviderError::network(format!("SSE: {e}")))),
+                Err(e) => Some(StreamEvent::Error(ProviderError::network(format!(
+                    "SSE: {e}"
+                )))),
             }
         });
         Ok(Box::pin(event_stream))
@@ -383,7 +384,10 @@ fn network_error(e: reqwest::Error) -> ProviderError {
     ProviderError::network(format!("request falhou: {e}"))
 }
 
-async fn map_http_status(status: reqwest::StatusCode, response: reqwest::Response) -> ProviderError {
+async fn map_http_status(
+    status: reqwest::StatusCode,
+    response: reqwest::Response,
+) -> ProviderError {
     let upstream_status = Some(status.as_u16());
     let body = response.text().await.unwrap_or_default();
     let kind = match status.as_u16() {

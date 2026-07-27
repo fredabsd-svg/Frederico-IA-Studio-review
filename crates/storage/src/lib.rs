@@ -184,9 +184,9 @@ impl Database {
                 .await
                 .map_err(|e| StorageError::Open {
                     path: path.to_path_buf(),
-                    source: sqlx::Error::Configuration(Box::new(std::io::Error::other(
-                        format!("não consegui criar diretório {parent:?}: {e}"),
-                    ))),
+                    source: sqlx::Error::Configuration(Box::new(std::io::Error::other(format!(
+                        "não consegui criar diretório {parent:?}: {e}"
+                    )))),
                 })?;
         }
 
@@ -255,60 +255,60 @@ pub struct ConversationRepo<'a> {
 /// Row bruta de `conversations`. Usada só para `query_as` — o tipo de
 /// domínio é [`Conversation`].
 type ConversationRow = (
-    String,             // id
-    Option<String>,     // title
-    String,             // provider_id
-    String,             // model_id
-    String,             // created_at
-    String,             // updated_at
-    i64,                // total_cost_microcents
+    String,         // id
+    Option<String>, // title
+    String,         // provider_id
+    String,         // model_id
+    String,         // created_at
+    String,         // updated_at
+    i64,            // total_cost_microcents
 );
 
 /// Row bruta de `messages`. Tipo de domínio: [`Message`].
 type MessageRow = (
-    String,             // id
-    String,             // conversation_id
-    String,             // role
-    String,             // content
-    String,             // status
-    Option<String>,     // run_id
-    Option<i64>,        // prompt_tokens
-    Option<i64>,        // completion_tokens
-    i64,                // cost_microcents
-    Option<String>,     // error
-    String,             // created_at
-    Option<String>,     // finished_at
+    String,         // id
+    String,         // conversation_id
+    String,         // role
+    String,         // content
+    String,         // status
+    Option<String>, // run_id
+    Option<i64>,    // prompt_tokens
+    Option<i64>,    // completion_tokens
+    i64,            // cost_microcents
+    Option<String>, // error
+    String,         // created_at
+    Option<String>, // finished_at
 );
 
 /// Row bruta de `message_events`. Tipo de domínio: [`MessageEvent`].
 type MessageEventRow = (
-    i64,                // id
-    String,             // message_id
-    i64,                // seq
-    String,             // kind
-    String,             // data
-    String,             // created_at
+    i64,    // id
+    String, // message_id
+    i64,    // seq
+    String, // kind
+    String, // data
+    String, // created_at
 );
 
 /// Row bruta de `runs`. Tipo de domínio: [`Run`].
 type RunRow = (
-    String,             // id
-    String,             // conversation_id
-    String,             // message_id
-    String,             // status
-    String,             // started_at
-    Option<String>,     // finished_at
-    Option<String>,     // cancellation_requested_at
+    String,         // id
+    String,         // conversation_id
+    String,         // message_id
+    String,         // status
+    String,         // started_at
+    Option<String>, // finished_at
+    Option<String>, // cancellation_requested_at
 );
 
 /// Row bruta de `provider_configs`. Tipo de domínio: [`ProviderConfig`].
 type ProviderConfigRow = (
-    String,             // provider_id
-    String,             // display_name
-    i64,                // configured
-    Option<String>,     // last_ok_at
-    Option<String>,     // last_error_at
-    Option<String>,     // last_error
+    String,         // provider_id
+    String,         // display_name
+    i64,            // configured
+    Option<String>, // last_ok_at
+    Option<String>, // last_error_at
+    Option<String>, // last_error
 );
 
 impl<'a> ConversationRepo<'a> {
@@ -356,10 +356,12 @@ impl<'a> ConversationRepo<'a> {
         .bind(id.0.to_string())
         .fetch_optional(self.pool)
         .await?;
-        let (id_s, title, provider, model, created_at, updated_at, cost) = row
-            .ok_or(StorageError::ConversationNotFound(*id))?;
+        let (id_s, title, provider, model, created_at, updated_at, cost) =
+            row.ok_or(StorageError::ConversationNotFound(*id))?;
         Ok(Conversation {
-            id: ConversationId(uuid::Uuid::parse_str(&id_s).map_err(|_| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {id_s}").into())))?),
+            id: ConversationId(uuid::Uuid::parse_str(&id_s).map_err(|_| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {id_s}").into()))
+            })?),
             title,
             provider_id: ProviderId::new(provider),
             model_id: ModelId::new(model),
@@ -381,8 +383,9 @@ impl<'a> ConversationRepo<'a> {
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, title, provider, model, created_at, updated_at, cost) in rows {
-            let uuid = uuid::Uuid::parse_str(&id)
-                .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?;
+            let uuid = uuid::Uuid::parse_str(&id).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?;
             out.push(Conversation {
                 id: ConversationId(uuid),
                 title,
@@ -399,15 +402,14 @@ impl<'a> ConversationRepo<'a> {
     /// Renomeia a conversa.
     pub async fn rename(&self, id: &ConversationId, title: Option<&str>) -> StorageResult<()> {
         let now = Utc::now().to_rfc3339();
-        let affected = sqlx::query(
-            "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
-        )
-        .bind(title)
-        .bind(&now)
-        .bind(id.0.to_string())
-        .execute(self.pool)
-        .await?
-        .rows_affected();
+        let affected =
+            sqlx::query("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3")
+                .bind(title)
+                .bind(&now)
+                .bind(id.0.to_string())
+                .execute(self.pool)
+                .await?
+                .rows_affected();
         if affected == 0 {
             return Err(StorageError::ConversationNotFound(*id));
         }
@@ -536,10 +538,13 @@ impl<'a> MessageRepo<'a> {
         .await?;
         let (id, conv, role, content, status, run_id, p, c, cost, err, created_at, finished_at) =
             row.ok_or(StorageError::MessageNotFound(*id))?;
-        let conv_uuid = uuid::Uuid::parse_str(&conv)
-            .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?;
+        let conv_uuid = uuid::Uuid::parse_str(&conv).map_err(|e| {
+            StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+        })?;
         Ok(Message {
-            id: MessageId(uuid::Uuid::parse_str(&id).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
+            id: MessageId(uuid::Uuid::parse_str(&id).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
             conversation_id: ConversationId(conv_uuid),
             role,
             content,
@@ -547,7 +552,9 @@ impl<'a> MessageRepo<'a> {
             run_id: run_id
                 .map(|r| uuid::Uuid::parse_str(&r).map(RunId))
                 .transpose()
-                .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?,
+                .map_err(|e| {
+                    StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+                })?,
             prompt_tokens: p.map(|n| n as u32),
             completion_tokens: c.map(|n| n as u32),
             cost_microcents: cost as u64,
@@ -571,11 +578,16 @@ impl<'a> MessageRepo<'a> {
         .fetch_all(self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (id, conv, role, content, status, run_id, p, c, cost, err, created_at, finished_at) in rows {
-            let conv_uuid = uuid::Uuid::parse_str(&conv)
-                .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?;
+        for (id, conv, role, content, status, run_id, p, c, cost, err, created_at, finished_at) in
+            rows
+        {
+            let conv_uuid = uuid::Uuid::parse_str(&conv).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?;
             out.push(Message {
-                id: MessageId(uuid::Uuid::parse_str(&id).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
+                id: MessageId(uuid::Uuid::parse_str(&id).map_err(|e| {
+                    StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+                })?),
                 conversation_id: ConversationId(conv_uuid),
                 role,
                 content,
@@ -583,7 +595,9 @@ impl<'a> MessageRepo<'a> {
                 run_id: run_id
                     .map(|r| uuid::Uuid::parse_str(&r).map(RunId))
                     .transpose()
-                    .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?,
+                    .map_err(|e| {
+                        StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+                    })?,
                 prompt_tokens: p.map(|n| n as u32),
                 completion_tokens: c.map(|n| n as u32),
                 cost_microcents: cost as u64,
@@ -596,11 +610,7 @@ impl<'a> MessageRepo<'a> {
     }
 
     /// Atualiza o status de uma mensagem.
-    pub async fn set_status(
-        &self,
-        id: &MessageId,
-        status: MessageStatus,
-    ) -> StorageResult<()> {
+    pub async fn set_status(&self, id: &MessageId, status: MessageStatus) -> StorageResult<()> {
         let now = Utc::now().to_rfc3339();
         let finished_at = if matches!(
             status,
@@ -613,14 +623,12 @@ impl<'a> MessageRepo<'a> {
         } else {
             None
         };
-        sqlx::query(
-            "UPDATE messages SET status = ?1, finished_at = ?2 WHERE id = ?3",
-        )
-        .bind(status.as_str())
-        .bind(finished_at)
-        .bind(id.0.to_string())
-        .execute(self.pool)
-        .await?;
+        sqlx::query("UPDATE messages SET status = ?1, finished_at = ?2 WHERE id = ?3")
+            .bind(status.as_str())
+            .bind(finished_at)
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 
@@ -726,10 +734,12 @@ impl<'a> MessageEventRepo<'a> {
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, mid, seq, kind, data, created_at) in rows {
-            let data_json: serde_json::Value = serde_json::from_str(&data)
-                .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad json: {e}").into())))?;
-            let mid_uuid = uuid::Uuid::parse_str(&mid)
-                .map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?;
+            let data_json: serde_json::Value = serde_json::from_str(&data).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad json: {e}").into()))
+            })?;
+            let mid_uuid = uuid::Uuid::parse_str(&mid).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?;
             out.push(MessageEvent {
                 id,
                 message_id: MessageId(mid_uuid),
@@ -793,9 +803,15 @@ impl<'a> RunRepo<'a> {
         let (id_s, conv, msg, status, started_at, finished_at, cancellation_requested_at) =
             row.ok_or(StorageError::RunNotFound(*id))?;
         Ok(Run {
-            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
-            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
-            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
+            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
             status,
             started_at,
             finished_at,
@@ -811,13 +827,21 @@ impl<'a> RunRepo<'a> {
         .bind(message_id.0.to_string())
         .fetch_optional(self.pool)
         .await?;
-        let Some((id_s, conv, msg, status, started_at, finished_at, cancellation_requested_at)) = row else {
+        let Some((id_s, conv, msg, status, started_at, finished_at, cancellation_requested_at)) =
+            row
+        else {
             return Ok(None);
         };
         Ok(Some(Run {
-            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
-            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
-            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())))?),
+            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
             status,
             started_at,
             finished_at,
@@ -850,13 +874,11 @@ impl<'a> RunRepo<'a> {
     /// usa isso para saber que o usuário pediu stop.
     pub async fn request_cancellation(&self, id: &RunId) -> StorageResult<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE runs SET cancellation_requested_at = ?1 WHERE id = ?2",
-        )
-        .bind(&now)
-        .bind(id.0.to_string())
-        .execute(self.pool)
-        .await?;
+        sqlx::query("UPDATE runs SET cancellation_requested_at = ?1 WHERE id = ?2")
+            .bind(&now)
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 }
@@ -1007,7 +1029,11 @@ mod tests {
         let got = conv_repo.get(&conv.id).await.unwrap();
         assert_eq!(got.title.as_deref(), Some("novo"));
         conv_repo
-            .set_model(&conv.id, &ProviderId::new("anthropic"), &ModelId::new("claude-3-5-sonnet-latest"))
+            .set_model(
+                &conv.id,
+                &ProviderId::new("anthropic"),
+                &ModelId::new("claude-3-5-sonnet-latest"),
+            )
             .await
             .unwrap();
         let got = conv_repo.get(&conv.id).await.unwrap();
@@ -1024,7 +1050,11 @@ mod tests {
             .await
             .unwrap();
         let c2 = conv_repo
-            .create(&ProviderId::new("anthropic"), &ModelId::new("claude-3-5-sonnet-latest"), None)
+            .create(
+                &ProviderId::new("anthropic"),
+                &ModelId::new("claude-3-5-sonnet-latest"),
+                None,
+            )
             .await
             .unwrap();
         conv_repo.add_cost(&c1.id, 1234).await.unwrap();
@@ -1045,10 +1075,7 @@ mod tests {
             .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
             .await
             .unwrap();
-        let user = msg_repo
-            .create(&conv.id, "user", "oi", None)
-            .await
-            .unwrap();
+        let user = msg_repo.create(&conv.id, "user", "oi", None).await.unwrap();
         assert_eq!(user.role, "user");
         assert_eq!(user.status, "pending");
         let asst = msg_repo
@@ -1057,19 +1084,11 @@ mod tests {
             .unwrap();
         // Anexa 3 eventos.
         let s1 = ev_repo
-            .append(
-                &asst.id,
-                "delta",
-                &serde_json::json!({"content": "O"}),
-            )
+            .append(&asst.id, "delta", &serde_json::json!({"content": "O"}))
             .await
             .unwrap();
         let s2 = ev_repo
-            .append(
-                &asst.id,
-                "delta",
-                &serde_json::json!({"content": "k"}),
-            )
+            .append(&asst.id, "delta", &serde_json::json!({"content": "k"}))
             .await
             .unwrap();
         let s3 = ev_repo
@@ -1096,7 +1115,10 @@ mod tests {
             .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
             .await
             .unwrap();
-        let m = msg_repo.create(&conv.id, "assistant", "", None).await.unwrap();
+        let m = msg_repo
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
         msg_repo
             .set_status(&m.id, MessageStatus::Streaming)
             .await
@@ -1123,16 +1145,25 @@ mod tests {
             .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
             .await
             .unwrap();
-        let asst = msg_repo.create(&conv.id, "assistant", "", None).await.unwrap();
+        let asst = msg_repo
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
         let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
         assert_eq!(run.status, "created");
-        run_repo.set_status(&run.id, RunStatus::Running).await.unwrap();
+        run_repo
+            .set_status(&run.id, RunStatus::Running)
+            .await
+            .unwrap();
         let got = run_repo.get(&run.id).await.unwrap();
         assert_eq!(got.status, "running");
         run_repo.request_cancellation(&run.id).await.unwrap();
         let got = run_repo.get(&run.id).await.unwrap();
         assert!(got.cancellation_requested_at.is_some());
-        run_repo.set_status(&run.id, RunStatus::Cancelled).await.unwrap();
+        run_repo
+            .set_status(&run.id, RunStatus::Cancelled)
+            .await
+            .unwrap();
         let got = run_repo.get(&run.id).await.unwrap();
         assert_eq!(got.status, "cancelled");
         assert!(got.finished_at.is_some());
@@ -1148,7 +1179,10 @@ mod tests {
             .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
             .await
             .unwrap();
-        let asst = msg_repo.create(&conv.id, "assistant", "", None).await.unwrap();
+        let asst = msg_repo
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
         run_repo.create(&conv.id, &asst.id).await.unwrap();
         // Segundo run para a mesma mensagem deve falhar (UNIQUE).
         let r = run_repo.create(&conv.id, &asst.id).await;
@@ -1159,13 +1193,22 @@ mod tests {
     async fn provider_config_repo_upsert_and_list() {
         let db = Database::open(&tempdir().join("pcfg.db")).await.unwrap();
         let repo = ProviderConfigRepo::new(&db);
-        repo.upsert(&ProviderId::new("openai"), "OpenAI", true).await.unwrap();
-        repo.upsert(&ProviderId::new("anthropic"), "Anthropic", false).await.unwrap();
-        repo.upsert(&ProviderId::new("openai"), "OpenAI", false).await.unwrap();
+        repo.upsert(&ProviderId::new("openai"), "OpenAI", true)
+            .await
+            .unwrap();
+        repo.upsert(&ProviderId::new("anthropic"), "Anthropic", false)
+            .await
+            .unwrap();
+        repo.upsert(&ProviderId::new("openai"), "OpenAI", false)
+            .await
+            .unwrap();
         let list = repo.list().await.unwrap();
         assert_eq!(list.len(), 2);
         // Depois do upsert com `configured: false`, OpenAI não está mais configurado.
-        let openai = list.iter().find(|c| c.provider_id.as_str() == "openai").unwrap();
+        let openai = list
+            .iter()
+            .find(|c| c.provider_id.as_str() == "openai")
+            .unwrap();
         assert!(!openai.configured);
     }
 
@@ -1175,7 +1218,9 @@ mod tests {
         let repo = ProviderConfigRepo::new(&db);
         let p = ProviderId::new("openai");
         repo.upsert(&p, "OpenAI", true).await.unwrap();
-        repo.record_last_error(&p, "401 chave inválida").await.unwrap();
+        repo.record_last_error(&p, "401 chave inválida")
+            .await
+            .unwrap();
         let before = repo.list().await.unwrap();
         let openai = before.iter().find(|c| c.provider_id == p).unwrap();
         assert_eq!(openai.last_error.as_deref(), Some("401 chave inválida"));

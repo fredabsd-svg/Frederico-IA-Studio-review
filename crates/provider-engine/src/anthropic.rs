@@ -23,8 +23,8 @@ use secrecy::ExposeSecret;
 use crate::parser::sse_stream;
 use crate::provider::{AdapterCapabilities, CostModel, ProviderAdapter, RunHandle};
 use crate::types::{
-    ChatMessage, ChatRequest, ChatResponse, ProviderError, ProviderErrorKind, Role,
-    StopReason, StreamEvent, Usage,
+    ChatMessage, ChatRequest, ChatResponse, ProviderError, ProviderErrorKind, Role, StopReason,
+    StreamEvent, Usage,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -89,10 +89,7 @@ impl ProviderAdapter for AnthropicAdapter {
         CostModel::default()
     }
 
-    async fn complete(
-        &self,
-        request: ChatRequest,
-    ) -> Result<ChatResponse, ProviderError> {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let key = self.fetch_credential().await?;
         let url = format!("{}/messages", self.base_url);
         let body = build_request_body(&request, /* stream = */ false);
@@ -155,10 +152,8 @@ impl ProviderAdapter for AnthropicAdapter {
             .get("usage")
             .map(|u| Usage {
                 prompt_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                completion_tokens: u
-                    .get("output_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
+                completion_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+                    as u32,
             })
             .unwrap_or_default();
         Ok(ChatResponse {
@@ -233,15 +228,13 @@ impl ProviderAdapter for AnthropicAdapter {
                 Ok(raw) => {
                     // Anthropic usa `event: content_block_delta` para deltas.
                     // Mapeamos por event_type quando presente.
-                    let event_kind = raw
-                        .event_type
-                        .as_deref()
-                        .unwrap_or("message")
-                        .to_string();
+                    let event_kind = raw.event_type.as_deref().unwrap_or("message").to_string();
                     let data = raw.data.clone();
                     translate_anthropic_event(&event_kind, &data)
                 }
-                Err(e) => Some(StreamEvent::Error(ProviderError::network(format!("SSE: {e}")))),
+                Err(e) => Some(StreamEvent::Error(ProviderError::network(format!(
+                    "SSE: {e}"
+                )))),
             }
         });
         Ok(Box::pin(event_stream))
@@ -253,7 +246,10 @@ impl ProviderAdapter for AnthropicAdapter {
 
     fn known_models(&self) -> Vec<(ModelId, &'static str)> {
         vec![
-            (ModelId::new("claude-3-5-sonnet-latest"), "Claude 3.5 Sonnet"),
+            (
+                ModelId::new("claude-3-5-sonnet-latest"),
+                "Claude 3.5 Sonnet",
+            ),
             (ModelId::new("claude-3-5-haiku-latest"), "Claude 3.5 Haiku"),
         ]
     }
@@ -326,7 +322,11 @@ fn translate_anthropic_event(event_kind: &str, data: &str) -> Option<StreamEvent
         "content_block_delta" => {
             let v: serde_json::Value = match serde_json::from_str(data) {
                 Ok(v) => v,
-                Err(e) => return Some(StreamEvent::Error(ProviderError::network(format!("SSE JSON: {e}")))),
+                Err(e) => {
+                    return Some(StreamEvent::Error(ProviderError::network(format!(
+                        "SSE JSON: {e}"
+                    ))))
+                }
             };
             let text = v
                 .get("delta")
@@ -344,7 +344,11 @@ fn translate_anthropic_event(event_kind: &str, data: &str) -> Option<StreamEvent
         "message_delta" => {
             let v: serde_json::Value = match serde_json::from_str(data) {
                 Ok(v) => v,
-                Err(e) => return Some(StreamEvent::Error(ProviderError::network(format!("SSE JSON: {e}")))),
+                Err(e) => {
+                    return Some(StreamEvent::Error(ProviderError::network(format!(
+                        "SSE JSON: {e}"
+                    ))))
+                }
             };
             let stop = v
                 .get("delta")
@@ -359,8 +363,14 @@ fn translate_anthropic_event(event_kind: &str, data: &str) -> Option<StreamEvent
                 .unwrap_or(StopReason::Stop);
             // Também pode trazer usage em message_delta.usage.
             if let Some(usage) = v.get("usage") {
-                let prompt = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let completion = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let prompt = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let completion = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
                 // Emite Usage seguido de Done. O orquestrador da
                 // Leva 3 sabe lidar com Usage fora de ordem.
                 return Some(StreamEvent::Usage {

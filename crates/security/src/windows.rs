@@ -100,20 +100,11 @@ fn target_name_for(provider: &ProviderId) -> Vec<u16> {
 
 #[async_trait]
 impl CredentialStore for WindowsCredentialStore {
-    async fn get(
-        &self,
-        provider: &ProviderId,
-    ) -> Result<Option<SecretString>, SecurityError> {
+    async fn get(&self, provider: &ProviderId) -> Result<Option<SecretString>, SecurityError> {
         let target = target_name_for(provider);
         let mut cred_ptr: *mut CREDENTIALW = std::ptr::null_mut();
-        let result = unsafe {
-            CredReadW(
-                PCWSTR(target.as_ptr()),
-                CRED_TYPE_GENERIC,
-                0,
-                &mut cred_ptr,
-            )
-        };
+        let result =
+            unsafe { CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0, &mut cred_ptr) };
         match result {
             Ok(()) => {
                 if cred_ptr.is_null() {
@@ -140,11 +131,7 @@ impl CredentialStore for WindowsCredentialStore {
         }
     }
 
-    async fn set(
-        &self,
-        provider: &ProviderId,
-        value: &SecretString,
-    ) -> Result<(), SecurityError> {
+    async fn set(&self, provider: &ProviderId, value: &SecretString) -> Result<(), SecurityError> {
         let target = target_name_for(provider);
         let secret = value.expose_secret();
         let blob = secret.as_bytes();
@@ -178,9 +165,7 @@ impl CredentialStore for WindowsCredentialStore {
 
     async fn delete(&self, provider: &ProviderId) -> Result<(), SecurityError> {
         let target = target_name_for(provider);
-        let result = unsafe {
-            CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0)
-        };
+        let result = unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0) };
         match result {
             Ok(()) => Ok(()),
             Err(e) => {

@@ -26,9 +26,7 @@ use std::time::Duration;
 
 use frederico_core::{ModelId, ProviderId};
 use frederico_provider_engine::provider::ProviderAdapter;
-use frederico_provider_engine::types::{
-    ChatMessage, ChatRequest, Role, StopReason, StreamEvent,
-};
+use frederico_provider_engine::types::{ChatMessage, ChatRequest, Role, StopReason, StreamEvent};
 use tokio::time::timeout;
 
 const OPENAI_BASE: &str = "https://api.openai.com/v1";

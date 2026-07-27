@@ -44,11 +44,13 @@ pub mod sanitize;
 pub mod types;
 
 pub use event_sink::{EventSink, NoopEventSink, RecordingEventSink};
-pub use orchestrator::{error_to_view, ChatOrchestrator, OrchestratorError, OrchestratorResult, ProviderErrorView};
+pub use orchestrator::{
+    error_to_view, ChatOrchestrator, OrchestratorError, OrchestratorResult, ProviderErrorView,
+};
 pub use provider::{AdapterCapabilities, CostModel, ProviderAdapter, RunHandle};
 pub use provider_map::ProviderMap;
 pub use run_registry::RunRegistry;
 pub use types::{
-    ChatMessage, ChatRequest, ChatResponse, ProviderError, ProviderErrorKind, Role,
-    StopReason, StreamEvent, ToolDescriptor,
+    ChatMessage, ChatRequest, ChatResponse, ProviderError, ProviderErrorKind, Role, StopReason,
+    StreamEvent, ToolDescriptor,
 };

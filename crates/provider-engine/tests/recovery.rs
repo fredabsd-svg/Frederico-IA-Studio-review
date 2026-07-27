@@ -36,7 +36,9 @@ use frederico_provider_engine::run_registry::RunRegistry;
 use frederico_provider_engine::types::StreamEvent;
 use frederico_security::fake::FakeClock;
 use frederico_security::Clock;
-use frederico_storage::{ConversationRepo, Database, MessageEventRepo, MessageRepo, RunRepo, RunStatus};
+use frederico_storage::{
+    ConversationRepo, Database, MessageEventRepo, MessageRepo, RunRepo, RunStatus,
+};
 
 fn tempdir() -> PathBuf {
     let base = std::env::temp_dir();
@@ -163,21 +165,12 @@ async fn journal_persists_events_across_orchestrator_drop() {
         journal_b.len()
     );
 
-    let deltas_a = journal_a
-        .iter()
-        .filter(|e| e.kind == "delta")
-        .count();
-    let deltas_b = journal_b
-        .iter()
-        .filter(|e| e.kind == "delta")
-        .count();
+    let deltas_a = journal_a.iter().filter(|e| e.kind == "delta").count();
+    let deltas_b = journal_b.iter().filter(|e| e.kind == "delta").count();
     assert_eq!(deltas_a, 5, "esperado 5 deltas no journal A");
     assert_eq!(deltas_b, 5, "esperado 5 deltas no journal B após recovery");
 
-    let dones = journal_b
-        .iter()
-        .filter(|e| e.kind == "done")
-        .count();
+    let dones = journal_b.iter().filter(|e| e.kind == "done").count();
     assert!(dones >= 1, "journal B sem Done: {journal_b:?}");
 }
 
@@ -193,7 +186,11 @@ async fn cancel_idempotent_and_status_persists() {
 
     let db_a = Arc::new(Database::open(&db_path).await.expect("abre db A"));
     let conv = ConversationRepo::new(&db_a)
-        .create(&ProviderId::new("simulated"), &ModelId::new("fake-model-v1"), None)
+        .create(
+            &ProviderId::new("simulated"),
+            &ModelId::new("fake-model-v1"),
+            None,
+        )
         .await
         .expect("cria conversa");
 

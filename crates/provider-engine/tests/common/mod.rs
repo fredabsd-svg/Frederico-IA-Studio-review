@@ -53,10 +53,7 @@ pub fn require_env(name: &str) -> Option<String> {
 /// `with_credentials` (que exige `&'static str`). Como o adapter
 /// só lê a chave na hora de fazer a request, fazer `set` no
 /// `block_on` antes de construir o adapter é seguro.
-pub fn openai_adapter_or_skip(
-    name: &str,
-    base_url: &str,
-) -> Option<OpenAiCompatAdapter> {
+pub fn openai_adapter_or_skip(name: &str, base_url: &str) -> Option<OpenAiCompatAdapter> {
     let key = require_env(name)?;
     let provider_id_str = provider_id_for_base(base_url);
     let provider_id = ProviderId::new(provider_id_str);

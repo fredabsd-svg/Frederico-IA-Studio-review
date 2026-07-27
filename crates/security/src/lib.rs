@@ -149,8 +149,16 @@ mod tests {
             (ProviderId::new("openai"), "sk-fake-openai"),
             (ProviderId::new("anthropic"), "sk-ant-fake"),
         ]);
-        let openai = creds.get(&ProviderId::new("openai")).await.unwrap().unwrap();
-        let anth = creds.get(&ProviderId::new("anthropic")).await.unwrap().unwrap();
+        let openai = creds
+            .get(&ProviderId::new("openai"))
+            .await
+            .unwrap()
+            .unwrap();
+        let anth = creds
+            .get(&ProviderId::new("anthropic"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(openai.expose_secret(), "sk-fake-openai");
         assert_eq!(anth.expose_secret(), "sk-ant-fake");
     }

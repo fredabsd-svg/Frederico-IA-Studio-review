@@ -72,8 +72,8 @@ fn blake3_hash(bytes: &[u8]) -> String {
     //
     // Não, melhor não — o usuário disse BLAKE3. Vamos colocar como
     // TODO Etapa 3 e usar um hash simples por enquanto.
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     bytes.hash(&mut h);
     format!("fnv64:{:016x}", h.finish())
