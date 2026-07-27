@@ -1,0 +1,18 @@
+[package]
+name = "frederico-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+async-trait = { workspace = true }
+frederico-core = { workspace = true }
+frederico-storage = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

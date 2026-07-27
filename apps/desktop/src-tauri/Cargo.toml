@@ -1,0 +1,30 @@
+[package]
+name = "frederico-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "frederico-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+frederico-core = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-diagnostics = { workspace = true }
+frederico-security = { workspace = true }
+frederico-shared-contracts = { workspace = true }
+tokio = { workspace = true }
+directories = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

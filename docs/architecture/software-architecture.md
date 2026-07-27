@@ -1,8 +1,17 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-27
 Fase correspondente: 1
 -->
+
+> Última verificação: 2026-07-27. Reflete a Fase 1 (vertical fino, fim a
+> fim) com monorepo criado, crates do núcleo `core`/`storage`/
+> `diagnostics`/`security`, casca Tauri + React, IPC e migração SQLite
+> inicial. As seções "Crates previstos" e "Camada de serviços do
+> frontend" estão refletidas em código (`crates/*` e
+> `apps/desktop/src/services/`). Itens ainda não cobertos (provider
+> engine, agent engine, tool registry, subagentes, document engine)
+> seguem como "especificado" e entrarão nas fases 2-7.
 
 # Arquitetura de Software
 

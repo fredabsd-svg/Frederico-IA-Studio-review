@@ -1,8 +1,15 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-27
 Fase correspondente: 1
 -->
+
+> Última verificação: 2026-07-27. Reflete a Fase 1 — casca Tauri com
+> comando IPC genérico (`IpcRequest`/`IpcResponse` em
+> `packages/shared-contracts/`) e operações `ping` e `get_app_info`.
+> Workers (`document-worker`, `sandbox-runner`, `browser-worker`,
+> `runtime-manager`), named pipes, manifesto, handshake e healthcheck
+> ativo continuam especificados e entram nas fases 5-7.
 
 # Arquitetura de Processos
 

@@ -22,8 +22,8 @@ Promover uma fase de `em andamento` para `concluída` exige, simultaneamente:
 
 | Fase | Nome | Estado | Evidência | Pendências |
 |------|------|--------|-----------|------------|
-| 0 | Fundação documental | em andamento | este `status.md`; commits do PR de fundação | — |
-| 1 | Fundação (Tauri + Rust + SQLite) | não iniciada | — | depende da Fase 0 fechar |
+| 0 | Fundação documental | concluída | este `status.md`; PR de fundação documental; 9 specs em `docs/architecture/`; 4 ADRs em `docs/decisions/`; `REGRAS-DO-PROJETO.md` com §1.13 | — |
+| 1 | Fundação (Tauri + Rust + SQLite) | concluída | suíte workspace 15/15 verde (`cargo test`); `cargo clippy --workspace -- -D warnings` limpo; `npm run build` verde; `scripts/check-core-purity.ps1` OK; `cargo tauri build` produz `target/release/bundle/nsis/Frederico IA Studio_0.1.0_x64-setup.exe` (3,0 MB) | — |
 | 2 | Chat e provedores | não iniciada | — | depende da Fase 1 |
 | 3 | Motor de execução e ferramentas | não iniciada | — | depende da Fase 2 |
 | 4 | Memória e continuidade | não iniciada | — | depende da Fase 3 |

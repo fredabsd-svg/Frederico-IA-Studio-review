@@ -1,63 +1,67 @@
-# Rust
+# --- Rust / Cargo ---
 /target
+**/target
 **/*.rs.bk
-Cargo.lock.bak
-**/Cargo.lock.orig
+**/Cargo.lock.bak
+# Cargo.lock do workspace raiz DEVE ser versionado (workspace com binário;
+# garante build reprodutível do instalador). Libs puras ignorariam, mas
+# temos apps/desktop/src-tauri, então versiona.
 
-# Node (Tauri/React/Vite)
+# --- Node / Vite / npm ---
 node_modules/
+**/node_modules/
 dist/
-**/.vite/
+**/dist/
+.npm/
+.yarn/
 .pnpm-store/
+.pnp.*
 
-# Tauri
-/src-tauri/target/
-/src-tauri/gen/
-/apps/desktop/src-tauri/target/
-/apps/desktop/src-tauri/gen/
+# --- Tauri ---
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
 
-# IDE
-.idea/
+# --- Bancos de dados de runtime ---
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+storage/test-dbs/
+
+# --- Logs / cobertura ---
+*.log
+coverage/
+**/coverage/
+
+# --- IDE / editores ---
 .vscode/
+.idea/
 *.swp
 *.swo
-*~
 .DS_Store
-
-# Windows
 Thumbs.db
 desktop.ini
-ehthumbs.db
-ehthumbs_vista.db
-$RECYCLE.BIN/
 
-# OneDrive
+# --- OneDrive (artefatos locais) ---
 *.tmp
-OneDrive*.tmp
-~$*.docx
-~$*.xlsx
+*.bak
 
-# Logs e runtime
-*.log
-logs/
-
-# Variáveis de ambiente e segredos
+# --- Variáveis de ambiente ---
 .env
 .env.local
 .env.*.local
-*.pem
-*.key
+**/.env
+**/.env.local
 
-# Cobertura e artefatos de teste
-coverage/
-*.lcov
-*.profraw
-*.profdata
-
-# Python (document-worker, build local)
+# --- Python (vai entrar na Fase 5, mas já preparado) ---
 __pycache__/
 *.py[cod]
 *$py.class
 .venv/
 venv/
-.python-version
+
+# --- Sistema de arquivos do Windows ---
+$RECYCLE.BIN/
+
+# --- Builds do instalador (gerados pelo tauri build) ---
+apps/desktop/src-tauri/target/release/bundle/
