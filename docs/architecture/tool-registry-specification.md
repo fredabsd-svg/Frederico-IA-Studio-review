@@ -1,0 +1,160 @@
+<!--
+Estado: especificado
+Verificado contra o código em: —
+Fase correspondente: 3
+-->
+
+# Especificação do Tool Registry
+
+O Tool Registry é a **fonte única da verdade** sobre ferramentas (`PROMPT MESTRE` §7.2). A lista de ferramentas exibida na UI, os manifestos enviados ao modelo, as permissões, as execuções e os testes derivam **deste** registro. Listas manuais duplicadas em outros arquivos são defeito (ver `REGRAS §1.9`).
+
+## Contrato do manifesto (`PROMPT MESTRE` §7.1)
+
+```rust
+struct ToolManifest {
+    id: ToolId,
+    namespace: String,           // "files" | "exec" | "web" | "github" | "memory" | "docs" | "brasil"
+    version: SemVer,
+    display_name: String,
+    description: String,         // texto que o modelo lê
+
+    input_schema: JsonSchema,    // validado por biblioteca canônica (jsonschema crate)
+    output_schema: JsonSchema,
+
+    category: ToolCategory,
+    capabilities: Vec<String>,   // livre, ex: "fs.read", "pdf.parse"
+
+    risk_level: RiskLevel,       // safe | moderate | high | critical
+
+    requires_network: bool,
+    requires_file_read: bool,
+    requires_file_write: bool,
+    requires_process_execution: bool,
+    requires_user_approval: bool,
+
+    supported_platforms: Vec<Platform>,
+    supported_provider_modes: Vec<ProviderMode>,  // "native-tools" | "text-emulation"
+
+    timeout_ms: u32,
+    cancellable: bool,
+
+    availability: Availability,  // available | disabled | missing | unhealthy
+    health_message: Option<String>,
+
+    worker_id: Option<WorkerId>, // None = executa no app principal
+}
+```
+
+O **schema JSON** é validado por biblioteca canônica em Rust (`jsonschema` crate) e em TS (`ajv`). Versão de schema é parte do contrato.
+
+## Interseção de inventário por execução (`PROMPT MESTRE` §7.4)
+
+Antes de chamar o modelo, o sistema calcula a interseção abaixo. **Somente o resultado** é serializado e enviado ao modelo como `tools:`.
+
+```text
+ferramentas registradas
+∩ ferramentas disponíveis (availability == available)
+∩ ferramentas saudáveis (health == ok)
+∩ ferramentas compatíveis com o modelo (provider_mode ∈ supported)
+∩ ferramentas autorizadas para o assistente
+∩ ferramentas autorizadas para o projeto
+∩ ferramentas autorizadas para a execução
+∩ ferramentas autorizadas pelo usuário
+```
+
+Em Rust:
+
+```rust
+fn effective_tools(registry: &ToolRegistry, run: &Run) -> Vec<ToolManifest> {
+    registry.all()
+        .into_iter()
+        .filter(|t| t.availability == Availability::Available)
+        .filter(|t| t.health == WorkerHealth::Ok)
+        .filter(|t| t.supported_provider_modes.contains(&run.provider_mode))
+        .filter(|t| run.assistant.allowed_tools.contains(&t.id))
+        .filter(|t| run.project.allowed_tools.contains(&t.id))
+        .filter(|t| run.allowed_tools.contains(&t.id))
+        .filter(|t| user_consents(run.user, t))
+        .cloned()
+        .collect()
+}
+```
+
+## Adaptação por provedor (`PROMPT MESTRE` §7.6)
+
+Cada provedor tem um `ProviderToolAdapter` que:
+
+- converte `ToolManifest` no formato do provedor (OpenAI `tools`, Anthropic `tools`, Gemini `functionDeclarations`, etc.);
+- normaliza `tool_call_id` para um formato interno comum;
+- detecta chamadas incompletas (truncamento, schema inválido);
+- detecta `finish_reason` e erros específicos.
+
+A regra: **condições `if (provider == "x")` espalhadas pelo código são defeito**. Toda adaptação vive no adapter.
+
+## Validação antes de execução (`PROMPT MESTRE` §7.7)
+
+Para cada `tool_call` emitido pelo modelo, em ordem:
+
+1. ID existe no registro?
+2. Versão bate com a do manifesto desta execução?
+3. Está `available` e `healthy` **neste momento**?
+4. Foi essa ferramenta que o modelo viu no inventário desta execução? (defesa contra manifest injection)
+5. Permissões OK? (ver [`tool-permission-model.md`](./tool-permission-model.md))
+6. Argumentos validam contra `input_schema`?
+7. Caminhos normalizados e dentro do jail?
+8. Limites aplicados (`timeoutMs`, tamanho máximo de output)?
+9. Aprovação do usuário necessária e obtida?
+10. Entrada de auditoria registrada.
+
+Falha em qualquer etapa produz erro estruturado `TOOL_NOT_FOUND` (ou código equivalente) **sem fallback silencioso** (`PROMPT MESTRE` §7.7 final, §7.2).
+
+## Catálogo inicial (`PROMPT MESTRE` §7.11)
+
+Cada ferramenta nasce com manifesto, testes (do §7.10) e permissões próprias:
+
+| Ferramenta | Função | Notas obrigatórias |
+|---|---|---|
+| `files.read` / `files.write` / `files.edit` / `files.list` | Arquivos do workspace | Jail de caminhos; leitura paginada com limite de contexto |
+| `exec.python` / `exec.node` | Código nos runtimes embutidos | Via `sandbox-runner`; descrição enviada ao modelo lista libs **geradas na build** a partir do manifesto de pacotes |
+| `exec.shell` | Comandos de terminal | `risk_level: high`; allowlist executa direto, resto exige aprovação com comando exato, denylist nunca executa |
+| `web.search` / `web.open` | Busca e leitura de páginas | Via `browser-worker`; SSRF e IP privado bloqueados |
+| `brasil.cnpj` | Consulta cadastral de CNPJ | BrasilAPI + provedor alternativo; nunca inventar dados não retornados |
+| `github.clone` / `github.commit` / `github.push` / `github.pull_request` | Integração GitHub | Git portátil embutido; token via credenciais protegidas; escrita exige aprovação |
+| `memory.save` / `memory.search` | Memória | Escrita segue política do `PROMPT MESTRE` §10.9; nunca automática por mensagem |
+| `docs.generate` | Geração documental | Recebe `DocumentSpec` e delega ao kit correto |
+| `docs.inspect` | Revisão de artefato | Abre o arquivo real e devolve estrutura e conteúdo |
+
+Ferramentas fora deste catálogo só entram com manifesto completo, testes do §7.10 e atualização do painel.
+
+## Invariantes
+
+- **Ferramenta fora do registro nunca executa.** Não há caminho de código que invoque uma tool sem passar pelo validador. *Teste: monkey-patch do executor para chamar uma `ToolId` inventada produz `TOOL_NOT_FOUND`.*
+- **Modelo recebe apenas a interseção**, nunca o registro completo. *Teste: capturar a mensagem enviada ao provedor e provar que ela contém exatamente as ferramentas da interseção.*
+- **Inventário é recalculado a cada execução**, não cacheado cross-execução.
+- **Mudança de inventário durante a execução** (worker morre, ferramenta vira `unhealthy`) **invalida `tool_call`s pendentes** daquele tipo com `TOOL_UNAVAILABLE`.
+- **Resultado volta ao mesmo modelo e à mesma execução** que invocou (`PROMPT MESTRE` §7.8). O `ToolResult` carrega `tool_call_id` que casa com a invocação.
+- **Subagente recebe apenas ferramentas autorizadas para ele** (interseção adicional; ver [`tool-permission-model.md`](./tool-permission-model.md)).
+- **Compatibilidade por modelo é checada dinamicamente**, não confiada em flag estática. Modelos sem suporte real a tool calling são marcados como tal e a UI bloqueia fluxos incompatíveis (`PROMPT MESTRE` §7.5).
+
+## Não-objetivos
+
+- Ferramentas definidas pelo usuário (DSL) na v1.
+- Emulação textual de tool calling como caminho normal — apenas experimental, atrás de flag e cobertura de teste (`PROMPT MESTRE` §7.5).
+- Fallback para ferramenta "parecida" quando a chamada falha — `TOOL_NOT_FOUND` é a resposta.
+- Plugins carregados dinamicamente de fontes externas.
+- Auto-geração de manifesto a partir de código de ferramenta — geramos **a partir de arquivos de manifesto versionados**, validados por schema.
+
+## Decisões
+
+Nenhuma nova nesta versão. Decisões relacionadas:
+
+- [`security-threat-model.md`](./security-threat-model.md) — ameaças ao registro.
+- [`tool-permission-model.md`](./tool-permission-model.md) — permissões hierárquicas.
+
+## Referências
+
+- `PROMPT MESTRE` §7 (inventário), §7.1-§7.11
+- [`tool-permission-model.md`](./tool-permission-model.md)
+- [`process-architecture.md`](./process-architecture.md)
+- [`security-threat-model.md`](./security-threat-model.md)
+- [`testing-strategy.md`](./testing-strategy.md) — testes obrigatórios do §7.10

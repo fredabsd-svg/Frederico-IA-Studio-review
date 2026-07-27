@@ -1,0 +1,63 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+**/Cargo.lock.orig
+
+# Node (Tauri/React/Vite)
+node_modules/
+dist/
+**/.vite/
+.pnpm-store/
+
+# Tauri
+/src-tauri/target/
+/src-tauri/gen/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+$RECYCLE.BIN/
+
+# OneDrive
+*.tmp
+OneDrive*.tmp
+~$*.docx
+~$*.xlsx
+
+# Logs e runtime
+*.log
+logs/
+
+# Variáveis de ambiente e segredos
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Cobertura e artefatos de teste
+coverage/
+*.lcov
+*.profraw
+*.profdata
+
+# Python (document-worker, build local)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version
