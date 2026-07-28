@@ -27,7 +27,14 @@ export type AppOp =
   | { kind: "conversation_delete"; id: string }
   | { kind: "message_send"; conversation_id: string; content: string }
   | { kind: "run_get_events"; message_id: string; since_seq: number }
-  | { kind: "run_cancel"; run_id: string };
+  | { kind: "run_cancel"; run_id: string }
+  // --- Etapa 6: fila de aprovação de tool calls ---
+  | { kind: "approval_list" }
+  | {
+      kind: "approval_respond";
+      approval_id: string;
+      decision: { approved: boolean; scope?: "Once" | "Run" | "Project"; reason?: string };
+    };
 
 export interface AppInfo {
   version: string;
@@ -150,4 +157,25 @@ export interface RunStatusEvent {
     | "failed"
     | "cancelled"
     | "timeout";
+}
+
+// --- Etapa 6: tipos da fila de aprovação ---
+
+/** View de uma entry da fila de aprovação (espelha `ApprovalEntryView` do Rust). */
+export interface ApprovalEntryView {
+  id: string;
+  run_id: string;
+  tool_id: string;
+  /** `ApprovalRequest` serializado (JSON string com a request original). */
+  request_json: string;
+  created_at: string;
+}
+
+/** Decisão do usuário (espelha `ApprovalDecision` do tool-registry). */
+export interface ApprovalDecision {
+  approved: boolean;
+  /** Escopo da aprovação: `Once` (esta chamada), `Run` (este run), `Project` (todos os runs do projeto). */
+  scope?: "Once" | "Run" | "Project";
+  /** Razão da decisão (opcional; mostrada na auditoria). */
+  reason?: string;
 }

@@ -441,3 +441,176 @@ td button {
 .link-danger {
   color: #c66;
 }
+
+
+/* --- Etapa 6.2: modal de aprovação de tool calls --- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.modal-header h2 code {
+  background: var(--bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.95em;
+}
+
+.modal-close {
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+
+.modal-close:hover {
+  color: var(--fg);
+}
+
+.modal-body {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.approval-modal .approval-context {
+  margin: 0 0 0.75rem;
+  color: var(--fg-dim);
+}
+
+.approval-modal details {
+  margin: 0.5rem 0;
+}
+
+.approval-modal summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  padding: 0.25rem 0;
+}
+
+.approval-args {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.approval-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--fg-dim);
+}
+
+.approval-form select,
+.approval-form input[type="text"] {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.badge {
+  background: var(--accent);
+  color: #1a1a1a;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge-warn {
+  background: #c66;
+  color: #fff;
+}
+
+.btn-danger {
+  background: #c66;
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-danger:hover { background: #d77; }
+.btn-danger:disabled { background: var(--fg-dim); cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  color: #1a1a1a;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-primary:disabled { background: var(--fg-dim); cursor: not-allowed; }

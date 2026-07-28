@@ -1,5 +1,6 @@
 export * from "./contracts";
 export * from "./api";
+export * from "./approvals";
 export * from "./providers";
 export * from "./catalog";
 export * from "./conversations";
