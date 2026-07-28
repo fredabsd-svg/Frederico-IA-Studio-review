@@ -1077,10 +1077,12 @@ dependencies = [
 name = "frederico-desktop"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "directories",
  "frederico-core",
  "frederico-diagnostics",
  "frederico-execution-engine",
+ "frederico-memory",
  "frederico-model-catalog",
  "frederico-provider-engine",
  "frederico-security",

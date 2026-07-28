@@ -111,6 +111,23 @@ impl NewMemoryInput {
     }
 }
 
+/// Resultado de [`MemoryRepo::apply_correction`]. Devolvido pro
+/// caller (UI da Etapa 5 ou IPC da casca Tauri) pra mostrar
+/// "essa memória foi substituída por X há 3 dias" com link
+/// pra nova (`ADR-0014 §2`).
+#[derive(Debug, Clone)]
+pub struct CorrectionResult {
+    /// ID da memória antiga (a que foi substituída).
+    pub old_id: MemoryId,
+    /// Nova memória persistida. Já tem `pending_review = false`
+    /// e `user_confirmed = true` (correção é confirmação por
+    /// definição — `ADR-0014 §2`).
+    pub new_record: MemoryRecord,
+    /// `superseded_at` da antiga. Mesmo `now` que o caller
+    /// passou — útil pra calcular "há 3 dias" na UI.
+    pub superseded_at: DateTime<Utc>,
+}
+
 /// Repositório de memórias. Acessa o pool do [`Database`].
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRepo<'a> {
@@ -500,6 +517,169 @@ impl<'a> MemoryRepo<'a> {
             // erro de "id não existe".
         }
         Ok(())
+    }
+
+    /// Fluxo completo de **correção** (Etapa 4 da Fase 4,
+    /// `ADR-0014 §2`): insere a memória substituta **e** marca
+    /// a antiga como superseded, atomicamente (transação
+    /// `BEGIN IMMEDIATE`).
+    ///
+    /// Cenário típico: o usuário diz "na verdade eu uso
+    /// Postgres, não MySQL". A UI chama `apply_correction` com:
+    /// - `old_id` = id da memória "uso MySQL"
+    /// - `replacement` = `NewMemoryInput` com `type = Correction`
+    ///   (ou `Preference` se for um gosto) e o conteúdo
+    ///   corrigido.
+    ///
+    /// O método:
+    /// 1. Valida o `replacement` (rejeita `origin =
+    ///    ExternalContent` em modo auto-captured, exige
+    ///    `scope_id` pra escopo específico, etc).
+    /// 2. Abre transação `BEGIN IMMEDIATE` (write lock — Etapa
+    ///    4 Etapa 5.x.3 do execution-engine provou que vale
+    ///    bloquear antes do `SELECT`).
+    /// 3. Insere a nova memória com `pending_review = false`
+    ///    (correção é `user_confirmed` por definição).
+    /// 4. UPDATE na antiga via `mark_superseded` (idempotente —
+    ///    se já estava superseded, é no-op).
+    /// 5. Commit.
+    ///
+    /// **Por que transação:** se a inserção da nova succeeds
+    /// mas o `mark_superseded` falha (DB busy, crash), o
+    /// usuário vê duas memórias "corretas" — a antiga e a
+    /// nova. Pior cenário. A transação garante que ou tudo
+    /// vira, ou nada vira.
+    ///
+    /// Devolve [`CorrectionResult`] com o `old_id`, a nova
+    /// `MemoryRecord` e o `superseded_at` (útil pro painel da
+    /// Etapa 5 mostrar "essa memória foi substituída por X
+    /// há 3 dias").
+    pub async fn apply_correction(
+        &self,
+        old_id: &MemoryId,
+        replacement: NewMemoryInput,
+        now: DateTime<Utc>,
+    ) -> MemoryResult<CorrectionResult> {
+        // (1) Valida o replacement ANTES de abrir transação
+        // (falhar cedo é mais barato e devolve mensagem útil).
+        // Bypassamos o `validate` do `insert_auto_captured`
+        // porque a correção é sempre `user_confirmed` — pode
+        // ter `origin = ExternalContent` se a memória antiga
+        // veio de tool_output e o usuário tá corrigindo o
+        // registro.
+        replacement.validate()?;
+        let mut replacement = replacement;
+        replacement.user_confirmed = true;
+
+        let new_id = MemoryId::new();
+        let now_str = now.to_rfc3339();
+        let expires_at_str = replacement.expires_at.map(|d| d.to_rfc3339());
+
+        // (2) BEGIN IMMEDIATE — write lock desde o início
+        // (mesma estratégia do `set_state_and_heartbeat_tx`
+        // do execution-engine, Etapa 5.x.3).
+        let mut tx = self.pool.begin().await?;
+
+        // (3) Insere a nova memória via SQL direta (não
+        // chamamos `insert_internal` porque ele cria um
+        // MemoryId novo e usa `Utc::now()` — queremos o
+        // `new_id` e o `now` que o caller passou pra
+        // garantir consistência temporal com o
+        // `mark_superseded`).
+        sqlx::query(
+            "INSERT INTO memory_records (
+                id, scope_type, scope_id, type, content, origin,
+                source_type, source_id, confidence, importance,
+                embedding_status, created_at, updated_at, expires_at,
+                user_confirmed, user_pinned, active, pending_review
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10,
+                'pending', ?11, ?11, ?12,
+                1, ?13, 1, 0
+             )",
+        )
+        .bind(new_id.0.to_string())
+        .bind(replacement.scope_type.as_str())
+        .bind(&replacement.scope_id)
+        .bind(replacement.type_.as_str())
+        .bind(&replacement.content)
+        .bind(replacement.origin.as_str())
+        .bind(replacement.source_type.as_str())
+        .bind(&replacement.source_id)
+        .bind(replacement.confidence as f64)
+        .bind(replacement.importance as f64)
+        .bind(&now_str)
+        .bind(&expires_at_str)
+        .bind(if replacement.user_pinned {
+            1_i64
+        } else {
+            0_i64
+        })
+        .execute(&mut *tx)
+        .await?;
+
+        // (4) Marca a antiga como superseded. Idempotente:
+        // se `old_id` já estava superseded, é no-op
+        // (`affected == 0`). A correção entra no histórico
+        // mesmo se o "old" já não era visível — isso
+        // preserva o audit trail (a Etapa 5 mostra "essa
+        // memória foi substituída por X" mesmo se a
+        // substituída já tinha sido superseded por outra).
+        let affected = sqlx::query(
+            "UPDATE memory_records
+             SET superseded_by = ?1, superseded_at = ?2, updated_at = ?2
+             WHERE id = ?3 AND superseded_by IS NULL",
+        )
+        .bind(new_id.0.to_string())
+        .bind(&now_str)
+        .bind(old_id.0.to_string())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        // (5) Commit. Se algo falhar entre (2) e aqui, o
+        // `Drop` da transação faz ROLLBACK automático.
+        tx.commit().await?;
+
+        let _ = affected; // silencioso — idempotência do mark
+
+        // (6) Materializa a `MemoryRecord` da nova (mesma
+        // forma que `insert_internal`). Não relemos do banco
+        // pra evitar 1 round-trip — os valores são
+        // determinísticos a partir do input.
+        let new_record = MemoryRecord {
+            id: new_id,
+            scope_type: replacement.scope_type,
+            scope_id: replacement.scope_id,
+            type_: replacement.type_,
+            content: replacement.content,
+            origin: replacement.origin,
+            source_type: replacement.source_type,
+            source_id: replacement.source_id,
+            confidence: replacement.confidence,
+            importance: replacement.importance,
+            embedding_status: EmbeddingStatus::Pending,
+            embedding_provider: None,
+            embedding_model: None,
+            embedding_dimensions: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: None,
+            expires_at: replacement.expires_at,
+            superseded_by: None,
+            superseded_at: None,
+            user_confirmed: true, // correção = user_confirmed por definição
+            user_pinned: replacement.user_pinned,
+            active: true,
+            pending_review: false,
+        };
+
+        Ok(CorrectionResult {
+            old_id: *old_id,
+            new_record,
+            superseded_at: now,
+        })
     }
 
     /// Deleta memórias expiradas ou soft-deletadas. Chamado

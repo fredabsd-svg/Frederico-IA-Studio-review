@@ -71,7 +71,7 @@ pub use embedding::{
 };
 pub use embedding_codec::{cosine_similarity, decode_embedding, encode_embedding};
 pub use error::MemoryError;
-pub use memory_repo::{MemoryRepo, NewMemoryInput};
+pub use memory_repo::{CorrectionResult, MemoryRepo, NewMemoryInput};
 pub use retriever::{HybridRetriever, LexicalRetriever, Retriever, RETRIEVER_BUDGET};
 pub use worker::{
     EmbeddingWorker, EmbeddingWorkerHandle, MemoryExtractionJob, MemoryExtractor,
