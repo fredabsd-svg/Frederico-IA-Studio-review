@@ -61,7 +61,10 @@ pub mod retriever;
 pub mod sanitize;
 pub mod worker;
 
-pub use classifier::{MemoryClassifier, NoopMemoryClassifier};
+pub use classifier::{
+    ClassifierError, CompletionProvider, CompletionRequest, LlmClassifierConfig,
+    LlmMemoryClassifier, MemoryClassifier, NoopCompletionProvider, NoopMemoryClassifier,
+};
 pub use config::{EvalGate, ScoringWeights};
 pub use embedding::{
     EmbeddingError, EmbeddingProvider, NoopEmbeddingAdapter, OpenRouterEmbeddingAdapter,
@@ -70,4 +73,7 @@ pub use embedding_codec::{cosine_similarity, decode_embedding, encode_embedding}
 pub use error::MemoryError;
 pub use memory_repo::{MemoryRepo, NewMemoryInput};
 pub use retriever::{HybridRetriever, LexicalRetriever, Retriever, RETRIEVER_BUDGET};
-pub use worker::{EmbeddingWorker, EmbeddingWorkerHandle};
+pub use worker::{
+    EmbeddingWorker, EmbeddingWorkerHandle, MemoryExtractionJob, MemoryExtractor,
+    MemoryExtractorHandle,
+};
