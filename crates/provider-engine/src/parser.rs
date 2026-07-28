@@ -214,6 +214,41 @@ pub fn openai_compat_translate(raw: RawSseEvent) -> Result<Option<StreamEvent>, 
             }));
         }
     }
+    // `delta.tool_calls` (Fase 3). O OpenAI envia o tool_call
+    // completo num único chunk (modo não-streaming) OU em deltas
+    // que o adapter agrega. A Etapa 4 trata o caso "completo em
+    // um chunk" — o caso "deltas" entra num hardeings.
+    if let Some(tool_calls) = delta
+        .and_then(|d| d.get("tool_calls"))
+        .and_then(|t| t.as_array())
+    {
+        for tc in tool_calls {
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let args = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}")
+                .to_string();
+            if !id.is_empty() && !name.is_empty() {
+                return Ok(Some(StreamEvent::ToolCall {
+                    id,
+                    name,
+                    arguments_json: args,
+                }));
+            }
+        }
+    }
     if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
         let stop_reason = match reason {
             "stop" => crate::types::StopReason::Stop,

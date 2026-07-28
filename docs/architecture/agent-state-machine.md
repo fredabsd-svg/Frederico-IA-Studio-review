@@ -1,8 +1,33 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
-Fase correspondente: 3
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-27
+Fase correspondente: 3 (Etapa 1)
 -->
+
+> Última verificação: 2026-07-27. Reflete a Etapa 1 da Fase 3 — crate
+> `frederico-agent-engine` com a enum `RunState` (22 variantes), a enum
+> `RunEventKind` (25 variantes: 20 estruturais + 5 globais), o
+> `RunEvent`, o `Budget`, a struct `Run` em memória, a tabela
+> `TRANSITIONS` (21 arestas estruturais) + `GLOBAL_TRANSITIONS` (5
+> arestas globais) e a função pura `apply_transition`. Suíte do crate
+> com 46 testes por par. A `Run` em memória é o tipo de domínio; o
+> registro persistido equivalente é `frederico_storage::Run`, estendido
+> pela migração `0003_runs_and_checkpoints.sql` com 9 colunas novas +
+> tabela `checkpoints` + view `runs_with_status` (mapeia os 22
+> estados nos 6 status da Fase 2). Etapas 2 (tool-registry), 3
+> (permissões), 4 (integração com executor), 5 (watchdog/recovery) e 6
+> (UI) ainda não começaram. Ver
+> [`docs/modules/agent-engine.md`](../modules/agent-engine.md) para o
+> detalhamento por eixo do template §1.4. ADR-0009 documenta a decisão
+> estrutural (crate novo + view para compatibilidade com Fase 2).
+
+**Alterado em relação ao plano original:** o preâmbulo original deste
+spec dizia "23 estados". A Etapa 1 da Fase 3 reconciliou: a enum
+`RunState` tem **22** variantes e o spec, o ADR-0009, o
+`RunState::COUNT` e a `CHECK` constraint do SQLite usam 22. A
+contagem literal de variantes no spec (22) sempre foi a verdade; o
+"23" do preâmbulo era um typo não detectado nas revisões anteriores.
+`REGRAS §1.13` cobra a nota; este parágrafo é ela.
 
 # Máquina de Estados do Agente
 

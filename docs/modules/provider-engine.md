@@ -52,6 +52,49 @@ Para adicionar um cenário novo:
 3. Linhas seguintes: cada uma é uma string JSON com o chunk SSE bruto (com `\n` escapado como `\\n`).
 4. Adicione um teste em `src/fake/transport.rs` (ou no adapter correspondente) que carrega o fixture e verifica os eventos parseados.
 
+## Etapa 4.1 — Anthropic tool_result + tool_call deltas em múltiplos chunks
+
+A Etapa 4.1 fecha 2 débitos técnicos do `provider-engine` que
+estavam em aberto desde a Etapa 4 (quando o `RunExecutor` começou
+a fechar o loop `tool_call`):
+
+**4.1.1 — `AnthropicAdapter` traduz `Role::Tool` em `content_block`
+`tool_result`.** O Anthropic não tem `role: "tool"` — a resposta
+de ferramenta é um content block
+`{"type": "tool_result", "tool_use_id": <call_id>, "content": <output>}`
+dentro de uma mensagem com `role: "user"`. O
+`AnthropicAdapter::build_request_body` agora detecta `Role::Tool`
+e gera essa estrutura; o `tool_call_id` da `ChatMessage` casa
+com o `tool_use_id` do Anthropic. Antes da Etapa 4.1, o
+`role_to_str` traduzia `Role::Tool` em `"user"` placeholder
+(ignorando o conteúdo) — o modelo Anthropic nunca recebia o
+resultado da ferramenta. Teste novo:
+`build_request_body_translates_tool_role_to_tool_result_block`.
+
+**4.1.2 — `OpenAiCompatAdapter` agrega tool_call deltas em
+múltiplos chunks.** A OpenAI (e provedores compat) envia o
+`tool_call` em 1+ chunks quando os argumentos são grandes: o
+primeiro traz `id` + `name` + `arguments: ""`; os seguintes
+trazem só `function.arguments` com pedacinhos do JSON; o
+`finish_reason: "tool_calls"` sinaliza o fim. O parser SSE
+(`openai_compat_translate`) é puro por chunk — não tinha
+estado entre chunks pra agregar. O novo módulo `accumulator`
+introduz `ToolCallDeltaAccumulator`: estrutura com
+`HashMap<u32, ToolCallPartial>` (indexada pelo `index` que o
+OpenAI atribui) que mantém estado entre chunks. O
+`OpenAiCompatAdapter::stream` foi refatorado pra usar
+`futures::stream::unfold` carregando o accumulator no estado
+(processa em série — não precisa de `Mutex`/`Arc`). O
+accumulator emite 1 `StreamEvent::ToolCall { id, name,
+arguments_json }` consolidado quando os deltas completam
+(heurística: arguments termina com `}`) OU quando o
+`finish_reason: "tool_calls"` chega (drena os partials
+restantes — caso comum onde o `finish_reason` chega antes do
+último delta de arguments). Testes novos: 3 no módulo
+`accumulator` (`single_chunk_with_complete_tool_call`,
+`multiple_chunks_accumulate_arguments`,
+`finish_reason_tool_calls_drains_remaining_partials`).
+
 ## O que não faz
 
 - **Execução de `tool_call`** (Fase 3). A enum `StreamEvent::ToolCall` é emitida e persistida, mas o motor não age.

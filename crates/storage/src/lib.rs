@@ -146,16 +146,42 @@ pub struct MessageEvent {
     pub created_at: String,
 }
 
-/// Persistência de um run.
+/// Persistência de um run. A coluna `status` (Fase 2) coexiste com
+/// `state` (Fase 3) — `state` é a verdade canônica (22 valores do
+/// `frederico-agent-engine::RunState`); `status` é o derivado
+/// projeta do pelo `view` `runs_with_status` (6 valores, mantido pra
+/// o `ChatOrchestrator` da Fase 2 e os testes E2E de recovery do
+/// Hardening 5). Ver ADR-0009.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub id: RunId,
     pub conversation_id: ConversationId,
     pub message_id: MessageId,
+    /// Status derivado (6 valores, populado pela Fase 2 via `set_status`
+    /// ou lido da view `runs_with_status`).
     pub status: String,
+    /// Estado canônico do `Run` (22 valores do
+    /// `frederico-agent-engine::RunState`, populado pela Etapa 4).
+    pub state: String,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub cancellation_requested_at: Option<String>,
+    /// Iteração atual do loop `calling_model` → `continuing_model`.
+    pub current_step: u32,
+    /// `Budget` serializado em JSON.
+    pub budget_json: String,
+    /// `Vec<ToolId>` (Etapa 2) serializado em JSON.
+    pub allowed_tools_json: String,
+    /// Última vez que o `Run` demonstrou estar vivo.
+    pub last_heartbeat_at: String,
+    /// Próximo `seq` a usar no journal (monotônico por `run_id`).
+    pub last_event_seq: u64,
+    /// Provedor que está executando este `Run`.
+    pub provider_id: String,
+    /// Modelo dentro do provedor.
+    pub model_id: String,
+    /// Assistente (Fase 3 Etapa 6). Nullable até lá.
+    pub assistant_id: Option<String>,
 }
 
 /// Configuração pública de um provedor.
@@ -295,10 +321,19 @@ type RunRow = (
     String,         // id
     String,         // conversation_id
     String,         // message_id
-    String,         // status
+    String,         // status (Fase 2, derivado)
+    String,         // state (Fase 3, canônico)
     String,         // started_at
     Option<String>, // finished_at
     Option<String>, // cancellation_requested_at
+    i64,            // current_step
+    String,         // budget_json
+    String,         // allowed_tools_json
+    String,         // last_heartbeat_at
+    i64,            // last_event_seq
+    String,         // provider_id
+    String,         // model_id
+    Option<String>, // assistant_id
 );
 
 /// Row bruta de `provider_configs`. Tipo de domínio: [`ProviderConfig`].
@@ -771,6 +806,11 @@ impl<'a> RunRepo<'a> {
     ) -> StorageResult<Run> {
         let id = RunId::new();
         let now = Utc::now().to_rfc3339();
+        // O schema da Fase 3 (0003) preenche `state`, `current_step`,
+        // `budget_json`, `allowed_tools_json`, `last_heartbeat_at`,
+        // `last_event_seq`, `provider_id` e `model_id` com defaults
+        // (vide CHECK constraint da migração). Só precisamos do
+        // mínimo aqui.
         sqlx::query(
             "INSERT INTO runs (id, conversation_id, message_id, status, started_at) \
              VALUES (?1, ?2, ?3, 'created', ?4)",
@@ -786,22 +826,72 @@ impl<'a> RunRepo<'a> {
             conversation_id: *conversation_id,
             message_id: *message_id,
             status: "created".to_string(),
-            started_at: now,
+            state: "created".to_string(),
+            started_at: now.clone(),
             finished_at: None,
             cancellation_requested_at: None,
+            current_step: 0,
+            budget_json: "{}".to_string(),
+            allowed_tools_json: "[]".to_string(),
+            last_heartbeat_at: now,
+            last_event_seq: 0,
+            provider_id: String::new(),
+            model_id: String::new(),
+            assistant_id: None,
         })
     }
 
     pub async fn get(&self, id: &RunId) -> StorageResult<Run> {
         let row: Option<RunRow> = sqlx::query_as(
-            "SELECT id, conversation_id, message_id, status, started_at, finished_at, \
-                    cancellation_requested_at FROM runs WHERE id = ?1",
+            "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
+                    cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+             FROM runs WHERE id = ?1",
         )
         .bind(id.0.to_string())
         .fetch_optional(self.pool)
         .await?;
-        let (id_s, conv, msg, status, started_at, finished_at, cancellation_requested_at) =
-            row.ok_or(StorageError::RunNotFound(*id))?;
+        Self::row_to_run(row.ok_or(StorageError::RunNotFound(*id))?)
+    }
+
+    pub async fn get_by_message(&self, message_id: &MessageId) -> StorageResult<Option<Run>> {
+        let row: Option<RunRow> = sqlx::query_as(
+            "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
+                    cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+             FROM runs WHERE message_id = ?1",
+        )
+        .bind(message_id.0.to_string())
+        .fetch_optional(self.pool)
+        .await?;
+        match row {
+            Some(r) => Ok(Some(Self::row_to_run(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Converte uma `RunRow` (tupla do `sqlx::query_as`) no tipo de
+    /// domínio [`Run`]. Centralizado porque `get` e `get_by_message`
+    /// precisam do mesmo parsing.
+    fn row_to_run(row: RunRow) -> StorageResult<Run> {
+        let (
+            id_s,
+            conv,
+            msg,
+            status,
+            state,
+            started_at,
+            finished_at,
+            cancellation_requested_at,
+            current_step,
+            budget_json,
+            allowed_tools_json,
+            last_heartbeat_at,
+            last_event_seq,
+            provider_id,
+            model_id,
+            assistant_id,
+        ) = row;
         Ok(Run {
             id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| {
                 StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
@@ -813,40 +903,19 @@ impl<'a> RunRepo<'a> {
                 StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
             })?),
             status,
+            state,
             started_at,
             finished_at,
             cancellation_requested_at,
+            current_step: current_step as u32,
+            budget_json,
+            allowed_tools_json,
+            last_heartbeat_at,
+            last_event_seq: last_event_seq as u64,
+            provider_id,
+            model_id,
+            assistant_id,
         })
-    }
-
-    pub async fn get_by_message(&self, message_id: &MessageId) -> StorageResult<Option<Run>> {
-        let row: Option<RunRow> = sqlx::query_as(
-            "SELECT id, conversation_id, message_id, status, started_at, finished_at, \
-                    cancellation_requested_at FROM runs WHERE message_id = ?1",
-        )
-        .bind(message_id.0.to_string())
-        .fetch_optional(self.pool)
-        .await?;
-        let Some((id_s, conv, msg, status, started_at, finished_at, cancellation_requested_at)) =
-            row
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Run {
-            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| {
-                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
-            })?),
-            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| {
-                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
-            })?),
-            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| {
-                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
-            })?),
-            status,
-            started_at,
-            finished_at,
-            cancellation_requested_at,
-        }))
     }
 
     pub async fn set_status(&self, id: &RunId, status: RunStatus) -> StorageResult<()> {
@@ -880,6 +949,438 @@ impl<'a> RunRepo<'a> {
             .execute(self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Atualiza a coluna `state` (22 valores do
+    /// `frederico_agent_engine::RunState`) **sozinha**. Usado
+    /// somente em testes e em fluxos legados; o caminho quente da
+    /// Etapa 5.x usa
+    /// [`set_state_and_heartbeat_tx`](Self::set_state_and_heartbeat_tx)
+    /// que agrupa `state` + `last_heartbeat_at` + `last_event_seq`
+    /// numa transação `BEGIN IMMEDIATE; ...; COMMIT;` (atomicidade
+    /// contra crash).
+    pub async fn set_state(
+        &self,
+        id: &RunId,
+        state: frederico_agent_engine::RunState,
+    ) -> StorageResult<()> {
+        sqlx::query("UPDATE runs SET state = ?1 WHERE id = ?2")
+            .bind(state.as_str())
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Atualiza `runs.state` + `last_heartbeat_at` + `last_event_seq`
+    /// numa **única transação** `BEGIN IMMEDIATE; ...; COMMIT;`. Isso
+    /// garante consistência contra crash: ou os 3 valores novos são
+    /// persistidos, ou nenhum é.
+    ///
+    /// O `BEGIN IMMEDIATE` pega o write lock imediatamente (em vez
+    /// de `BEGIN DEFERRED` que só pega no primeiro `WRITE`),
+    /// evitando o `SQLITE_BUSY` quando vários executors estão
+    /// ativos. A Etapa 5.x introduz esse padrão; a Etapa 4 só
+    /// chamava `set_status` (que não é transacional).
+    pub async fn set_state_and_heartbeat_tx(
+        &self,
+        id: &RunId,
+        state: frederico_agent_engine::RunState,
+        last_event_seq: u64,
+    ) -> StorageResult<()> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE runs SET state = ?1, last_heartbeat_at = ?2, last_event_seq = ?3 \
+             WHERE id = ?4",
+        )
+        .bind(state.as_str())
+        .bind(&now)
+        .bind(last_event_seq as i64)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Lista runs não-terminais cujo `last_heartbeat_at` é mais
+    /// antigo que `threshold_seconds` segundos atrás. Usado pela
+    /// Etapa 5.x (recovery de crash) no startup da casca Tauri —
+    /// se um run ficou preso (app crashou entre dois heartbeats),
+    /// a casca marca como `interrupted` no boot.
+    pub async fn list_stale_heartbeats(&self, threshold_seconds: u64) -> StorageResult<Vec<Run>> {
+        // SQLite: `datetime('now', '-N seconds')` devolve o
+        // timestamp de N segundos atrás em `YYYY-MM-DD HH:MM:SS`.
+        // O `last_heartbeat_at` pode estar em RFC 3339 (com `T`
+        // no meio) — `datetime(last_heartbeat_at)` normaliza pra
+        // o mesmo formato antes de comparar.
+        let threshold = format!("-{} seconds", threshold_seconds);
+        let rows: Vec<RunRow> = sqlx::query_as(
+            "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
+                    cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+             FROM runs \
+             WHERE state NOT IN ('completed', 'failed', 'cancelled', 'interrupted') \
+               AND datetime(last_heartbeat_at) < datetime('now', ?1) \
+             ORDER BY last_heartbeat_at ASC",
+        )
+        .bind(&threshold)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_run).collect()
+    }
+
+    /// Marca um `Run` como interrompido (terminal: watchdog matou
+    /// ou recovery de crash detectou). Seta `state = 'interrupted'`,
+    /// `status = 'failed'` (a view `runs_with_status` mapeia
+    /// `interrupted → timeout`), `finished_at = now`, e adiciona uma
+    /// nota no `error` da mensagem correspondente (best effort — se
+    /// a mensagem não existe, segue sem erro).
+    pub async fn mark_interrupted(&self, id: &RunId) -> StorageResult<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE runs SET state = 'interrupted', status = 'failed', \
+             finished_at = COALESCE(?1, finished_at) \
+             WHERE id = ?2",
+        )
+        .bind(&now)
+        .bind(id.0.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Força `last_heartbeat_at` pra um valor arbitrário (em
+    /// formato RFC 3339 / ISO 8601). **Apenas pra testes** —
+    /// produção nunca deveria chamar isso. Usado pelo teste do
+    /// recovery de crash pra simular um run "stale" sem esperar
+    /// minutos reais.
+    #[doc(hidden)]
+    pub async fn force_heartbeat_at_for_test(
+        &self,
+        id: &RunId,
+        timestamp_rfc3339: &str,
+    ) -> StorageResult<()> {
+        sqlx::query("UPDATE runs SET last_heartbeat_at = ?1 WHERE id = ?2")
+            .bind(timestamp_rfc3339)
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Entrada persistida da auditoria de uma `tool_call`. Append-only
+/// (a migration 0005 não tem `UPDATE` nem `DELETE`). Cada linha
+/// carrega o snapshot do momento da chamada (Fase 3, Etapa 5.x,
+/// Passo 10 do `validate_tool_call`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolAuditEntry {
+    pub id: String,
+    pub run_id: RunId,
+    pub tool_id: String,
+    pub tool_version: String,
+    pub arguments_json: String,
+    pub result_ok: bool,
+    pub result_json: String,
+    pub duration_micros: i64,
+    pub created_at: String,
+}
+
+/// Repositório de auditoria de `tool_calls` (Fase 3, Etapa 5.x).
+/// Append-only — o `append` é o único método público.
+pub struct ToolAuditRepo<'a> {
+    pool: &'a sqlx::SqlitePool,
+}
+
+impl<'a> ToolAuditRepo<'a> {
+    #[must_use]
+    pub fn new(db: &'a Database) -> Self {
+        Self { pool: &db.pool }
+    }
+
+    /// Grava uma entrada de auditoria. Devolve o `id` gerado.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append(
+        &self,
+        run_id: &RunId,
+        tool_id: &str,
+        tool_version: &str,
+        arguments_json: &str,
+        result_ok: bool,
+        result_json: &str,
+        duration_micros: i64,
+    ) -> StorageResult<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO tool_audit (id, run_id, tool_id, tool_version, \
+             arguments_json, result_ok, result_json, duration_micros) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(&id)
+        .bind(run_id.0.to_string())
+        .bind(tool_id)
+        .bind(tool_version)
+        .bind(arguments_json)
+        .bind(result_ok as i64)
+        .bind(result_json)
+        .bind(duration_micros)
+        .execute(self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Lista entradas de auditoria de um `Run` em ordem cronológica.
+    pub async fn list_for_run(&self, run_id: &RunId) -> StorageResult<Vec<ToolAuditEntry>> {
+        // Tuple crua do `sqlx::query_as` — 9 campos. A lint
+        // `type_complexity` reclamaria; o `allow` abaixo silencia.
+        // A alternativa (criar um type alias) não traz benefício —
+        // é só usado aqui.
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            i64,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, run_id, tool_id, tool_version, arguments_json, \
+                        result_ok, result_json, duration_micros, created_at \
+                 FROM tool_audit WHERE run_id = ?1 \
+                 ORDER BY created_at ASC",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_all(self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (
+            id,
+            run_id_s,
+            tool_id,
+            tool_version,
+            arguments_json,
+            result_ok,
+            result_json,
+            duration_micros,
+            created_at,
+        ) in rows
+        {
+            let uuid = uuid::Uuid::parse_str(&run_id_s).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?;
+            out.push(ToolAuditEntry {
+                id,
+                run_id: RunId(uuid),
+                tool_id,
+                tool_version,
+                arguments_json,
+                result_ok: result_ok != 0,
+                result_json,
+                duration_micros,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Status de uma entrada da fila de aprovação (Fase 3, Etapa 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl ApprovalStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApprovalStatus::Pending => "pending",
+            ApprovalStatus::Approved => "approved",
+            ApprovalStatus::Rejected => "rejected",
+        }
+    }
+}
+
+/// Entrada persistida da fila de aprovação (Fase 3, Etapa 6).
+/// Criada quando o `RunExecutor` recebe `ApprovalRequired` do
+/// `validate_tool_call`. O `request_json` carrega o
+/// `ApprovalRequest` serializado (imutável); o `decision_json`
+/// carrega o `ApprovalDecision` quando o usuário responde.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalEntry {
+    pub id: String,
+    pub run_id: RunId,
+    pub tool_id: String,
+    pub request_json: String,
+    pub status: ApprovalStatus,
+    pub decision_json: Option<String>,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+/// Repositório da fila de aprovação de `tool_calls` (Fase 3,
+/// Etapa 6). Append no `enqueue`; update no `resolve`.
+pub struct ApprovalQueueRepo<'a> {
+    pool: &'a sqlx::SqlitePool,
+}
+
+impl<'a> ApprovalQueueRepo<'a> {
+    #[must_use]
+    pub fn new(db: &'a Database) -> Self {
+        Self { pool: &db.pool }
+    }
+
+    /// Enfileira uma aprovação. Devolve o `id` gerado.
+    pub async fn enqueue(
+        &self,
+        run_id: &RunId,
+        tool_id: &str,
+        request_json: &str,
+    ) -> StorageResult<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO approval_queue (id, run_id, tool_id, request_json, status) \
+             VALUES (?1, ?2, ?3, ?4, 'pending')",
+        )
+        .bind(&id)
+        .bind(run_id.0.to_string())
+        .bind(tool_id)
+        .bind(request_json)
+        .execute(self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Resolve uma aprovação pendente (approve ou reject). O
+    /// `decision_json` carrega o `ApprovalDecision` serializado
+    /// (`{"approved": true/false, "scope": "Once/Run/Project",
+    /// "reason": "..."}`).
+    pub async fn resolve(
+        &self,
+        id: &str,
+        decision_json: &str,
+        approved: bool,
+    ) -> StorageResult<()> {
+        let status = if approved {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Rejected
+        };
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE approval_queue SET status = ?1, decision_json = ?2, resolved_at = ?3 \
+             WHERE id = ?4 AND status = 'pending'",
+        )
+        .bind(status.as_str())
+        .bind(decision_json)
+        .bind(&now)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Lista entradas pendentes em ordem cronológica. A UI da
+    /// Etapa 6 consome isso pra mostrar o modal.
+    pub async fn list_pending(&self) -> StorageResult<Vec<ApprovalEntry>> {
+        // Tuple crua do `sqlx::query_as` — 8 campos.
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(String, String, String, String, String, Option<String>, String, Option<String>)> =
+            sqlx::query_as(
+                "SELECT id, run_id, tool_id, request_json, status, decision_json, created_at, resolved_at \
+                 FROM approval_queue WHERE status = 'pending' \
+                 ORDER BY created_at ASC",
+            )
+            .fetch_all(self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (
+            id,
+            run_id_s,
+            tool_id,
+            request_json,
+            status_s,
+            decision_json,
+            created_at,
+            resolved_at,
+        ) in rows
+        {
+            let uuid = uuid::Uuid::parse_str(&run_id_s).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?;
+            let status = match status_s.as_str() {
+                "pending" => ApprovalStatus::Pending,
+                "approved" => ApprovalStatus::Approved,
+                "rejected" => ApprovalStatus::Rejected,
+                _ => {
+                    return Err(StorageError::Query(sqlx::Error::Decode(
+                        format!("bad status: {status_s}").into(),
+                    )))
+                }
+            };
+            out.push(ApprovalEntry {
+                id,
+                run_id: RunId(uuid),
+                tool_id,
+                request_json,
+                status,
+                decision_json,
+                created_at,
+                resolved_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Busca uma entrada por `id`.
+    pub async fn get(&self, id: &str) -> StorageResult<ApprovalEntry> {
+        // Tuple crua do `sqlx::query_as` — 8 campos.
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, String, String, String, Option<String>, String, Option<String>)> =
+            sqlx::query_as(
+                "SELECT id, run_id, tool_id, request_json, status, decision_json, created_at, resolved_at \
+                 FROM approval_queue WHERE id = ?1",
+            )
+            .bind(id)
+            .fetch_optional(self.pool)
+            .await?;
+        let (id, run_id_s, tool_id, request_json, status_s, decision_json, created_at, resolved_at) =
+            row.ok_or_else(|| {
+                StorageError::Query(sqlx::Error::Decode(
+                    format!("approval {id} não encontrada").into(),
+                ))
+            })?;
+        let uuid = uuid::Uuid::parse_str(&run_id_s).map_err(|e| {
+            StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+        })?;
+        let status = match status_s.as_str() {
+            "pending" => ApprovalStatus::Pending,
+            "approved" => ApprovalStatus::Approved,
+            "rejected" => ApprovalStatus::Rejected,
+            _ => {
+                return Err(StorageError::Query(sqlx::Error::Decode(
+                    format!("bad status: {status_s}").into(),
+                )))
+            }
+        };
+        Ok(ApprovalEntry {
+            id,
+            run_id: RunId(uuid),
+            tool_id,
+            request_json,
+            status,
+            decision_json,
+            created_at,
+            resolved_at,
+        })
     }
 }
 
@@ -1187,6 +1688,121 @@ mod tests {
         // Segundo run para a mesma mensagem deve falhar (UNIQUE).
         let r = run_repo.create(&conv.id, &asst.id).await;
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_repo_create_populates_phase3_columns_with_defaults() {
+        // A Etapa 1 da Fase 3 adicionou 9 colunas a `runs` via
+        // `0003_runs_and_checkpoints.sql`. O `create` da Fase 2 não
+        // precisa conhecer cada uma — a `CHECK` constraint e os
+        // defaults da migração preenchem. Esse teste garante que o
+        // `Run` devolvido por `create` tem os campos novos com os
+        // valores esperados.
+        let db = Database::open(&tempdir().join("run3.db")).await.unwrap();
+        let conv_repo = ConversationRepo::new(&db);
+        let msg_repo = MessageRepo::new(&db);
+        let run_repo = RunRepo::new(&db);
+        let conv = conv_repo
+            .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
+            .await
+            .unwrap();
+        let asst = msg_repo
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
+        assert_eq!(run.state, "created");
+        assert_eq!(run.current_step, 0);
+        assert_eq!(run.budget_json, "{}");
+        assert_eq!(run.allowed_tools_json, "[]");
+        assert_eq!(run.last_event_seq, 0);
+        assert_eq!(run.provider_id, "");
+        assert_eq!(run.model_id, "");
+        assert!(run.assistant_id.is_none());
+        // O `last_heartbeat_at` da Etapa 1 é preenchido com `now()`
+        // na migração (default do SQLite). Aqui comparamos só que
+        // está preenchido — o timestamp exato vem do relógio do DB.
+        assert!(!run.last_heartbeat_at.is_empty());
+
+        // `get` lê as 9 colunas novas também.
+        let got = run_repo.get(&run.id).await.unwrap();
+        assert_eq!(got.state, "created");
+        assert_eq!(got.current_step, 0);
+        assert_eq!(got.budget_json, "{}");
+        assert_eq!(got.allowed_tools_json, "[]");
+    }
+
+    #[tokio::test]
+    async fn runs_with_status_view_maps_state_to_legacy_status() {
+        // Cobertura do mapeamento `state → status` definido no
+        // ADR-0009 §3 e implementado na view `runs_with_status`.
+        // Cada estado tem um status esperado — esse teste existe
+        // porque é a rede de segurança da Fase 2 (que lê `status`
+        // direto) contra mudanças acidentais no `CASE WHEN` da view.
+        let db = Database::open(&tempdir().join("view.db")).await.unwrap();
+        let conv_repo = ConversationRepo::new(&db);
+        let msg_repo = MessageRepo::new(&db);
+        let run_repo = RunRepo::new(&db);
+        let conv = conv_repo
+            .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
+            .await
+            .unwrap();
+
+        // Helper local: cria um run e força o `state` via SQL
+        // direto. O `RunRepo` da Etapa 1 não tem `set_state` ainda
+        // (Etapa 4 implementa); testamos a view sem mexer no
+        // executor.
+        async fn force_state(
+            db: &Database,
+            run_id: &RunId,
+            state: &str,
+        ) -> Result<(), sqlx::Error> {
+            sqlx::query("UPDATE runs SET state = ?1 WHERE id = ?2")
+                .bind(state)
+                .bind(run_id.0.to_string())
+                .execute(db.pool())
+                .await?;
+            Ok(())
+        }
+
+        // Cada par (state, expected_status) que o CASE WHEN da view
+        // declara. Não testamos as 16 variações "→ running"
+        // individualmente — uma amostra representativa basta.
+        let cases: &[(&str, &str)] = &[
+            ("created", "created"),
+            ("queued", "created"),
+            ("calling_model", "running"),
+            ("streaming", "running"),
+            ("executing_tool", "running"),
+            ("paused", "running"),
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("cancelled", "cancelled"),
+            ("interrupted", "timeout"),
+        ];
+
+        for (state, expected_status) in cases {
+            let asst = msg_repo
+                .create(&conv.id, "assistant", "", None)
+                .await
+                .unwrap();
+            let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
+            force_state(&db, &run.id, state).await.unwrap();
+
+            // Lê da view.
+            let row: (String,) =
+                sqlx::query_as("SELECT status FROM runs_with_status WHERE id = ?1")
+                    .bind(run.id.0.to_string())
+                    .fetch_one(db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                row.0,
+                *expected_status,
+                "estado {state} deveria mapear para {expected_status}, veio {row_0}",
+                row_0 = row.0
+            );
+        }
     }
 
     #[tokio::test]

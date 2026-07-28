@@ -31,6 +31,7 @@
 
 #![allow(clippy::module_inception)]
 
+pub mod accumulator;
 pub mod anthropic;
 pub mod event_sink;
 pub mod fake;
@@ -44,9 +45,13 @@ pub mod sanitize;
 pub mod types;
 
 pub use event_sink::{EventSink, NoopEventSink, RecordingEventSink};
-pub use orchestrator::{
-    error_to_view, ChatOrchestrator, OrchestratorError, OrchestratorResult, ProviderErrorView,
-};
+// NOTA (Etapa 4.x.y): `ChatOrchestrator` foi movido pro
+// `frederico-execution-engine::orchestrator`. A casca Tauri e os
+// tests importam de lá direto. `OrchestratorError` e
+// `OrchestratorResult` ficam definidos em `orchestrator` (localmente,
+// pra evitar ciclo) e continuam sendo re-exportados daqui pra
+// compat.
+pub use orchestrator::{error_to_view, OrchestratorError, OrchestratorResult, ProviderErrorView};
 pub use provider::{AdapterCapabilities, CostModel, ProviderAdapter, RunHandle};
 pub use provider_map::ProviderMap;
 pub use run_registry::RunRegistry;

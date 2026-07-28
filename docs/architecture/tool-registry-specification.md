@@ -1,8 +1,31 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
-Fase correspondente: 3
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-27
+Fase correspondente: 3 (Etapa 2)
 -->
+
+> Última verificação: 2026-07-27. Reflete a Etapa 2 da Fase 3 — crate
+> `frederico-tool-registry` com a enum `ToolManifest` (todos os
+> 22 campos do spec §"Contrato do manifesto" + builder fluente),
+> `JsonSchema` validado pelo crate `jsonschema` 0.18, a
+> `ToolRegistry` com `register`/`get`/`all`/`effective_tools`
+> (interseção filtrada por `availability` + `health` + allowlist),
+> a `Jail` (rejeita `..`/absoluto/UNC/letra de unidade/symlink —
+> defesa contra a ameaça I3 do `security-threat-model.md`), a
+> `validate_tool_call` (Passos 1, 2, 3, 4, 6, 7, 8, 9 do spec
+> §7.7; Passos 5 e 10 ficam pras Etapas 3 e 5), o modelo de
+> `ApprovalRequest`/`ApprovalDecision`/`ApprovalScope`, a trait
+> `Tool` e a única ferramenta in-process do catálogo inicial:
+> `FilesReadTool` (lê arquivo do workspace, paginação via
+> `max_bytes` até 50 MB, jail aplicado no `execute`). Suíte do
+> crate: 41 testes cobrindo builder, registry, jail (incluindo
+> symlink), validação por passo, happy path do `files.read`,
+> cenários de jail do `files.read`. **Decisão da Etapa 2:**
+> catálogo inicial tem **apenas** `files.read` (uma ferramenta
+> profunda vale mais que duas rasas); `files.write`/`files.list`/
+> `files.edit` entram na Etapa 4. Ver
+> [`docs/modules/tool-registry.md`](../modules/tool-registry.md)
+> para o detalhamento por eixo do template §1.4.
 
 # Especificação do Tool Registry
 

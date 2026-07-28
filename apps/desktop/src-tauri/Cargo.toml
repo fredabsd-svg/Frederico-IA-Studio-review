@@ -23,6 +23,8 @@ frederico-security = { workspace = true }
 frederico-provider-engine = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-shared-contracts = { workspace = true }
+frederico-execution-engine = { workspace = true }
+frederico-tool-registry = { workspace = true }
 tokio = { workspace = true }
 directories = { workspace = true }
 tracing = { workspace = true }

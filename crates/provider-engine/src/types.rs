@@ -17,6 +17,11 @@ pub enum Role {
     User,
     Assistant,
     System,
+    /// Resposta de uma ferramenta chamada pelo modelo (Fase 3, Etapa 4).
+    /// O adapter OpenAI-compat traduz em `{"role": "tool", "tool_call_id":
+    /// "...", "content": "..."}`. Na Etapa 4 o `ScriptedProviderAdapter`
+    /// ignora o role (o E2E produz o próximo round programaticamente).
+    Tool,
 }
 
 /// Mensagem que vai dentro de um [`ChatRequest`].
@@ -28,6 +33,12 @@ pub struct ChatMessage {
     /// em `None` para todas as mensagens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// `tool_call_id` quando o papel é `Tool` (Fase 3, Etapa 4) — o
+    /// `id` do `StreamEvent::ToolCall` que está sendo respondido.
+    /// O adapter OpenAI-compat exige isso; adapters que não usam
+    /// tool calling ignoram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -37,6 +48,7 @@ impl ChatMessage {
             role: Role::User,
             content: content.into(),
             name: None,
+            tool_call_id: None,
         }
     }
 
@@ -46,6 +58,7 @@ impl ChatMessage {
             role: Role::Assistant,
             content: content.into(),
             name: None,
+            tool_call_id: None,
         }
     }
 
@@ -55,6 +68,25 @@ impl ChatMessage {
             role: Role::System,
             content: content.into(),
             name: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Constrói uma `ChatMessage` de papel `Tool` — a resposta de uma
+    /// `tool_call` que volta pro modelo. `name` é o `ToolId` (e.g.
+    /// `"files.read"`), `tool_call_id` é o `id` do `StreamEvent::ToolCall`
+    /// correspondente. Etapa 4 usa para alimentar o loop.
+    #[must_use]
+    pub fn tool(
+        name: impl Into<String>,
+        content: impl Into<String>,
+        tool_call_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            name: Some(name.into()),
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 }
@@ -153,6 +185,16 @@ pub enum StreamEvent {
         id: String,
         name: String,
         arguments_json: String,
+    },
+    /// Resultado de uma ferramenta (Fase 3, Etapa 4). O motor emite
+    /// este evento **após** a execução da ferramenta (sucesso ou
+    /// erro) e o coloca no contexto da próxima chamada ao modelo
+    /// (a "resposta" da função no formato OpenAI). O `id` casa com
+    /// o `id` do `ToolCall` correspondente.
+    ToolResult {
+        id: String,
+        ok: bool,
+        output: serde_json::Value,
     },
     /// O stream terminou.
     Done { stop_reason: StopReason },

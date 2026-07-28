@@ -42,6 +42,7 @@ fn trivial_request(provider: &str, model: &str) -> ChatRequest {
             role: Role::User,
             content: "Reply with the single word: ok".to_string(),
             name: None,
+            tool_call_id: None,
         }],
         tools: vec![],
         temperature: None,

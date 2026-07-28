@@ -1,8 +1,49 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
-Fase correspondente: 3
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-27
+Fase correspondente: 3 (Etapa 3)
 -->
+
+> Última verificação: 2026-07-27. Reflete a Etapa 3 da Fase 3 — tipo
+> `PermissionSet` completo no `frederico-tool-registry`
+> (`crates/tool-registry/src/permission.rs`), com todos os 18
+> campos do spec §"Contrato" (file_read, file_create/modify/delete,
+> terminal, python, node, git, github, web_browse, web_download,
+> network, screen_capture, input_control, memory, credentials,
+> documents, destructive_ops). Enums auxiliares:
+> `FileReadPermission` (None / WorkspaceOnly / WorkspacePlusApproved),
+> `RuntimePermission` (None / ReadOnly / Sandboxed / Unrestricted,
+> com `PartialOrd` pra invariante subagente), `TerminalMode`,
+> `GitPermission`, `GitHubPermission`, `MemoryPermission`,
+> `DocumentPermission` (todos com ordem canônica pro
+> `is_subset_of`). **Default é deny**: `PermissionSet::default()`
+> tem todos os campos em `false` ou variante mais restritiva
+> (spec §"Invariantes": "Default é deny: ferramenta perigosa
+> nasce desligada; ligar é decisão consciente"). Invariante
+> **"subagente ⊆ pai"** modelado em `PermissionSet::is_subset_of`
+> (booleanos: `!self.x || parent.x`; enums: `self <= parent` via
+> `PartialOrd`; `file_read`: matriz de combinações que respeita
+> `None < WorkspaceOnly < WorkspacePlusApproved`). `ValidationContext`
+> ganha `permissions: PermissionSet` e
+> `parent_permissions: Option<Box<PermissionSet>>`; o Passo 5 do
+> `validate_tool_call` consome: rejeita `files.read` quando
+> `file_read == None` com `TOOL_PERMISSION_DENIED`, e valida o
+> invariante subagente via `check_subagent_invariant()` (falha
+> com `TOOL_PERMISSION_DENIED` se `permissions ⊄ parent_permissions`).
+> `PermissionSet::allow_all()` é o helper da Etapa 4 (UI modal de
+> "Permitir tudo"). Suíte do crate: 15 testes no `permission.rs`
+> (default deny, allow_all, is_subset_of em pares válidos e
+> inválidos, random pair invariant) + 4 testes no `validate.rs`
+> (rejeição por None, aceitação por WorkspaceOnly/PlusApproved,
+> subagente com mais permissões rejeitado, subagente ⊆ pai
+> aceito). Suíte workspace **240/240 verde** (era 225/225). Etapas
+> 4 (integração), 5 (watchdog) e 6 (UI) ainda dependem — em
+> particular, a Etapa 4 carrega o `PermissionSet` real do
+> `assistant`/`project`/`user` antes de validar; a Etapa 6 consome
+> o `WorkspacePlusApproved` no modal de aprovação de leitura fora
+> do workspace. Ver
+> [`docs/modules/tool-registry.md`](../modules/tool-registry.md)
+> para o detalhamento por eixo do template §1.4.
 
 # Modelo de Permissões de Ferramentas
 

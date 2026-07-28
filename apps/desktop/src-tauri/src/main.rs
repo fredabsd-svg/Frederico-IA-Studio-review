@@ -14,17 +14,23 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use frederico_core::ToolId;
 use frederico_diagnostics as diagnostics;
+use frederico_execution_engine::orchestrator::ChatOrchestrator;
+use frederico_execution_engine::recovery::{
+    spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS,
+};
 use frederico_model_catalog::Catalog;
 use frederico_provider_engine::openai_compat::OpenAiCompatAdapter;
-use frederico_provider_engine::{ChatOrchestrator, EventSink, ProviderMap, RunRegistry};
+use frederico_provider_engine::{EventSink, ProviderMap, RunRegistry};
 use frederico_security::windows::WindowsCredentialStore;
 use frederico_security::{Clock, CredentialStore, SystemClock};
 use frederico_shared_contracts::{
     AppOp, ConversationView, IpcRequest, IpcResponse, MessageEventView, MessageSendResult,
     MessageView, ModelDescriptorView, ProviderConfigView,
 };
-use frederico_storage::{ConversationRepo, Database, MessageRepo};
+use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
+use frederico_tool_registry::{Jail, Tool, ToolRegistry};
 use tauri::{Manager, State};
 
 mod sink;
@@ -144,8 +150,60 @@ fn main() {
             // o journal no SQLite é a fonte de verdade.
             let sink: Arc<dyn EventSink> = Arc::new(sink::TauriEventSink::new(handle));
 
-            let orch = ChatOrchestrator::new(providers, runs, sink, db.clone(), clock, catalog);
+            // Tooling (Etapa 4.x.y): `ToolRegistry` + Jail + tools
+            // concretas. A Etapa 6 carrega o `PermissionSet` real do
+            // assistente/projeto. Aqui o catálogo inicial tem só
+            // `FilesReadTool` (in-process, sem worker sidecar).
+            let tool_registry = ToolRegistry::new();
+            // Jail do workspace. Por enquanto aponta pro diretório
+            // atual do processo; a Etapa 7 (modo desenvolvedor) vai
+            // resolver o workspace via `frederico-security`.
+            let jail = match std::env::current_dir() {
+                Ok(p) => Jail::new(p.as_path())
+                    .unwrap_or_else(|_| Jail::new(std::env::temp_dir().as_path()).unwrap()),
+                Err(_) => Jail::new(std::env::temp_dir().as_path()).unwrap(),
+            };
+            // Tools concretas. A Etapa 6 (UI de configuração)
+            // permite ligar/desligar; aqui vem hardcoded o
+            // `FilesReadTool` (a única ferramenta do catálogo
+            // inicial).
+            let files_read: Arc<dyn Tool> =
+                Arc::new(frederico_tool_registry::FilesReadTool::new(jail.clone()));
+            let tools: Vec<Arc<dyn Tool>> = vec![files_read];
+            let allowed_for_run: Vec<ToolId> = vec![ToolId::new("files.read")];
+
+            let orch = ChatOrchestrator::new(
+                providers,
+                runs,
+                sink,
+                db.clone(),
+                clock,
+                catalog,
+                tool_registry,
+                jail,
+                tools,
+                allowed_for_run,
+            );
             let orch = Arc::new(orch);
+
+            // Recovery de crash (Etapa 5.x). Spawna uma task em
+            // background que lista runs não-terminais com
+            // `last_heartbeat_at` mais velho que 120s e marca como
+            // `interrupted` (a view `runs_with_status` mapeia
+            // `interrupted → timeout`). Não bloqueia o startup —
+            // roda em paralelo com a abertura da janela. O threshold
+            // é maior que o `event_timeout` do executor (60s)
+            // porque o executor pode estar esperando o delta final
+            // do provider.
+            //
+            // O `Database` é `Arc<SqlitePool>` internamente — clonar
+            // é barato. O `spawn_recover_stale_runs` recebe o
+            // `Database` e constrói o `RunRepo` dentro do closure
+            // (sem `unsafe`).
+            let _recovery_handle = spawn_recover_stale_runs(
+                (*db).clone(),
+                std::time::Duration::from_secs(DEFAULT_STALE_THRESHOLD_SECS),
+            );
 
             app.manage(AppState {
                 db,
@@ -376,6 +434,41 @@ async fn ipc_dispatch(
                 .cancel_run(rid)
                 .await
                 .map_err(|e| format!("{e:?}"))?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+
+        // --- Etapa 6: fila de aprovação ---
+        AppOp::ApprovalList => {
+            let repo = ApprovalQueueRepo::new(&state.db);
+            let list: Vec<frederico_shared_contracts::ApprovalEntryView> = repo
+                .list_pending()
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|e| frederico_shared_contracts::ApprovalEntryView {
+                    id: e.id,
+                    run_id: e.run_id.0.to_string(),
+                    tool_id: e.tool_id,
+                    request_json: e.request_json,
+                    created_at: e.created_at,
+                })
+                .collect();
+            Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::ApprovalRespond {
+            approval_id,
+            decision,
+        } => {
+            let approved = decision
+                .get("approved")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let decision_json = serde_json::to_string(&decision)
+                .map_err(|e| format!("erro ao serializar decision: {e}"))?;
+            let repo = ApprovalQueueRepo::new(&state.db);
+            repo.resolve(&approval_id, &decision_json, approved)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
     }

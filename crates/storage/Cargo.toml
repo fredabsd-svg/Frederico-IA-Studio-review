@@ -10,6 +10,7 @@ unsafe_code = "forbid"
 
 [dependencies]
 frederico-core = { workspace = true }
+frederico-agent-engine = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

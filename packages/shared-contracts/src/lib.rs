@@ -108,6 +108,26 @@ pub enum AppOp {
     RunCancel {
         run_id: String,
     },
+    /// Etapa 6 — lista entries da fila de aprovação
+    /// (`approval_queue` com `status = 'pending'`).
+    ApprovalList,
+    /// Etapa 6 — responde a uma approval (approve/reject).
+    /// O `decision` carrega `{approved: bool, scope: "Once" |
+    /// "Run" | "Project", reason?: string}`.
+    ApprovalRespond {
+        approval_id: String,
+        decision: serde_json::Value,
+    },
+}
+
+/// View de uma entry da fila de aprovação (Etapa 6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalEntryView {
+    pub id: String,
+    pub run_id: String,
+    pub tool_id: String,
+    pub request_json: String,
+    pub created_at: String,
 }
 
 /// Status público de um provedor.

@@ -27,10 +27,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use frederico_core::{MessageId, ModelId, ProviderId};
+use frederico_execution_engine::orchestrator::ChatOrchestrator;
 use frederico_model_catalog::Catalog;
 use frederico_provider_engine::event_sink::RecordingEventSink;
 use frederico_provider_engine::fake::trait_level::FakeProviderAdapter;
-use frederico_provider_engine::orchestrator::ChatOrchestrator;
 use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
 use frederico_provider_engine::types::StreamEvent;
@@ -39,6 +39,7 @@ use frederico_security::Clock;
 use frederico_storage::{
     ConversationRepo, Database, MessageEventRepo, MessageRepo, RunRepo, RunStatus,
 };
+use frederico_tool_registry::{Jail, ToolRegistry};
 
 fn tempdir() -> PathBuf {
     let base = std::env::temp_dir();
@@ -68,7 +69,16 @@ fn build_orchestrator(
     let clock_fc: Arc<FakeClock> = FakeClock::new();
     let clock: Arc<dyn Clock> = clock_fc;
     Arc::new(ChatOrchestrator::new(
-        providers, runs, sink, db, clock, catalog,
+        providers,
+        runs,
+        sink,
+        db,
+        clock,
+        catalog,
+        ToolRegistry::new(),
+        Jail::new(std::env::temp_dir().as_path()).unwrap(),
+        vec![],
+        vec![],
     ))
 }
 

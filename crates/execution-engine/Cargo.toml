@@ -1,0 +1,34 @@
+[package]
+name = "frederico-execution-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "RunExecutor que fecha o loop tool_call do Frederico IA Studio (Fase 3, Etapa 4)."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+frederico-core = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-agent-engine = { workspace = true }
+frederico-tool-registry = { workspace = true }
+frederico-provider-engine = { workspace = true }
+frederico-model-catalog = { workspace = true }
+frederico-security = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Mesmas features que o workspace; o executor E2E usa `#[tokio::test]`
+# (precisa de `macros`) e `tokio::time::sleep` em testes de
+# cancelamento (precisa de `time`).
+tokio = { workspace = true }

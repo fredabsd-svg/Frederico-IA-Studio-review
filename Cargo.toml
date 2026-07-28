@@ -7,6 +7,9 @@ members = [
     "crates/security",
     "crates/provider-engine",
     "crates/model-catalog",
+    "crates/agent-engine",
+    "crates/tool-registry",
+    "crates/execution-engine",
     "packages/shared-contracts",
     "apps/desktop/src-tauri",
 ]
@@ -27,6 +30,9 @@ frederico-diagnostics = { path = "crates/diagnostics" }
 frederico-security = { path = "crates/security" }
 frederico-provider-engine = { path = "crates/provider-engine" }
 frederico-model-catalog = { path = "crates/model-catalog" }
+frederico-agent-engine = { path = "crates/agent-engine" }
+frederico-tool-registry = { path = "crates/tool-registry" }
+frederico-execution-engine = { path = "crates/execution-engine" }
 frederico-shared-contracts = { path = "packages/shared-contracts" }
 
 # Async runtime
@@ -65,6 +71,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 eventsource-stream = "0.2"
 http = "1"
 bytes = "1"
+
+# Validação de JSON Schema (tool-registry)
+jsonschema = { version = "0.18", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -67,6 +67,12 @@ opaque_id!(
     "Identificador opaco de um projeto do modo desenvolvedor."
 );
 opaque_id!(
+    AssistantId,
+    "Identificador opaco de um assistente (perfil de sistema + ferramentas \
+     permitidas). Nullable na v1 — Etapa 6 da Fase 3 popula; até lá, a \
+     casca usa um assistente default em runtime."
+);
+opaque_id!(
     CheckpointId,
     "Identificador opaco de um checkpoint de execução."
 );
@@ -159,6 +165,55 @@ impl From<&str> for ModelId {
 }
 
 impl From<String> for ModelId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// Identificador de uma ferramenta do catálogo (e.g. `\"files.read\"`,
+/// `\"docs.generate\"`). String bem-conhecida, igual a `ProviderId` e
+/// `ModelId` — o conjunto de ferramentas é finito e versionado com o app
+/// (ver [`tool-registry-specification.md`][]). Aparece em
+/// `Run.allowed_tools` e nos manifestos do
+/// [`tool-registry-specification.md`][].
+///
+/// [`tool-registry-specification.md`]: ../../docs/architecture/tool-registry-specification.md
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolId(pub String);
+
+impl ToolId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ToolId {
+    fn default() -> Self {
+        // Placeholder neutro até a Etapa 2 da Fase 3 (tool-registry) definir
+        // o catálogo inicial. Não usar como ferramenta real.
+        Self::new("__unset__")
+    }
+}
+
+impl fmt::Display for ToolId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for ToolId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for ToolId {
     fn from(s: String) -> Self {
         Self(s)
     }
@@ -260,6 +315,28 @@ mod tests {
         let id = MessageId::new();
         let json = serde_json::to_string(&id).unwrap();
         let back: MessageId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn assistant_id_roundtrip_json() {
+        let id = AssistantId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: AssistantId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn tool_id_default_is_unset() {
+        assert_eq!(ToolId::default().as_str(), "__unset__");
+    }
+
+    #[test]
+    fn tool_id_roundtrip_json() {
+        let id = ToolId::new("files.read");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"files.read\"");
+        let back: ToolId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
     }
 }

@@ -20,6 +20,7 @@ use frederico_security::{CredentialStore, SecurityError};
 use futures::stream::{BoxStream, StreamExt};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::accumulator::ToolCallDeltaAccumulator;
 use crate::parser::{openai_compat_translate, sse_stream};
 use crate::provider::{AdapterCapabilities, CostModel, ProviderAdapter, RunHandle};
 use crate::types::{
@@ -300,20 +301,63 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         });
 
         let byte_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        let event_stream = sse_stream(byte_stream).filter_map(|r| async move {
-            match r {
-                Ok(raw) => match openai_compat_translate(raw) {
+        // `ToolCallDeltaAccumulator` (Etapa 4.1): estado entre
+        // chunks que agrega os deltas de `tool_call` em múltiplos
+        // chunks. O `unfold` aceita estado por valor (resolve o
+        // problema de lifetime do `scan` + `async move`) e o
+        // closure processa em série. O `flat_map` depois explode
+        // o `Vec<StreamEvent>` em eventos individuais (o
+        // `BoxStream` do trait `ProviderAdapter::stream` precisa
+        // `Item = StreamEvent`, não `Vec<StreamEvent>`).
+        let event_stream = futures::stream::unfold(
+            (ToolCallDeltaAccumulator::new(), sse_stream(byte_stream)),
+            |(mut acc, mut sse)| async move {
+                let r = match sse.next().await {
+                    Some(r) => r,
+                    None => return None,
+                };
+                let raw = match r {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        return Some((
+                            vec![StreamEvent::Error(ProviderError::network(format!(
+                                "SSE: {e}"
+                            )))],
+                            (acc, sse),
+                        ));
+                    }
+                };
+                // Parseia o JSON do `data` para alimentar o
+                // accumulator (precisa do `serde_json::Value`).
+                let value: serde_json::Value = match serde_json::from_str(&raw.data) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Some((
+                            vec![StreamEvent::Error(ProviderError::network(format!(
+                                "SSE JSON: {e}"
+                            )))],
+                            (acc, sse),
+                        ));
+                    }
+                };
+                // 1. Acumula deltas de tool_call (Etapa 4.1).
+                let mut events = acc.feed(&value);
+                // 2. Traduz o chunk via parser (Delta, Done,
+                //    Error, Usage, ToolCall "completo em um
+                //    chunk" — raro mas o parser cobre).
+                if let Some(ev) = match openai_compat_translate(raw) {
                     Ok(Some(ev)) => Some(ev),
-                    Ok(None) => None, // keepalive / evento vazio — pula.
+                    Ok(None) => None,
                     Err(e) => Some(StreamEvent::Error(ProviderError::network(format!(
                         "parse SSE: {e}"
                     )))),
-                },
-                Err(e) => Some(StreamEvent::Error(ProviderError::network(format!(
-                    "SSE: {e}"
-                )))),
-            }
-        });
+                } {
+                    events.push(ev);
+                }
+                Some((events, (acc, sse)))
+            },
+        )
+        .flat_map(futures::stream::iter);
         Ok(Box::pin(event_stream))
     }
 
@@ -377,6 +421,13 @@ fn role_to_str(role: crate::types::Role) -> &'static str {
         crate::types::Role::User => "user",
         crate::types::Role::Assistant => "assistant",
         crate::types::Role::System => "system",
+        // OpenAI espera `role: "tool"` para a resposta de uma
+        // `tool_call` (junto com `tool_call_id`). O executor da Etapa 4
+        // emite `ChatMessage::tool(...)` com `tool_call_id` populado
+        // quando o modelo pede uma ferramenta; o `OpenAiCompatAdapter`
+        // transforma isso em `{"role": "tool", "tool_call_id": "...",
+        // "content": "..."}`.
+        crate::types::Role::Tool => "tool",
     }
 }
 

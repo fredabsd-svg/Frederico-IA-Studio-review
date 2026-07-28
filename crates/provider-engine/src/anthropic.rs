@@ -262,15 +262,43 @@ fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value 
         .iter()
         .find(|m| m.role == Role::System)
         .map(|m| m.content.clone());
+    // Mensagens user/assistant viram `{"role": ..., "content":
+    // [{"type": "text", "text": ...}]}`. Mensagens com `Role::Tool`
+    // viram `{"role": "user", "content": [{"type": "tool_result",
+    // "tool_use_id": <call_id>, "content": <output>}]}` (Etapa 4.1).
+    // O `Role::Tool` nunca aparece com system (filtrado acima).
     let messages: Vec<serde_json::Value> = request
         .messages
         .iter()
         .filter(|m| m.role != Role::System)
         .map(|m| {
-            let content = vec![serde_json::json!({
-                "type": "text",
-                "text": m.content,
-            })];
+            let content = match m.role {
+                Role::Tool => {
+                    // O `name` da `ChatMessage::tool(...)` é o
+                    // `ToolId` (e.g. `"files.read"`); o `tool_call_id`
+                    // é o `id` do `StreamEvent::ToolCall`
+                    // correspondente. O formato Anthropic exige
+                    // `tool_use_id` (casa com o `tool_use` emitido
+                    // pelo modelo) e o `content` como string
+                    // (output do tool). O Anthropic aceita o
+                    // `content` como string ou como lista de
+                    // content_blocks — string é o caso comum.
+                    let tool_use_id = m
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let output_text = m.content.clone();
+                    vec![serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": output_text,
+                    })]
+                }
+                _ => vec![serde_json::json!({
+                    "type": "text",
+                    "text": m.content,
+                })],
+            };
             serde_json::json!({
                 "role": role_to_str(m.role),
                 "content": content,
@@ -311,6 +339,12 @@ fn role_to_str(role: Role) -> &'static str {
         Role::User => "user",
         Role::Assistant => "assistant",
         Role::System => "system",
+        // Anthropic não tem `role: "tool"` direto — a resposta de
+        // uma ferramenta é um content_block `{"type": "tool_result",
+        // ...}` dentro de uma mensagem com `role: "user"`
+        // (Etapa 4.1). O `build_request_body` cuida do content
+        // block; este `role_to_str` só devolve o "user".
+        Role::Tool => "user",
     }
 }
 
@@ -436,6 +470,34 @@ mod tests {
         assert!(body["tools"].is_array());
         assert_eq!(body["tools"][0]["name"], "get_weather");
         assert!(body["tools"][0].get("input_schema").is_some());
+    }
+
+    #[test]
+    fn build_request_body_translates_tool_role_to_tool_result_block() {
+        // Etapa 4.1: a mensagem com `Role::Tool` vira um
+        // content_block `{"type": "tool_result", "tool_use_id": ...,
+        // "content": ...}` dentro de uma mensagem com `role:
+        // "user"`. O `tool_call_id` da `ChatMessage` casa com o
+        // `tool_use_id` do Anthropic.
+        let req = ChatRequest::new(
+            ProviderId::new("anthropic"),
+            ModelId::new("claude-3-5-sonnet-latest"),
+            vec![
+                ChatMessage::user("lê o hello.txt"),
+                ChatMessage::tool("files.read", "Hello, world!", "toolu_01ABC"),
+            ],
+        );
+        let body = build_request_body(&req, false);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        // A segunda mensagem é o tool_result.
+        let tool_msg = &messages[1];
+        assert_eq!(tool_msg["role"], "user");
+        let content = tool_msg["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "toolu_01ABC");
+        assert_eq!(content[0]["content"], "Hello, world!");
     }
 
     #[test]
