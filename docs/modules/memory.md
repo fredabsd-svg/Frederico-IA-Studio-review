@@ -1,21 +1,23 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapas 1, 2, 3, 4 e 5)
+Fase correspondente: 4 (Etapas 1, 2, 3, 4, 5 e 6)
 -->
 
 # `frederico-memory`
 
 Memória e continuidade do Frederico IA Studio (Fase 4,
-Etapas 1, 2, 3, 4 e 5). Crate do núcleo (sem dependência de plataforma)
+Etapas 1, 2, 3, 4, 5 e 6). Crate do núcleo (sem dependência de plataforma)
 que entrega o **retrieval híbrido** (lexical FTS5 + cosine
 semântica + recência + importância + confirmação) com
 fallback pro caminho lexical puro quando não há embeddings,
 a **classificação automática pós-resposta** (LLM-based,
 falsificável, fora do caminho crítico), o **fluxo de
-correção, expiração e retomada** (regra do `ADR-0014`), e
+correção, expiração e retomada** (regra do `ADR-0014`),
 a **UI do painel de memória** com `ScoreBreakdown` visível
-(explicabilidade `PROMPT MESTRE` §10.11).
+(explicabilidade `PROMPT MESTRE` §10.11), e o **gate de CI**
+com gold-set expandido (21 cenários cobrindo as 17
+categorias do plano de avaliação).
 
 ## 1. O que este módulo faz
 
@@ -64,6 +66,85 @@ background, fora do caminho crítico), com sobrescrita de
   mensagens: `tool_output:` ou `document_attachment:` →
   `ExternalContent`; mensagem `assistant`/`tool` → `Assistant`;
   senão, o que o LLM propôs).
+
+A Etapa 4 entrega o **fluxo de correção, expiração e retomada**
+(`ADR-0014 §2-3`):
+
+- `MemoryRepo::apply_correction(old_id, replacement, now) ->
+  CorrectionResult` — fluxo atômico de "corrija para X" (a UI
+  da Etapa 5 consome): valida replacement → BEGIN IMMEDIATE →
+  insere a nova (com `user_confirmed = true`,
+  `pending_review = false`) → marca a antiga como superseded
+  (idempotente) → COMMIT. Devolve `CorrectionResult { old_id,
+  new_record, superseded_at }` pro caller exibir "essa memória
+  foi substituída por X há 3 dias".
+- `MemoryRepo::mark_superseded` (idempotente, base do
+  apply_correction).
+- `MemoryRepo::purge_expired(now) -> usize` — DELETE físico
+  de memórias soft-deletadas, superseded, ou expiradas-não-
+  pinned. Chamado na inicialização da casca Tauri
+  (`apps/desktop/src-tauri/src/main.rs::setup`) — best-effort,
+  log + segue em caso de erro.
+- `MemoryRepo::list_pending_review(now)` — lista memórias com
+  `pending_review = true` (fila de revisão de ExternalContent
+  aguardando humano, `ADR-0012 §3`). A Etapa 5 consome pra
+  mostrar a fila no painel.
+- Regra "`user_pinned` bypassa `expires_at` mas não
+  `superseded_by`" enforçada nas queries do `list_by_scope`,
+  `list_pending_review` e `purge_expired` (correção do usuário
+  é mais forte que pin).
+
+A Etapa 5 entrega o **painel de memória na UI** (rota
+`/memories` em `apps/desktop/src/routes/Memories.tsx`):
+
+- IPC backend (`shared-contracts` + `main.rs`): 6 novos
+  `AppOp` (`MemoryList`, `MemoryRetrieve`,
+  `MemoryApplyCorrection`, `MemoryConfirmPending`,
+  `MemoryRejectPending`, `MemoryPurgeExpired`) + 4 views
+  (`MemoryView`, `ScoreBreakdownView`, `MemoryHitView`,
+  `CorrectionResultView`) + 1 input (`NewMemoryInputView`).
+- `services/memory.ts` (camada IPC do frontend): 6 funções
+  que consomem os `AppOp` (regra do `ADR-0003` — única camada
+  que faz `invoke` no Tauri).
+- `components/MemoryPanel.tsx`: lista de memórias com
+  `ScoreBreakdown` visível (lexical, recency, semantic,
+  importance, confirmation, scope_match), badges
+  (pendente de revisão, pinned, expirada, superseded),
+  form inline de "corrija para X" (modal), e banner
+  "Memória substituída" com link pra nova.
+- Wire do `MemoryExtractor` no `ChatOrchestrator`: a casca
+  Tauri cria o `LlmMemoryClassifier` (com
+  `NoopCompletionProvider` por enquanto — a Etapa 5.x
+  injeta o OpenRouter real) + `MemoryExtractor` em
+  background, e passa o `MemoryExtractorHandle` pro
+  `ChatOrchestrator` que enfileira um
+  `MemoryExtractionJob` após cada Run finalizar.
+
+A Etapa 6 fecha a Fase 4 com o **gate de CI** baseado em
+gold-set versionado:
+
+- `crates/memory/tests/fixtures/gold_set.jsonl` com **21
+  cenários** cobrindo as 17 categorias do
+  [`memory-evaluation-plan.md`](../architecture/memory-evaluation-plan.md)
+  (escopo project/client/conversation, correção de info
+  antiga, expiração com pinned bypass, vazamento cruzado
+  entre projetos, sinônimos, cross-language, prompt
+  injection como dado, malicious memory, documento
+  anexo com payload → `pending_review`, duplicate
+  conflict, no_results, greeting curto, etc).
+- `crates/memory/config/eval.toml` com os **alvos de
+  produção** (Etapa 6, hard fail em CI): precisão ≥ 0.70,
+  F1 ≥ 0.65, vazamento cruzado = 0 (I4), p99 ≤ 2000ms
+  (§10.13). p95 ≤ 1000ms (warning).
+- `crates/memory/tests/evaluation.rs` runner
+  determinístico (SQLite in-memory + `FakeClock` +
+  `FakeHashEmbed` pro híbrido) que carrega o `eval.toml`,
+  roda os 21 cenários, e aplica o gate — falha o teste
+  se qualquer hard fail estourar (CI-friendly).
+
+Estado atual medido (Etapa 6): precisão **0.905**, F1
+**0.937**, vazamento **0**, p99 **1-3ms** (gate 2000ms
+— folga de 3 ordens de grandeza).
 
 ## 2. O que ele expõe
 
@@ -187,7 +268,7 @@ cargo test -p frederico-memory --test evaluation -- --nocapture
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-Cobertura atual (Etapas 1 + 2 + 3 + 4 + 5):
+Cobertura atual (Etapas 1 + 2 + 3 + 4 + 5 + 6):
 
 - **`src/error.rs`**: 0 testes (tipos puros).
 - **`src/sanitize.rs`**: 10 testes (escape de aspas,
