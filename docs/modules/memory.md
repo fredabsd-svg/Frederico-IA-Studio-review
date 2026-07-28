@@ -1,18 +1,19 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapas 1, 2 e 3)
+Fase correspondente: 4 (Etapas 1, 2, 3 e 4)
 -->
 
 # `frederico-memory`
 
 Memória e continuidade do Frederico IA Studio (Fase 4,
-Etapas 1, 2 e 3). Crate do núcleo (sem dependência de plataforma)
+Etapas 1, 2, 3 e 4). Crate do núcleo (sem dependência de plataforma)
 que entrega o **retrieval híbrido** (lexical FTS5 + cosine
 semântica + recência + importância + confirmação) com
 fallback pro caminho lexical puro quando não há embeddings,
-e a **classificação automática pós-resposta** (LLM-based,
-falsificável, fora do caminho crítico).
+a **classificação automática pós-resposta** (LLM-based,
+falsificável, fora do caminho crítico), e o **fluxo de
+correção, expiração e retomada** (regra do `ADR-0014`).
 
 ## 1. O que este módulo faz
 
@@ -74,9 +75,11 @@ background, fora do caminho crítico), com sobrescrita de
 - `MemoryRepo<'a>` — `new`, `insert_auto_captured`,
   `insert_user_confirmed`, `insert_pending_review`, `get`,
   `list_by_scope`, `search_lexical`, `mark_superseded`,
-  `purge_expired`, `confirm_pending`, `reject_pending`,
-  `set_embedding`, `get_embedding`, `mark_embedding_failed`,
-  `list_pending_embeddings`.
+  `apply_correction`, `purge_expired`, `confirm_pending`,
+  `reject_pending`, `set_embedding`, `get_embedding`,
+  `mark_embedding_failed`, `list_pending_embeddings`.
+- `CorrectionResult` (devolvido por `apply_correction`: `old_id`,
+  `new_record`, `superseded_at`).
 - `EmbeddingProvider` trait + `NoopEmbeddingAdapter` +
   `OpenRouterEmbeddingAdapter` (Etapa 2).
 - `MemoryClassifier` trait + `NoopMemoryClassifier` +
@@ -175,7 +178,7 @@ cargo test -p frederico-memory --test evaluation -- --nocapture
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-Cobertura atual (Etapas 1 + 2 + 3):
+Cobertura atual (Etapas 1 + 2 + 3 + 4):
 
 - **`src/error.rs`**: 0 testes (tipos puros).
 - **`src/sanitize.rs`**: 10 testes (escape de aspas,
@@ -193,7 +196,8 @@ Cobertura atual (Etapas 1 + 2 + 3):
   devolve Unavailable, parse válido de JSON, threshold de
   confidence descarta, JSON inválido, quota estourada).
 - **`src/memory_repo.rs`**: 7 testes unit (validações de
-  NewMemoryInput). E2E via `tests/evaluation.rs`.
+  NewMemoryInput). E2E via `tests/evaluation.rs` e
+  `tests/expiration.rs`.
 - **`src/retriever.rs`**: 5 testes unit (recency_factor,
   confirmation_factor).
 - **`src/worker.rs`**: 9 testes (2 do `EmbeddingWorker` +
@@ -209,9 +213,16 @@ Cobertura atual (Etapas 1 + 2 + 3):
   `OpenRouterEmbeddingAdapter` com `TcpListener` local
   (request/parse correto, count errado, dim errada,
   HTTP 500, `Debug` redata key).
+- **`tests/expiration.rs`** (Etapa 4): 9 testes E2E do
+  `apply_correction` (atômico, idempotente, valida antes de
+  abrir transação) + filtros de expiração e supersedência
+  (pinned bypassa `expires_at`, correção é mais forte que
+  pin) + `purge_expired` (deleta expired+superseded, preserva
+  pinned) + `superseded_at` consistente com `now` do caller
+  (audit trail da Etapa 5).
 
 Total estimado: ~57 testes unit + 2 E2E do runner + 5 E2E
-do adapter.
+do adapter + 9 E2E de expiration.
 
 ## 6. O que ele **não** faz
 
