@@ -1,17 +1,16 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapa 1)
+Fase correspondente: 4 (Etapas 1 e 2)
 -->
 
 # `frederico-memory`
 
-Memória e continuidade do Frederico IA Studio (Fase 4, Etapa 1).
-Crate do núcleo (sem dependência de plataforma) que entrega
-o **funcionamento sem embeddings** da memória: busca lexical
-via FTS5 do SQLite, mais os sinais não-semânticos do scoring
-(recência, importância, confirmação). O retrieval híbrido
-(semântica) entra na Etapa 2.
+Memória e continuidade do Frederico IA Studio (Fase 4,
+Etapas 1 e 2). Crate do núcleo (sem dependência de plataforma)
+que entrega o **retrieval híbrido** (lexical FTS5 + cosine
+semântica + recência + importância + confirmação) com
+fallback pro caminho lexical puro quando não há embeddings.
 
 ## 1. O que este módulo faz
 
@@ -144,26 +143,37 @@ cargo test -p frederico-memory --test evaluation -- --nocapture
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-Cobertura atual (Etapa 1):
+Cobertura atual (Etapas 1 + 2):
 
 - **`src/error.rs`**: 0 testes (tipos puros).
-- **`src/sanitize.rs`**: 9 testes (escape de aspas,
-  truncation, neutralização de injection).
-- **`src/config.rs`**: 4 testes (defaults, validação de
+- **`src/sanitize.rs`**: 10 testes (escape de aspas,
+  truncation, neutralização de injection, OR explícito,
+  preservação de unicode).
+- **`src/config.rs`**: 6 testes (defaults, validação de
   pesos, soma ≈ 1.0, gate de p99).
-- **`src/embedding.rs`**: 3 testes (Noop devolve
-  Unavailable, ids, error display).
+- **`src/embedding.rs`**: 4 testes unit (Noop devolve
+  Unavailable, ids, error display, `Debug` redata key).
+- **`src/embedding_codec.rs`**: 9 testes (encode/decode
+  roundtrip, dim errada, cosine idêntico/ortogonal/oposto/
+  zero_norm/similar_direction).
 - **`src/classifier.rs`**: 2 testes (Noop devolve None,
   error display).
-- **`src/memory_repo.rs`**: 6 testes unit (validações de
+- **`src/memory_repo.rs`**: 7 testes unit (validações de
   NewMemoryInput). E2E via `tests/evaluation.rs`.
 - **`src/retriever.rs`**: 5 testes unit (recency_factor,
   confirmation_factor).
-- **`tests/evaluation.rs`**: 1 teste E2E que roda os 10
-  cenários do gold-set, calcula métricas, aplica o gate.
+- **`src/worker.rs`**: 2 testes (worker processa memórias
+  pendentes, marca failed).
+- **`tests/evaluation.rs`**: 2 testes E2E — `run_gold_set_evaluation`
+  (baseline lexical, 10 cenários) + `run_gold_set_evaluation_hybrid`
+  (híbrido com `FakeHashEmbed`, 10 cenários). Gate da Etapa 2
+  exige `F1 híbrido ≥ 0.9` (não regride o baseline).
+- **`tests/embedding_adapter.rs`**: 5 testes E2E do
+  `OpenRouterEmbeddingAdapter` com `TcpListener` local
+  (request/parse correto, count errado, dim errada,
+  HTTP 500, `Debug` redata key).
 
-Total estimado: ~30 testes na Etapa 1, mais o runner
-que conta como 1 teste mas exercita 10 cenários.
+Total estimado: ~50 testes + 2 E2E do runner.
 
 ## 6. O que ele **não** faz
 
