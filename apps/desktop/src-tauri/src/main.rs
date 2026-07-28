@@ -20,6 +20,7 @@ use frederico_execution_engine::orchestrator::ChatOrchestrator;
 use frederico_execution_engine::recovery::{
     spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS,
 };
+use frederico_memory::MemoryRepo;
 use frederico_model_catalog::Catalog;
 use frederico_provider_engine::openai_compat::OpenAiCompatAdapter;
 use frederico_provider_engine::{EventSink, ProviderMap, RunRegistry};
@@ -128,6 +129,45 @@ fn main() {
             let db = tauri::async_runtime::block_on(async { Database::open(&db_path).await })
                 .expect("abre o banco SQLite");
             let db = Arc::new(db);
+
+            // `purge_expired` na inicialização (Etapa 4 da Fase 4,
+            // `ADR-0014 §3` — coleta preguiçosa na leitura, com
+            // purge manual no startup). Roda DEPOIS das migrations
+            // (o `Database::open` aplica) e ANTES do `ChatOrchestrator`
+            // ser construído. Best-effort: se o banco estiver em uso
+            // por outro processo (`SQLITE_BUSY`), loga e segue —
+            // a próxima inicialização tenta de novo. Custo: 1
+            // `DELETE` que lista os IDs deletados pra log.
+            //
+            // O `SystemClock` ainda não foi construído aqui
+            // (declarado mais abaixo), então usamos `chrono::Utc::now()`
+            // direto pra este ponto de boot — o custo de não ter
+            // um `Clock` injetado aqui é zero (não é caminho
+            // crítico, falha silenciosa).
+            //
+            // O `setup` do Tauri não é `async`, então usamos
+            // `tauri::async_runtime::block_on` (mesma estratégia
+            // do `Database::open` logo acima).
+            tauri::async_runtime::block_on(async {
+                let memory_repo = MemoryRepo::new(&db);
+                match memory_repo.purge_expired(chrono::Utc::now()).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::info!(
+                            memory.purge_expired = deleted,
+                            "memórias expiradas/superseded purgadas na inicialização"
+                        );
+                    }
+                    Ok(_) => {
+                        tracing::debug!("nenhuma memória expirada/superseded pra purgar");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "falha ao purgar memórias expiradas na inicialização — seguindo adiante"
+                        );
+                    }
+                }
+            });
 
             let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
