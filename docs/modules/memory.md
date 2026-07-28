@@ -1,16 +1,18 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapas 1 e 2)
+Fase correspondente: 4 (Etapas 1, 2 e 3)
 -->
 
 # `frederico-memory`
 
 Memória e continuidade do Frederico IA Studio (Fase 4,
-Etapas 1 e 2). Crate do núcleo (sem dependência de plataforma)
+Etapas 1, 2 e 3). Crate do núcleo (sem dependência de plataforma)
 que entrega o **retrieval híbrido** (lexical FTS5 + cosine
 semântica + recência + importância + confirmação) com
-fallback pro caminho lexical puro quando não há embeddings.
+fallback pro caminho lexical puro quando não há embeddings,
+e a **classificação automática pós-resposta** (LLM-based,
+falsificável, fora do caminho crítico).
 
 ## 1. O que este módulo faz
 
@@ -38,6 +40,28 @@ constroem em cima:
 - Configuração versionada (`config/scoring.toml` e
   `config/eval.toml`) — pesos numéricos e alvos do gate.
 
+A Etapa 3 entrega a **classificação automática** — LLM com
+prompt restrito e output estruturado, rodando **pós-resposta**
+via worker `MemoryExtractor` (canal mpsc, `tokio::spawn` em
+background, fora do caminho crítico), com sobrescrita de
+`origin` baseada em proveniência real (mitiga E2):
+
+- `CompletionProvider` trait + `NoopCompletionProvider`
+  (porta fina pro `provider-engine` sem dependência cíclica).
+- `LlmMemoryClassifier` (LLM-based, `openai/gpt-4o-mini` via
+  OpenRouter, prompt restrito, parse de JSON, validação de
+  scope/confidence/importance, threshold 0.6 default, cota
+  5/min via `Mutex<Vec<Instant>>`).
+- `MemoryExtractionJob` (run_id, conversation_id, messages,
+  finished_at) + `MemoryExtractor` + `MemoryExtractorHandle`
+  (mesma estratégia do `EmbeddingWorker` — sem
+  `tokio::time::interval`, ADR-0014 §1).
+- `determine_real_origin` (helper que sobrescreve o `origin`
+  proposto pelo LLM com base na proveniência real das
+  mensagens: `tool_output:` ou `document_attachment:` →
+  `ExternalContent`; mensagem `assistant`/`tool` → `Assistant`;
+  senão, o que o LLM propôs).
+
 ## 2. O que ele expõe
 
 - Tipos no `frederico-core::memory`:
@@ -50,10 +74,19 @@ constroem em cima:
 - `MemoryRepo<'a>` — `new`, `insert_auto_captured`,
   `insert_user_confirmed`, `insert_pending_review`, `get`,
   `list_by_scope`, `search_lexical`, `mark_superseded`,
-  `purge_expired`, `confirm_pending`, `reject_pending`.
-- `EmbeddingProvider` trait + `NoopEmbeddingAdapter`.
-- `MemoryClassifier` trait + `NoopMemoryClassifier`.
-- `Retriever` trait + `LexicalRetriever`.
+  `purge_expired`, `confirm_pending`, `reject_pending`,
+  `set_embedding`, `get_embedding`, `mark_embedding_failed`,
+  `list_pending_embeddings`.
+- `EmbeddingProvider` trait + `NoopEmbeddingAdapter` +
+  `OpenRouterEmbeddingAdapter` (Etapa 2).
+- `MemoryClassifier` trait + `NoopMemoryClassifier` +
+  `LlmMemoryClassifier` + `CompletionProvider` trait +
+  `NoopCompletionProvider` (Etapa 3).
+- `LlmClassifierConfig` (modelo, max_messages, confidence_threshold, quota_per_minute).
+- `Retriever` trait + `LexicalRetriever` + `HybridRetriever` (Etapa 2).
+- `EmbeddingWorker` + `EmbeddingWorkerHandle` (worker de embeddings, Etapa 2).
+- `MemoryExtractor` + `MemoryExtractorHandle` +
+  `MemoryExtractionJob` (worker de classificação, Etapa 3).
 - `ScoringWeights` (config) + `EvalGate` (gate de avaliação).
 - `NewMemoryInput` (input dos métodos de insert do `MemoryRepo`).
 - `MemoryError` (erro unificado do subsistema) + `MemoryResult`.
@@ -73,11 +106,10 @@ constroem em cima:
 
 **Quem depende dele (hoje):**
 
-- Ninguém ainda. A Etapa 3 da Fase 4 (classificador) integra
-  o `LlmMemoryClassifier` no worker pós-resposta
-  (caller é o `ChatOrchestrator` da Fase 3). A Etapa 4
-  (correções) integra o `mark_superseded` no fluxo de UI
-  ("corrija para X"). A Etapa 5 (UI) consome o `Retriever`
+- `apps/desktop/src-tauri` (Fase 5) vai consumir o `Retriever`
+  via IPC e usar `MemoryExtractor` pra classificar respostas.
+  A Etapa 4 (correções) integra o `mark_superseded` no fluxo
+  de UI ("corrija para X"). A Etapa 5 (UI) consome o `Retriever`
   via IPC.
 
 **Quem vai depender dele (próximas etapas):**
@@ -143,7 +175,7 @@ cargo test -p frederico-memory --test evaluation -- --nocapture
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-Cobertura atual (Etapas 1 + 2):
+Cobertura atual (Etapas 1 + 2 + 3):
 
 - **`src/error.rs`**: 0 testes (tipos puros).
 - **`src/sanitize.rs`**: 10 testes (escape de aspas,
@@ -156,14 +188,19 @@ Cobertura atual (Etapas 1 + 2):
 - **`src/embedding_codec.rs`**: 9 testes (encode/decode
   roundtrip, dim errada, cosine idêntico/ortogonal/oposto/
   zero_norm/similar_direction).
-- **`src/classifier.rs`**: 2 testes (Noop devolve None,
-  error display).
+- **`src/classifier.rs`**: 8 testes (Noop devolve None,
+  error display, `LlmMemoryClassifier` com NoopCompletion
+  devolve Unavailable, parse válido de JSON, threshold de
+  confidence descarta, JSON inválido, quota estourada).
 - **`src/memory_repo.rs`**: 7 testes unit (validações de
   NewMemoryInput). E2E via `tests/evaluation.rs`.
 - **`src/retriever.rs`**: 5 testes unit (recency_factor,
   confirmation_factor).
-- **`src/worker.rs`**: 2 testes (worker processa memórias
-  pendentes, marca failed).
+- **`src/worker.rs`**: 9 testes (2 do `EmbeddingWorker` +
+  7 do `MemoryExtractor`: classifica User→auto_captured,
+  external_content→pending_review, assistant→Assistant,
+  classifier devolve None não insere, classifier Err não
+  panica, NoopMemoryClassifier compat, enqueue não-bloqueante).
 - **`tests/evaluation.rs`**: 2 testes E2E — `run_gold_set_evaluation`
   (baseline lexical, 10 cenários) + `run_gold_set_evaluation_hybrid`
   (híbrido com `FakeHashEmbed`, 10 cenários). Gate da Etapa 2
@@ -173,17 +210,17 @@ Cobertura atual (Etapas 1 + 2):
   (request/parse correto, count errado, dim errada,
   HTTP 500, `Debug` redata key).
 
-Total estimado: ~50 testes + 2 E2E do runner.
+Total estimado: ~57 testes unit + 2 E2E do runner + 5 E2E
+do adapter.
 
 ## 6. O que ele **não** faz
 
-- **Não calcula embeddings.** `NoopEmbeddingAdapter` sempre
-  devolve `Err(Unavailable)`. A Etapa 2 introduz o
-  `OpenRouterEmbeddingAdapter` real.
-- **Não classifica memórias automaticamente.** O
-  `MemoryClassifier` trait existe mas só tem o `Noop`. A
-  Etapa 3 introduz o `LlmMemoryClassifier` (LLM com prompt
-  restrito, output estruturado, pós-resposta, falsificável).
+- **Não classifica memórias automaticamente** em produção.
+  A Etapa 3 entrega o `LlmMemoryClassifier` e o
+  `MemoryExtractor` pós-resposta, mas a casca Tauri ainda
+  não chama o `enqueue` (isso é trabalho de integração da
+  Etapa 5/UI). O `NoopMemoryClassifier` (Etapa 1) é o
+  default até lá.
 - **Não roda o `ReindexWorker` em background.** O schema
   de `embedding_reindex_jobs` está pronto (regra do
   [ADR-0013](../decisions/0013-embedding-reindex.md)) mas
