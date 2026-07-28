@@ -118,6 +118,55 @@ pub enum AppOp {
         approval_id: String,
         decision: serde_json::Value,
     },
+
+    // --- Etapa 5 (Fase 4): painel de memória ---
+    /// Lista memórias visíveis em um escopo (pré-filtro de
+    /// escopo + `active` + `!superseded` + `!pending_review` +
+    /// `!expirada`, mesma regra do `MemoryRepo::list_by_scope`).
+    /// `scope_type` é `"project" | "preference" | "profile" |
+    /// "assistant" | "client" | "conversation" | "document" |
+    /// "task" | "session"`. `include_pending` inclui as
+    /// `pending_review` (queue de ExternalContent) — a Etapa 5
+    /// usa isso pra mostrar a fila de revisão na UI.
+    MemoryList {
+        scope_type: String,
+        scope_id: String,
+        include_pending: bool,
+    },
+    /// Recupera memórias relevantes pra uma query no escopo
+    /// (retrieval híbrido do `Retriever`). Devolve
+    /// `Vec<MemoryHitView>` com `score_breakdown` visível
+    /// (explicabilidade `PROMPT MESTRE` §10.11).
+    MemoryRetrieve {
+        scope_type: String,
+        scope_id: String,
+        query: String,
+        k: u32,
+    },
+    /// Aplica correção ("corrija para X" da Etapa 4):
+    /// insere a nova memória + marca a antiga como superseded,
+    /// atomicamente. Devolve `CorrectionResultView` com
+    /// `old_id`, `new_record` e `superseded_at` — a Etapa 5
+    /// usa o `superseded_at` pra "essa memória foi substituída
+    /// há 3 dias".
+    MemoryApplyCorrection {
+        old_id: String,
+        replacement: NewMemoryInputView,
+    },
+    /// Confirma uma memória com `pending_review = true`
+    /// (fila de ExternalContent). Vira `user_confirmed = true`
+    /// e `pending_review = false`.
+    MemoryConfirmPending {
+        id: String,
+    },
+    /// Rejeita (deleta) uma memória com `pending_review = true`.
+    MemoryRejectPending {
+        id: String,
+    },
+    /// Limpa memórias expiradas + superseded + soft-deleted
+    /// (best-effort, análogo ao `purge_expired` no startup).
+    /// Devolve o número de linhas deletadas. Atalho pra UI.
+    MemoryPurgeExpired,
 }
 
 /// View de uma entry da fila de aprovação (Etapa 6).
@@ -201,6 +250,94 @@ pub struct MessageEventView {
 pub struct MessageSendResult {
     pub user_message: MessageView,
     pub run_id: String,
+}
+
+// --- Etapa 5 (Fase 4): views do painel de memória -------------------
+
+/// View de uma memória (espelha `frederico_core::MemoryRecord`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryView {
+    pub id: String,
+    pub scope_type: String,
+    pub scope_id: String,
+    /// Tipo canônico: `"preference" | "fact" | "decision" | "correction"
+    /// | "project_instruction" | "client_context" | "procedure"
+    /// | "delivery_pattern" | "temporary" | "conversation_summary"
+    /// | "document_reference" | "user_pinned"`.
+    pub type_: String,
+    pub content: String,
+    /// `"user" | "assistant" | "external_content"`.
+    pub origin: String,
+    pub source_type: String,
+    pub source_id: Option<String>,
+    pub confidence: f32,
+    pub importance: f32,
+    pub embedding_status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub expires_at: Option<String>,
+    pub superseded_by: Option<String>,
+    pub superseded_at: Option<String>,
+    pub user_confirmed: bool,
+    pub user_pinned: bool,
+    pub pending_review: bool,
+}
+
+/// Decomposição do score final (`PROMPT MESTRE` §10.11 — explicabilidade).
+/// O painel da Etapa 5 mostra essa decomposição ao usuário
+/// ("essa memória foi recuperada por match lexical + recente
+/// + confirmada").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreBreakdownView {
+    pub lexical: f32,
+    pub recency: f32,
+    pub semantic: f32,
+    pub importance: f32,
+    pub confirmation: f32,
+    pub scope_match: bool,
+}
+
+/// Hit do retrieval com score e explicabilidade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHitView {
+    pub record: MemoryView,
+    pub score: f32,
+    pub score_breakdown: ScoreBreakdownView,
+    /// Frase curta explicando por que essa memória foi
+    /// recuperada. Mostrada na UI.
+    pub explanation: String,
+}
+
+/// Resultado do `MemoryApplyCorrection` (espelha
+/// `frederico_memory::CorrectionResult`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectionResultView {
+    pub old_id: String,
+    pub new_record: MemoryView,
+    pub superseded_at: String,
+}
+
+/// Input do `MemoryApplyCorrection` — substituto da memória
+/// antiga. Espelha `frederico_memory::NewMemoryInput` mas
+/// com `Deserialize` (o original é só `Clone` pra evitar
+/// acoplar a UI a tipos internos do `memory`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewMemoryInputView {
+    pub scope_type: String,
+    pub scope_id: String,
+    /// `serde(rename = "type_")` — o Rust não pode usar `type`
+    /// como nome de campo.
+    #[serde(rename = "type_")]
+    pub type_: String,
+    pub content: String,
+    pub origin: String,
+    pub source_type: String,
+    pub source_id: Option<String>,
+    pub confidence: f32,
+    pub importance: f32,
+    /// ISO 8601 (RFC 3339). Opcional — só obrigatório se
+    /// `type_ == "temporary"`.
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -306,5 +443,213 @@ mod tests {
             AppOp::RunGetEvents { since_seq, .. } => assert_eq!(since_seq, 5),
             _ => panic!("esperava RunGetEvents"),
         }
+    }
+
+    // --- Etapa 5 (Fase 4): roundtrip das ops de memória ---
+
+    #[test]
+    fn app_op_memory_list_roundtrip() {
+        let op = AppOp::MemoryList {
+            scope_type: "project".to_string(),
+            scope_id: "proj-1".to_string(),
+            include_pending: true,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_list\""));
+        assert!(json.contains("\"include_pending\":true"));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        match back {
+            AppOp::MemoryList {
+                scope_type,
+                scope_id,
+                include_pending,
+            } => {
+                assert_eq!(scope_type, "project");
+                assert_eq!(scope_id, "proj-1");
+                assert!(include_pending);
+            }
+            _ => panic!("esperava MemoryList"),
+        }
+    }
+
+    #[test]
+    fn app_op_memory_retrieve_roundtrip() {
+        let op = AppOp::MemoryRetrieve {
+            scope_type: "project".to_string(),
+            scope_id: "proj-1".to_string(),
+            query: "como faço X?".to_string(),
+            k: 8,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_retrieve\""));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        match back {
+            AppOp::MemoryRetrieve { k, .. } => assert_eq!(k, 8),
+            _ => panic!("esperava MemoryRetrieve"),
+        }
+    }
+
+    #[test]
+    fn app_op_memory_apply_correction_roundtrip() {
+        // O `replacement` é um `NewMemoryInputView` (com
+        // `Deserialize`) — espelha `frederico_memory::NewMemoryInput`.
+        let replacement = NewMemoryInputView {
+            scope_type: "project".to_string(),
+            scope_id: "proj-1".to_string(),
+            type_: "correction".to_string(),
+            content: "na verdade uso Postgres".to_string(),
+            origin: "user".to_string(),
+            source_type: "user_message".to_string(),
+            source_id: None,
+            confidence: 0.9,
+            importance: 0.7,
+            expires_at: None,
+        };
+        let op = AppOp::MemoryApplyCorrection {
+            old_id: "old-uuid-123".to_string(),
+            replacement: replacement.clone(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_apply_correction\""));
+        assert!(json.contains("\"old_id\":\"old-uuid-123\""));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        match back {
+            AppOp::MemoryApplyCorrection {
+                old_id,
+                replacement: r,
+            } => {
+                assert_eq!(old_id, "old-uuid-123");
+                assert_eq!(r.content, "na verdade uso Postgres");
+                assert_eq!(r.type_, "correction");
+                assert_eq!(r.scope_type, "project");
+            }
+            _ => panic!("esperava MemoryApplyCorrection"),
+        }
+    }
+
+    #[test]
+    fn app_op_memory_confirm_pending_roundtrip() {
+        let op = AppOp::MemoryConfirmPending {
+            id: "pending-uuid".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_confirm_pending\""));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        match back {
+            AppOp::MemoryConfirmPending { id } => assert_eq!(id, "pending-uuid"),
+            _ => panic!("esperava MemoryConfirmPending"),
+        }
+    }
+
+    #[test]
+    fn app_op_memory_reject_pending_roundtrip() {
+        let op = AppOp::MemoryRejectPending {
+            id: "pending-uuid".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_reject_pending\""));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AppOp::MemoryRejectPending { .. }));
+    }
+
+    #[test]
+    fn app_op_memory_purge_expired_roundtrip() {
+        let op = AppOp::MemoryPurgeExpired;
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"kind\":\"memory_purge_expired\""));
+        let back: AppOp = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, AppOp::MemoryPurgeExpired));
+    }
+
+    #[test]
+    fn score_breakdown_view_roundtrip() {
+        let b = ScoreBreakdownView {
+            lexical: 0.8,
+            recency: 0.6,
+            semantic: 0.4,
+            importance: 0.5,
+            confirmation: 0.3,
+            scope_match: true,
+        };
+        let json = serde_json::to_string(&b).unwrap();
+        let back: ScoreBreakdownView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.lexical, 0.8);
+        assert!(back.scope_match);
+    }
+
+    #[test]
+    fn memory_hit_view_roundtrip() {
+        let hit = MemoryHitView {
+            record: MemoryView {
+                id: "mem-1".to_string(),
+                scope_type: "project".to_string(),
+                scope_id: "proj-1".to_string(),
+                type_: "fact".to_string(),
+                content: "conteúdo da memória".to_string(),
+                origin: "user".to_string(),
+                source_type: "user_message".to_string(),
+                source_id: None,
+                confidence: 0.9,
+                importance: 0.5,
+                embedding_status: "ready".to_string(),
+                created_at: "2026-07-28T00:00:00Z".to_string(),
+                updated_at: "2026-07-28T00:00:00Z".to_string(),
+                expires_at: None,
+                superseded_by: None,
+                superseded_at: None,
+                user_confirmed: true,
+                user_pinned: false,
+                pending_review: false,
+            },
+            score: 1.5,
+            score_breakdown: ScoreBreakdownView {
+                lexical: 0.9,
+                recency: 1.0,
+                semantic: 0.0,
+                importance: 0.5,
+                confirmation: 0.0,
+                scope_match: true,
+            },
+            explanation: "match lexical + recente".to_string(),
+        };
+        let json = serde_json::to_string(&hit).unwrap();
+        let back: MemoryHitView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.score, 1.5);
+        assert_eq!(back.record.content, "conteúdo da memória");
+        assert_eq!(back.explanation, "match lexical + recente");
+    }
+
+    #[test]
+    fn correction_result_view_roundtrip() {
+        let result = CorrectionResultView {
+            old_id: "old-uuid".to_string(),
+            new_record: MemoryView {
+                id: "new-uuid".to_string(),
+                scope_type: "project".to_string(),
+                scope_id: "proj-1".to_string(),
+                type_: "correction".to_string(),
+                content: "corrigido".to_string(),
+                origin: "user".to_string(),
+                source_type: "user_message".to_string(),
+                source_id: None,
+                confidence: 0.9,
+                importance: 0.7,
+                embedding_status: "pending".to_string(),
+                created_at: "2026-07-28T00:00:00Z".to_string(),
+                updated_at: "2026-07-28T00:00:00Z".to_string(),
+                expires_at: None,
+                superseded_by: None,
+                superseded_at: None,
+                user_confirmed: true,
+                user_pinned: false,
+                pending_review: false,
+            },
+            superseded_at: "2026-07-28T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: CorrectionResultView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.old_id, "old-uuid");
+        assert_eq!(back.new_record.id, "new-uuid");
+        assert_eq!(back.new_record.type_, "correction");
     }
 }

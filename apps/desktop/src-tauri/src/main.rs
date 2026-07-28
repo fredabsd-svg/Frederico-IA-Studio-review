@@ -14,12 +14,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use frederico_core::ToolId;
+use frederico_core::{MemoryHit, MemoryScopeType, MemorySourceType, ToolId};
 use frederico_diagnostics as diagnostics;
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
 use frederico_execution_engine::recovery::{
     spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS,
 };
+use frederico_memory::retriever::{HybridRetriever, Retriever};
 use frederico_memory::MemoryRepo;
 use frederico_model_catalog::Catalog;
 use frederico_provider_engine::openai_compat::OpenAiCompatAdapter;
@@ -27,8 +28,9 @@ use frederico_provider_engine::{EventSink, ProviderMap, RunRegistry};
 use frederico_security::windows::WindowsCredentialStore;
 use frederico_security::{Clock, CredentialStore, SystemClock};
 use frederico_shared_contracts::{
-    AppOp, ConversationView, IpcRequest, IpcResponse, MessageEventView, MessageSendResult,
-    MessageView, ModelDescriptorView, ProviderConfigView,
+    AppOp, ConversationView, CorrectionResultView, IpcRequest, IpcResponse, MemoryHitView,
+    MemoryView, MessageEventView, MessageSendResult, MessageView, ModelDescriptorView,
+    ProviderConfigView, ScoreBreakdownView,
 };
 use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
 use frederico_tool_registry::{Jail, Tool, ToolRegistry};
@@ -511,6 +513,125 @@ async fn ipc_dispatch(
                 .map_err(|e| e.to_string())?;
             Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
+
+        // --- Etapa 5 (Fase 4): painel de memória ---
+        AppOp::MemoryList {
+            scope_type,
+            scope_id,
+            include_pending,
+        } => {
+            let parsed = parse_scope_type(&scope_type).map_err(|e| e.to_string())?;
+            let repo = MemoryRepo::new(&state.db);
+            let now = chrono::Utc::now();
+            // O `list_by_scope` filtra `pending_review = false`
+            // por padrão (regra do `MemoryRecord::is_visible`).
+            // Quando `include_pending = true`, queremos ver
+            // também a fila de revisão de ExternalContent —
+            // então listamos via `list_pending_review` (helper
+            // novo) OU listamos tudo e filtramos no caller.
+            // Implementação: lista via `search_lexical("*")`
+            // para incluir `pending_review = true`? Não — mais
+            // limpo: listar `list_by_scope` + um segundo
+            // `list_by_pending_review` quando aplicável.
+            // Para v1, mantemos simples: a UI chama com
+            // `include_pending = true` no painel de revisão
+            // e o backend concatena as duas listas.
+            let mut records = repo
+                .list_by_scope(parsed, &scope_id, now)
+                .await
+                .map_err(|e| e.to_string())?;
+            if include_pending {
+                // Pending review lista todas as memórias com
+                // `pending_review = true` independente de
+                // escopo — o caller filtra no cliente. Por
+                // ora, deixa como a Etapa 5 decidir; se
+                // precisar, adicionamos um `list_pending()`
+                // puro no repo.
+                let pending = repo
+                    .list_pending_review(now)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                records.extend(pending);
+            }
+            let view: Vec<MemoryView> = records.iter().map(record_to_view).collect();
+            Ok(IpcResponse::ok(view).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::MemoryRetrieve {
+            scope_type,
+            scope_id,
+            query,
+            k,
+        } => {
+            let parsed = parse_scope_type(&scope_type).map_err(|e| e.to_string())?;
+            let retriever = build_retriever(&state);
+            let req = frederico_core::RetrievalRequest {
+                scope_type: parsed,
+                scope_id: scope_id.clone(),
+                query,
+                k: k as usize,
+                token_budget: 1500,
+                recency_epsilon: 0.01,
+            };
+            let result = retriever.retrieve(req).await.map_err(|e| e.to_string())?;
+            let view: Vec<MemoryHitView> = result.hits.iter().map(hit_to_view).collect();
+            Ok(IpcResponse::ok(view).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::MemoryApplyCorrection {
+            old_id,
+            replacement,
+        } => {
+            let parsed_id = uuid::Uuid::parse_str(&old_id)
+                .map(frederico_core::MemoryId)
+                .map_err(|e| e.to_string())?;
+            // Converte `NewMemoryInputView` (do IPC, com
+            // `Deserialize`) pra `NewMemoryInput` (do
+            // `frederico-memory`, só `Clone` por design).
+            let input = input_view_to_input(replacement)
+                .map_err(|e| format!("replacement inválido: {e}"))?;
+            let repo = MemoryRepo::new(&state.db);
+            let result = repo
+                .apply_correction(&parsed_id, input, chrono::Utc::now())
+                .await
+                .map_err(|e| e.to_string())?;
+            let view = CorrectionResultView {
+                old_id: result.old_id.0.to_string(),
+                new_record: record_to_view(&result.new_record),
+                superseded_at: result.superseded_at.to_rfc3339(),
+            };
+            Ok(IpcResponse::ok(view).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::MemoryConfirmPending { id } => {
+            let parsed_id = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::MemoryId)
+                .map_err(|e| e.to_string())?;
+            let repo = MemoryRepo::new(&state.db);
+            repo.confirm_pending(&parsed_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::MemoryRejectPending { id } => {
+            let parsed_id = uuid::Uuid::parse_str(&id)
+                .map(frederico_core::MemoryId)
+                .map_err(|e| e.to_string())?;
+            let repo = MemoryRepo::new(&state.db);
+            repo.reject_pending(&parsed_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(IpcResponse::ok(()).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
+        AppOp::MemoryPurgeExpired => {
+            let repo = MemoryRepo::new(&state.db);
+            let deleted = repo
+                .purge_expired(chrono::Utc::now())
+                .await
+                .map_err(|e| e.to_string())?;
+            tracing::info!(
+                memory.purge_expired = deleted,
+                "memórias expiradas/superseded purgadas via IPC"
+            );
+            Ok(IpcResponse::ok(deleted).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
+        }
     }
 }
 
@@ -561,4 +682,110 @@ fn model_to_view(m: &frederico_model_catalog::ModelDescriptor) -> ModelDescripto
         pricing_input_microcents_per_million: m.pricing_per_million.input_microcents,
         pricing_output_microcents_per_million: m.pricing_per_million.output_microcents,
     }
+}
+
+// --- Etapa 5 (Fase 4): helpers de memória ---------------------------
+
+/// Parseia o `scope_type` do IPC (string) em `MemoryScopeType`.
+/// Erro: retorna `String` com mensagem PT-BR.
+fn parse_scope_type(s: &str) -> Result<MemoryScopeType, String> {
+    use std::str::FromStr;
+    MemoryScopeType::from_str(s).map_err(|_| format!("scope_type inválido: {s}"))
+}
+
+/// Constrói o retriever padrão da casca. Usa `HybridRetriever`
+/// com `NoopEmbeddingAdapter` por enquanto (cai pra lexical puro
+/// automaticamente — o `HybridRetriever` é transparente). A
+/// Etapa 5.x vira o adapter de embedding em `AppState` quando
+/// o `provider-engine` for refatorado.
+fn build_retriever<'a>(state: &'a State<'_, AppState>) -> HybridRetriever<'a> {
+    use frederico_memory::config::ScoringWeights;
+    use frederico_memory::embedding::NoopEmbeddingAdapter;
+    use std::sync::Arc;
+    let embedding: Arc<dyn frederico_memory::embedding::EmbeddingProvider> =
+        Arc::new(NoopEmbeddingAdapter);
+    HybridRetriever::new(&state.db, embedding, ScoringWeights::default())
+}
+
+/// Converte `MemoryRecord` em `MemoryView` (serializável pra UI).
+fn record_to_view(r: &frederico_core::MemoryRecord) -> MemoryView {
+    MemoryView {
+        id: r.id.0.to_string(),
+        scope_type: r.scope_type.as_str().to_string(),
+        scope_id: r.scope_id.clone(),
+        type_: r.type_.as_str().to_string(),
+        content: r.content.clone(),
+        origin: r.origin.as_str().to_string(),
+        source_type: r.source_type.as_str().to_string(),
+        source_id: r.source_id.clone(),
+        confidence: r.confidence,
+        importance: r.importance,
+        embedding_status: r.embedding_status.as_str().to_string(),
+        created_at: r.created_at.to_rfc3339(),
+        updated_at: r.updated_at.to_rfc3339(),
+        expires_at: r.expires_at.map(|d| d.to_rfc3339()),
+        superseded_by: r.superseded_by.map(|id| id.0.to_string()),
+        superseded_at: r.superseded_at.map(|d| d.to_rfc3339()),
+        user_confirmed: r.user_confirmed,
+        user_pinned: r.user_pinned,
+        pending_review: r.pending_review,
+    }
+}
+
+/// Converte `MemoryHit` (com `ScoreBreakdown`) em `MemoryHitView`.
+fn hit_to_view(h: &MemoryHit) -> MemoryHitView {
+    MemoryHitView {
+        record: record_to_view(&h.record),
+        score: h.score,
+        score_breakdown: ScoreBreakdownView {
+            lexical: h.score_breakdown.lexical,
+            recency: h.score_breakdown.recency,
+            semantic: h.score_breakdown.semantic,
+            importance: h.score_breakdown.importance,
+            confirmation: h.score_breakdown.confirmation,
+            scope_match: h.score_breakdown.scope_match,
+        },
+        explanation: h.explanation.clone(),
+    }
+}
+
+/// Converte `NewMemoryInputView` (do IPC) em
+/// `frederico_memory::NewMemoryInput`. Erros de parsing
+/// (escopo/tipo/origem inválidos, `expires_at` malformado)
+/// viram `String` PT-BR.
+fn input_view_to_input(
+    v: frederico_shared_contracts::NewMemoryInputView,
+) -> Result<frederico_memory::NewMemoryInput, String> {
+    use std::str::FromStr;
+    let scope_type = MemoryScopeType::from_str(&v.scope_type)
+        .map_err(|_| format!("scope_type inválido: {}", v.scope_type))?;
+    let type_ = frederico_core::MemoryType::from_str(&v.type_)
+        .map_err(|_| format!("type inválido: {}", v.type_))?;
+    let origin = frederico_core::MemoryOrigin::from_str(&v.origin)
+        .map_err(|_| format!("origin inválido: {}", v.origin))?;
+    let expires_at = match v.expires_at {
+        Some(s) => Some(
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .map_err(|e| format!("expires_at malformado: {e}"))?
+                .with_timezone(&chrono::Utc),
+        ),
+        None => None,
+    };
+    Ok(frederico_memory::NewMemoryInput {
+        scope_type,
+        scope_id: v.scope_id,
+        type_,
+        content: v.content,
+        origin,
+        source_type: MemorySourceType::new(v.source_type),
+        source_id: v.source_id,
+        confidence: v.confidence,
+        importance: v.importance,
+        expires_at,
+        // A Etapa 5 não tem UI pra "user_confirmed" / "user_pinned"
+        // no formulário de correção — default false. A UI pode
+        // expor flags depois se precisar.
+        user_confirmed: false,
+        user_pinned: false,
+    })
 }

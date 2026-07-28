@@ -856,6 +856,39 @@ impl<'a> MemoryRepo<'a> {
         }
     }
 
+    /// Lista memórias com `pending_review = true` (fila de
+    /// ExternalContent aguardando confirmação humana — `ADR-0012 §3`).
+    /// O painel de revisão da Etapa 5 consome essa fila.
+    ///
+    /// `now` é usado pra excluir expiradas e pinned-bypass (mesma
+    /// regra do `list_by_scope` — `user_pinned` bypassa
+    /// `expires_at` mas não `superseded_by`/`pending_review`).
+    pub async fn list_pending_review(&self, now: DateTime<Utc>) -> MemoryResult<Vec<MemoryRecord>> {
+        let now_str = now.to_rfc3339();
+        let rows = sqlx::query(
+            "SELECT id, scope_type, scope_id, type, content, origin,
+                    source_type, source_id, confidence, importance,
+                    embedding_status, embedding_provider, embedding_model,
+                    embedding_dimensions, created_at, updated_at,
+                    last_used_at, expires_at, superseded_by, superseded_at,
+                    user_confirmed, user_pinned, active, pending_review
+             FROM memory_records
+             WHERE pending_review = 1
+               AND active = 1
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?1 OR user_pinned = 1)
+             ORDER BY created_at ASC",
+        )
+        .bind(&now_str)
+        .fetch_all(self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(row_to_record(r)?);
+        }
+        Ok(out)
+    }
+
     /// Lista memórias com `embedding_status = 'pending'`,
     /// limitadas a `limit`. Usada pelo `EmbeddingWorker`
     /// pra encontrar o próximo lote.
