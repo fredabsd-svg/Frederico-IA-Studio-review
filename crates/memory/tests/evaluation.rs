@@ -40,6 +40,61 @@ use frederico_storage::Database;
 use serde::Deserialize;
 
 const GOLD_SET_PATH: &str = "tests/fixtures/gold_set.jsonl";
+const EVAL_GATE_PATH: &str = "config/eval.toml";
+
+/// Carrega o `EvalGate` do `config/eval.toml`. Se o arquivo
+/// não existir (desenvolvimento local sem config), usa o
+/// `EvalGate::default()` (que reflete a Etapa 6 — alvos de
+/// produção). O parser é manual pra evitar adicionar `toml`
+/// como dev-dependency (o arquivo tem só 4 chaves, é mais
+/// simples parsear inline).
+fn load_eval_gate() -> EvalGate {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(EVAL_GATE_PATH);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return EvalGate::default(),
+    };
+    let mut gate = EvalGate::default();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "min_precision" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        gate.min_precision = v;
+                    }
+                }
+                "min_f1" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        gate.min_f1 = v;
+                    }
+                }
+                "max_cross_scope_leak" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        gate.max_cross_scope_leak = v;
+                    }
+                }
+                "max_p99_ms" => {
+                    if let Ok(v) = value.parse::<u64>() {
+                        gate.max_p99_ms = v;
+                    }
+                }
+                "max_p95_ms" => {
+                    if let Ok(v) = value.parse::<u64>() {
+                        gate.max_p95_ms = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    gate
+}
 
 /// "Agora" fixo pros testes — 2026-07-28 meio-dia UTC. Tudo
 /// que envolve tempo no gold-set é relativo a esse instante
@@ -275,10 +330,12 @@ async fn run_gold_set_evaluation_hybrid() {
         report.p50_ms, report.p95_ms, report.p99_ms, report.max_ms
     );
 
-    // Gate do híbrido: deve passar e **bater ou superar** o
-    // baseline lexical (F1 ≥ 0.9, sem vazamento, p99 ≤ 2s).
-    let gate = EvalGate::default();
-    println!("\nGate (Etapa 2, mínimo permissivo):");
+    // Gate do híbrido: carregado de `config/eval.toml` (alvos
+    // de produção da Etapa 6). Deve passar e **bater ou
+    // superar** o baseline lexical (F1 ≥ 0.9, sem
+    // vazamento, p99 ≤ 2s).
+    let gate = load_eval_gate();
+    println!("\nGate (Etapa 6, alvos de produção):");
     println!("  min_precision = {}", gate.min_precision);
     println!("  min_f1 = {}", gate.min_f1);
     println!("  max_cross_scope_leak = {}", gate.max_cross_scope_leak);
@@ -350,9 +407,27 @@ async fn run_scenario_hybrid(entry: &GoldSetEntry, now: DateTime<Utc>) -> Scenar
             user_confirmed: seed.user_confirmed,
             user_pinned: seed.user_pinned,
         };
-        let inserted = match repo.insert_auto_captured(input).await {
-            Ok(r) => r,
-            Err(e) => panic!("falha ao inserir seed: {e}"),
+        // Escolhe o método de insert correto:
+        // - `user_confirmed = true` → `insert_user_confirmed`
+        //   (aceita qualquer `origin`, inclusive ExternalContent
+        //   já revisado pelo humano)
+        // - `user_confirmed = false` + `origin = ExternalContent`
+        //   → `insert_pending_review` (fila de revisão,
+        //   `pending_review = true` — `ADR-0012 §3`)
+        // - demais casos → `insert_auto_captured` (rejeita
+        //   ExternalContent com erro claro)
+        let inserted = if seed.user_confirmed {
+            repo.insert_user_confirmed(input)
+                .await
+                .expect("falha ao inserir seed (user_confirmed)")
+        } else if seed.origin == MemoryOrigin::ExternalContent {
+            repo.insert_pending_review(input)
+                .await
+                .expect("falha ao inserir seed (pending_review)")
+        } else {
+            repo.insert_auto_captured(input)
+                .await
+                .expect("falha ao inserir seed")
         };
         // Calcula embedding fake e persiste (simula o
         // `EmbeddingWorker` rodando).
@@ -503,10 +578,10 @@ async fn run_gold_set_evaluation() {
         report.p50_ms, report.p95_ms, report.p99_ms, report.max_ms
     );
 
-    // Aplica o gate mínimo da Etapa 1 (precisão ≥ 0.0 — só falha
-    // se for 0, o que indicaria bug no runner).
-    let gate = EvalGate::default();
-    println!("\nGate (Etapa 1, mínimo permissivo):");
+    // Aplica o gate da Etapa 6 (alvos de produção,
+    // carregado de `config/eval.toml`).
+    let gate = load_eval_gate();
+    println!("\nGate (Etapa 6, alvos de produção):");
     println!("  min_precision = {}", gate.min_precision);
     println!("  min_f1 = {}", gate.min_f1);
     println!("  max_cross_scope_leak = {}", gate.max_cross_scope_leak);
@@ -569,12 +644,21 @@ async fn run_scenario(entry: &GoldSetEntry, now: DateTime<Utc>) -> ScenarioResul
             user_confirmed: seed.user_confirmed,
             user_pinned: seed.user_pinned,
         };
-        // Auto-captura: se a seed é user, é ok. Se for external
-        // (não acontece nas seeds atuais), teria que usar
-        // `insert_user_confirmed`.
-        let inserted = match repo.insert_auto_captured(input).await {
-            Ok(r) => r,
-            Err(e) => panic!("falha ao inserir seed: {e}"),
+        // Escolhe o método de insert correto (mesma lógica do
+        // `run_scenario_hybrid` — espelha o caller real da
+        // casca Tauri).
+        let inserted = if seed.user_confirmed {
+            repo.insert_user_confirmed(input)
+                .await
+                .expect("falha ao inserir seed (user_confirmed)")
+        } else if seed.origin == MemoryOrigin::ExternalContent {
+            repo.insert_pending_review(input)
+                .await
+                .expect("falha ao inserir seed (pending_review)")
+        } else {
+            repo.insert_auto_captured(input)
+                .await
+                .expect("falha ao inserir seed")
         };
         inserted_ids.push((seed.content.clone(), inserted.id));
     }

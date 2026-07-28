@@ -127,11 +127,16 @@ pub struct EvalGate {
 
 impl Default for EvalGate {
     fn default() -> Self {
+        // Etapa 6 da Fase 4: gate de CI (alvos de produção).
+        // A Etapa 1 tinha `min_precision = 0.0` (só falhava
+        // se precisão = 0, indicando bug no runner). A Etapa 6
+        // sobe pra alvos de produção — bloco de merge se o
+        // retrieval ficar abaixo. Os números vêm do
+        // `crates/memory/config/eval.toml` (versionado).
+        // Ver `docs/architecture/memory-evaluation-plan.md` §"Alvos".
         Self {
-            // Etapa 1: gate mínimo — só falha se precisão = 0
-            // (o que indicaria bug no runner, não no retriever).
-            min_precision: 0.0,
-            min_f1: 0.0,
+            min_precision: 0.70,
+            min_f1: 0.65,
             max_cross_scope_leak: 0.0,
             max_p99_ms: 2000,
             max_p95_ms: 1000,
