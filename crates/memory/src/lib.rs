@@ -66,8 +66,8 @@ pub use config::{EvalGate, ScoringWeights};
 pub use embedding::{
     EmbeddingError, EmbeddingProvider, NoopEmbeddingAdapter, OpenRouterEmbeddingAdapter,
 };
-pub use embedding_codec::{decode_embedding, encode_embedding};
+pub use embedding_codec::{cosine_similarity, decode_embedding, encode_embedding};
 pub use error::MemoryError;
 pub use memory_repo::{MemoryRepo, NewMemoryInput};
-pub use retriever::{LexicalRetriever, Retriever};
+pub use retriever::{HybridRetriever, LexicalRetriever, Retriever, RETRIEVER_BUDGET};
 pub use worker::{EmbeddingWorker, EmbeddingWorkerHandle};

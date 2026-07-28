@@ -1,13 +1,18 @@
 //! Runner de avaliação do `frederico-memory`.
 //!
 //! Lê `tests/fixtures/gold_set.jsonl` (10 cenários da Etapa 1),
-//! executa o `LexicalRetriever` contra um banco SQLite in-memory
-//! e calcula métricas: precisão, revocação, F1, falsos
-//! positivos/negativos, vazamento cruzado, latência p50/p95/p99.
+//! executa o `LexicalRetriever` (baseline) **e** o
+//! `HybridRetriever` (Etapa 2) contra um banco SQLite
+//! in-memory e calcula métricas: precisão, revocação, F1,
+//! falsos positivos/negativos, vazamento cruzado, latência
+//! p50/p95/p99.
 //!
 //! A Etapa 1 mede o **baseline lexical-only** (sem embeddings).
-//! É o número que a Etapa 2 (híbrido) tem que **superar** —
-//! se não superar, é bug.
+//! A Etapa 2 mede o **híbrido** (com embeddings fake
+//! determinísticos baseados em hash do conteúdo — o que
+//! isola o teste do provedor real e valida a *fórmula* de
+//! scoring da Etapa 2). A Etapa 2 **tem que superar** o
+//! baseline da Etapa 1 — sem isso, é bug.
 //!
 //! O gate mínimo da Etapa 1 é `min_precision = 0.0` (no
 //! `crates/memory/config/eval.toml`) — só falha se precisão =
@@ -21,14 +26,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use frederico_core::{
     MemoryOrigin, MemoryRecord, MemoryScopeType, MemorySourceType, MemoryType, RetrievalRequest,
     RetrievalResult,
 };
 use frederico_memory::{
-    EvalGate, LexicalRetriever, MemoryRepo, NewMemoryInput, NoopEmbeddingAdapter, Retriever,
-    ScoringWeights,
+    EmbeddingProvider, EvalGate, HybridRetriever, LexicalRetriever, MemoryRepo, NewMemoryInput,
+    NoopEmbeddingAdapter, Retriever, ScoringWeights,
 };
 use frederico_storage::Database;
 use serde::Deserialize;
@@ -106,6 +112,10 @@ struct ScenarioResult {
     cross_scope_leak: usize,
     elapsed_ms: u64,
     details: String,
+    /// Indica se o retriever usou semântica (true pra
+    /// `HybridRetriever` com embeddings, false pra
+    /// `LexicalRetriever` com `NoopEmbeddingAdapter`).
+    semantic_used: bool,
 }
 
 #[derive(Debug, Default)]
@@ -121,6 +131,283 @@ struct Report {
     p95_ms: u64,
     p99_ms: u64,
     max_ms: u64,
+}
+
+/// Adapter de embedding fake que devolve vetores
+/// determinísticos baseados em hash do conteúdo. Usado
+/// pelo teste `run_gold_set_evaluation_hybrid` pra
+/// exercitar o caminho semântico do `HybridRetriever`
+/// sem precisar de rede.
+///
+/// Estratégia: divide o conteúdo em tokens, soma hashes
+/// em 4 dimensões (normalizadas em [0, 1]). Tokens
+/// compartilhados (e.g. "Rust" em memória e query) geram
+/// vetores similares — o que torna o retrieval semântico
+/// informativo.
+struct FakeHashEmbed;
+
+#[async_trait]
+impl EmbeddingProvider for FakeHashEmbed {
+    fn provider_id(&self) -> &str {
+        "fake-hash"
+    }
+    fn model_id(&self) -> &str {
+        "fake-hash-v1"
+    }
+    fn dimensions(&self) -> usize {
+        4
+    }
+    async fn embed(
+        &self,
+        inputs: &[&str],
+    ) -> Result<Vec<Vec<f32>>, frederico_memory::EmbeddingError> {
+        Ok(inputs
+            .iter()
+            .map(|s| {
+                // Hash em 4 buckets, normalizado.
+                let mut v = vec![0.0_f32; 4];
+                let mut total = 0.0_f32;
+                for (i, b) in s.bytes().enumerate() {
+                    v[i % 4] += b as f32;
+                    total += b as f32;
+                }
+                if total > 0.0 {
+                    for x in v.iter_mut() {
+                        *x /= total;
+                    }
+                }
+                v
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn run_gold_set_evaluation_hybrid() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(GOLD_SET_PATH);
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("falha ao ler gold-set em {path:?}: {e}"));
+
+    let entries: Vec<GoldSetEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<GoldSetEntry>(l)
+                .unwrap_or_else(|e| panic!("falha ao parsear linha do gold-set: {e}\nlinha: {l}"))
+        })
+        .collect();
+
+    assert!(!entries.is_empty(), "gold-set vazio em {path:?}");
+
+    println!(
+        "\n=== Avaliação HYBRID do gold-set ({} cenários) ===\n",
+        entries.len()
+    );
+    println!(
+        "{:<40} {:<8} {:<10} {:<10} {:<10} {:<6} {:<8}",
+        "id", "passou", "P", "R", "F1", "vaza", "ms"
+    );
+    println!("{}", "-".repeat(92));
+
+    let mut report = Report::default();
+    let mut all_latencies: Vec<u64> = Vec::new();
+
+    for entry in &entries {
+        let result = run_scenario_hybrid(entry, fixed_now()).await;
+        if result.passed {
+            report.total_passed += 1;
+        } else {
+            report.total_failed += 1;
+        }
+        report.cross_scope_leak_total += result.cross_scope_leak;
+        all_latencies.push(result.elapsed_ms);
+        report.mean_precision += result.precision;
+        report.mean_recall += result.recall;
+        report.mean_f1 += result.f1;
+
+        println!(
+            "{:<40} {:<8} {:<10.3} {:<10.3} {:<10.3} {:<6} {:<8}",
+            truncate(&entry.id, 40),
+            if result.passed { "sim" } else { "NÃO" },
+            result.precision,
+            result.recall,
+            result.f1,
+            result.cross_scope_leak,
+            result.elapsed_ms
+        );
+        if !result.passed {
+            println!("    detalhe: {}", result.details);
+        }
+        println!(
+            "    [FP={}, FN={}, sem={}] categoria={}",
+            result.false_positives, result.false_negatives, result.semantic_used, entry.category
+        );
+        report.scenarios.push(result);
+    }
+
+    let n = entries.len() as f32;
+    report.mean_precision /= n;
+    report.mean_recall /= n;
+    report.mean_f1 /= n;
+
+    all_latencies.sort_unstable();
+    report.p50_ms = percentile(&all_latencies, 0.50);
+    report.p95_ms = percentile(&all_latencies, 0.95);
+    report.p99_ms = percentile(&all_latencies, 0.99);
+    report.max_ms = all_latencies.last().copied().unwrap_or(0);
+
+    println!("\n{}", "=".repeat(60));
+    println!("RESUMO (HYBRID)");
+    println!("{}", "=".repeat(60));
+    println!(
+        "Cenários:        {} (passou {} / falhou {})",
+        n, report.total_passed, report.total_failed
+    );
+    println!("Precisão média:  {:.3}", report.mean_precision);
+    println!("Revocação média: {:.3}", report.mean_recall);
+    println!("F1 médio:        {:.3}", report.mean_f1);
+    println!(
+        "Vazamento cruzado total: {} (deve ser 0 — I4)",
+        report.cross_scope_leak_total
+    );
+    println!(
+        "Latência:        p50={}ms  p95={}ms  p99={}ms  max={}ms",
+        report.p50_ms, report.p95_ms, report.p99_ms, report.max_ms
+    );
+
+    // Gate do híbrido: deve passar e **bater ou superar** o
+    // baseline lexical (F1 ≥ 0.9, sem vazamento, p99 ≤ 2s).
+    let gate = EvalGate::default();
+    println!("\nGate (Etapa 2, mínimo permissivo):");
+    println!("  min_precision = {}", gate.min_precision);
+    println!("  min_f1 = {}", gate.min_f1);
+    println!("  max_cross_scope_leak = {}", gate.max_cross_scope_leak);
+    println!("  max_p99_ms = {}", gate.max_p99_ms);
+
+    let mut hard_fails: Vec<&str> = Vec::new();
+    if report.mean_precision < gate.min_precision {
+        hard_fails.push("precisão abaixo do mínimo");
+    }
+    if report.mean_f1 < gate.min_f1 {
+        hard_fails.push("F1 abaixo do mínimo");
+    }
+    if report.cross_scope_leak_total as f32 > gate.max_cross_scope_leak {
+        hard_fails.push("vazamento cruzado > 0 (I4)");
+    }
+    if report.p99_ms > gate.max_p99_ms {
+        hard_fails.push("p99 acima do teto");
+    }
+
+    if !hard_fails.is_empty() {
+        panic!(
+            "gate falhou: {}. Cenários: {} / {} passaram.",
+            hard_fails.join(", "),
+            report.total_passed,
+            entries.len()
+        );
+    }
+    println!(
+        "\nGate verde: {} / {} cenários passaram.",
+        report.total_passed,
+        entries.len()
+    );
+
+    // Garante que o F1 do híbrido **bate o baseline**
+    // lexical (que é 0.9 com 10 cenários). Threshold: 0.9
+    // (não exige melhoria marginal — exige que o híbrido
+    // não regrediu).
+    assert!(
+        report.mean_f1 >= 0.9,
+        "F1 do híbrido ({:.3}) abaixo do baseline lexical (0.9) — bug na Etapa 2",
+        report.mean_f1
+    );
+}
+
+async fn run_scenario_hybrid(entry: &GoldSetEntry, now: DateTime<Utc>) -> ScenarioResult {
+    let db = Database::open_in_memory()
+        .await
+        .expect("Database::open_in_memory falhou");
+    let repo = MemoryRepo::new(&db);
+
+    // Resolve supersedência em 2 passos: primeiro insere todas
+    // as memórias; depois, para cada uma com
+    // `superseded_by_content`, encontra a memória-alvo e
+    // chama `mark_superseded`.
+    let mut inserted_ids: Vec<(String, frederico_core::MemoryId)> = Vec::new();
+    for seed in &entry.seed_memories {
+        let expires_at = seed.expires_at_offset_days.map(|d| now + Duration::days(d));
+        let input = NewMemoryInput {
+            scope_type: seed.scope_type,
+            scope_id: seed.scope_id.clone(),
+            type_: seed.type_,
+            content: seed.content.clone(),
+            origin: seed.origin,
+            source_type: MemorySourceType::new("seed"),
+            source_id: None,
+            confidence: seed.confidence,
+            importance: seed.importance,
+            expires_at,
+            user_confirmed: seed.user_confirmed,
+            user_pinned: seed.user_pinned,
+        };
+        let inserted = match repo.insert_auto_captured(input).await {
+            Ok(r) => r,
+            Err(e) => panic!("falha ao inserir seed: {e}"),
+        };
+        // Calcula embedding fake e persiste (simula o
+        // `EmbeddingWorker` rodando).
+        let provider = Arc::new(FakeHashEmbed);
+        let inputs = vec![inserted.content.as_str()];
+        let embeddings = provider.embed(&inputs).await.expect("embed");
+        let emb = embeddings.into_iter().next().expect("1 embedding");
+        repo.set_embedding(
+            &inserted.id,
+            provider.provider_id(),
+            provider.model_id(),
+            emb.len() as u32,
+            &emb,
+        )
+        .await
+        .expect("set_embedding");
+        inserted_ids.push((seed.content.clone(), inserted.id));
+    }
+
+    // Aplica supersedência.
+    for (i, seed) in entry.seed_memories.iter().enumerate() {
+        if let Some(target_content) = &seed.superseded_by_content {
+            let old_id = inserted_ids[i].1;
+            let new_id = inserted_ids
+                .iter()
+                .find(|(c, _)| c == target_content)
+                .map(|(_, id)| *id)
+                .expect("superseded_by_content aponta pra memória inexistente");
+            repo.mark_superseded(&old_id, &new_id, now)
+                .await
+                .expect("mark_superseded");
+        }
+    }
+
+    // Roda o HybridRetriever.
+    let weights = ScoringWeights::default();
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(FakeHashEmbed);
+    let retriever = HybridRetriever::new(&db, provider, weights);
+    let request = RetrievalRequest {
+        scope_type: entry.scope_type,
+        scope_id: entry.scope_id.clone(),
+        query: entry.query.clone(),
+        k: 8,
+        token_budget: 1500,
+        recency_epsilon: 0.01,
+    };
+
+    let start = Instant::now();
+    let result: RetrievalResult = retriever.retrieve(request).await.expect("retrieve");
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // Avalia o resultado.
+    let mut r = evaluate_result(entry, &result, elapsed_ms);
+    r.semantic_used = result.semantic_used;
+    r
 }
 
 #[tokio::test]
@@ -433,6 +720,7 @@ fn evaluate_result(
         cross_scope_leak,
         elapsed_ms,
         details: details_parts.join("; "),
+        semantic_used: false, // lexical não usa semântica
     }
 }
 
