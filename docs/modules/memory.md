@@ -1,19 +1,21 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapas 1, 2, 3 e 4)
+Fase correspondente: 4 (Etapas 1, 2, 3, 4 e 5)
 -->
 
 # `frederico-memory`
 
 Memória e continuidade do Frederico IA Studio (Fase 4,
-Etapas 1, 2, 3 e 4). Crate do núcleo (sem dependência de plataforma)
+Etapas 1, 2, 3, 4 e 5). Crate do núcleo (sem dependência de plataforma)
 que entrega o **retrieval híbrido** (lexical FTS5 + cosine
 semântica + recência + importância + confirmação) com
 fallback pro caminho lexical puro quando não há embeddings,
 a **classificação automática pós-resposta** (LLM-based,
-falsificável, fora do caminho crítico), e o **fluxo de
-correção, expiração e retomada** (regra do `ADR-0014`).
+falsificável, fora do caminho crítico), o **fluxo de
+correção, expiração e retomada** (regra do `ADR-0014`), e
+a **UI do painel de memória** com `ScoreBreakdown` visível
+(explicabilidade `PROMPT MESTRE` §10.11).
 
 ## 1. O que este módulo faz
 
@@ -76,8 +78,9 @@ background, fora do caminho crítico), com sobrescrita de
   `insert_user_confirmed`, `insert_pending_review`, `get`,
   `list_by_scope`, `search_lexical`, `mark_superseded`,
   `apply_correction`, `purge_expired`, `confirm_pending`,
-  `reject_pending`, `set_embedding`, `get_embedding`,
-  `mark_embedding_failed`, `list_pending_embeddings`.
+  `reject_pending`, `list_pending_review`, `set_embedding`,
+  `get_embedding`, `mark_embedding_failed`,
+  `list_pending_embeddings`.
 - `CorrectionResult` (devolvido por `apply_correction`: `old_id`,
   `new_record`, `superseded_at`).
 - `EmbeddingProvider` trait + `NoopEmbeddingAdapter` +
@@ -109,11 +112,17 @@ background, fora do caminho crítico), com sobrescrita de
 
 **Quem depende dele (hoje):**
 
-- `apps/desktop/src-tauri` (Fase 5) vai consumir o `Retriever`
-  via IPC e usar `MemoryExtractor` pra classificar respostas.
-  A Etapa 4 (correções) integra o `mark_superseded` no fluxo
-  de UI ("corrija para X"). A Etapa 5 (UI) consome o `Retriever`
-  via IPC.
+- `apps/desktop/src-tauri` (Etapa 5 da Fase 4): consome
+  `MemoryRepo` (list, retrieve, apply_correction,
+  confirm/reject_pending, purge_expired) via IPC. A casca
+  também inicia o `MemoryExtractor` em background e passa
+  o `MemoryExtractorHandle` pro `ChatOrchestrator` da Fase
+  3, que enfileira um `MemoryExtractionJob` após cada Run.
+- `crates/execution-engine` (Etapa 5 da Fase 4): o
+  `ChatOrchestrator` agora tem campo
+  `memory_extractor: Option<Arc<MemoryExtractorHandle>>` e
+  chama `extractor.enqueue(...)` no `send_message` (best-
+  effort).
 
 **Quem vai depender dele (próximas etapas):**
 
@@ -178,7 +187,7 @@ cargo test -p frederico-memory --test evaluation -- --nocapture
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-Cobertura atual (Etapas 1 + 2 + 3 + 4):
+Cobertura atual (Etapas 1 + 2 + 3 + 4 + 5):
 
 - **`src/error.rs`**: 0 testes (tipos puros).
 - **`src/sanitize.rs`**: 10 testes (escape de aspas,
@@ -226,12 +235,12 @@ do adapter + 9 E2E de expiration.
 
 ## 6. O que ele **não** faz
 
-- **Não classifica memórias automaticamente** em produção.
-  A Etapa 3 entrega o `LlmMemoryClassifier` e o
-  `MemoryExtractor` pós-resposta, mas a casca Tauri ainda
-  não chama o `enqueue` (isso é trabalho de integração da
-  Etapa 5/UI). O `NoopMemoryClassifier` (Etapa 1) é o
-  default até lá.
+- **Não classifica memórias automaticamente** com
+  CompletionProvider real. A Etapa 5 wire usa
+  `NoopCompletionProvider` por padrão (classificador vira
+  no-op, sem chamadas a LLM). A Etapa 5.x injeta o
+  `OpenRouterCompletionProvider` real (provider-engine da
+  Fase 2 + adapter OpenAI-compat).
 - **Não roda o `ReindexWorker` em background.** O schema
   de `embedding_reindex_jobs` está pronto (regra do
   [ADR-0013](../decisions/0013-embedding-reindex.md)) mas
