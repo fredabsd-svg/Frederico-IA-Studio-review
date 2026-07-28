@@ -22,6 +22,14 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
+# HTTP pro adapter de embedding (Etapa 2 da Fase 4) — ADR-0010.
+# Reuso do `reqwest` do workspace (mesma config do `provider-engine`
+# da Fase 2: rustls-tls, sem OpenSSL, com feature `json` pro
+# `RequestBuilder::json`).
+reqwest = { workspace = true, features = ["json"] }
+# `SecretString` pra guardar a API key sem vazar em logs/debug.
+# Reuso do `secrecy` do workspace.
+secrecy = { workspace = true }
 
 [dev-dependencies]
 # O runner de avaliação usa FakeClock pra determinismo (ADR-0008 §3.2,

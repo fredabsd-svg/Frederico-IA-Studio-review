@@ -75,6 +75,26 @@ pub enum MemoryError {
     /// explicitamente.
     #[error("embedding provider indisponível e semântica era exigida: {0}")]
     EmbeddingRequired(String),
+
+    /// Inconsistência de dimensionalidade entre o embedding
+    /// persistido e o esperado. Erro estrutural — o
+    /// `dimensions` da linha em `memory_embeddings` não bate
+    /// com o tamanho do `vec_blob` (em bytes, dividido por 4).
+    /// Possíveis causas: bug na codificação, corrupção do
+    /// banco, ou embeddings de modelos diferentes misturados
+    /// por bug.
+    #[error("dimensionalidade inconsistente: esperado {expected}, recebi {actual}")]
+    EmbeddingDimensionMismatch {
+        /// Dimensões esperadas (vem de `memory_embeddings.dimensions`).
+        expected: usize,
+        /// Dimensões reais (tamanho do blob / 4).
+        actual: usize,
+    },
+
+    /// Falha HTTP no adapter de embedding. Detalhes no
+    /// `String` (status code, mensagem do servidor, etc).
+    #[error("falha HTTP no embedding adapter: {0}")]
+    EmbeddingHttp(String),
 }
 
 /// Atalho de resultado.

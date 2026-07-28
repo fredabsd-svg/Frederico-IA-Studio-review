@@ -114,7 +114,12 @@ impl NewMemoryInput {
 /// Repositório de memórias. Acessa o pool do [`Database`].
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRepo<'a> {
-    pool: &'a sqlx::SqlitePool,
+    /// Pool subjacente. `pub(crate)` pra que o `EmbeddingWorker`
+    /// (no mesmo crate) possa construir um `MemoryRepo`
+    /// diretamente do pool, sem precisar de um `Database`
+    /// wrapper (o worker roda em background, depois que o
+    /// `Database` original já pode ter sido dropado).
+    pub(crate) pool: &'a sqlx::SqlitePool,
 }
 
 impl<'a> MemoryRepo<'a> {
@@ -552,6 +557,151 @@ impl<'a> MemoryRepo<'a> {
             .execute(self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Persiste o embedding de uma memória e marca
+    /// `embedding_status = 'ready'`. O `provider` e `model`
+    /// viram parte da PK composta de `memory_embeddings` —
+    /// embeddings de providers/modelos diferentes não são
+    /// comparáveis (regra do `ADR-0010 §1`).
+    ///
+    /// Atualiza também os campos `embedding_provider`,
+    /// `embedding_model` e `embedding_dimensions` na
+    /// `memory_records` (cache pra o `Retriever` saber que
+    /// tem embedding pronto sem precisar de JOIN).
+    ///
+    /// Idempotente: se já existe embedding pra esse
+    /// `(memory_id, provider, model)`, sobrescreve.
+    pub async fn set_embedding(
+        &self,
+        id: &MemoryId,
+        provider: &str,
+        model: &str,
+        dimensions: u32,
+        embedding: &[f32],
+    ) -> MemoryResult<()> {
+        // Validação: dimensions deve bater com o tamanho do
+        // vetor. Erro estrutural — caller passou dimensões
+        // erradas.
+        if embedding.len() as u64 != u64::from(dimensions) {
+            return Err(crate::error::MemoryError::EmbeddingDimensionMismatch {
+                expected: dimensions as usize,
+                actual: embedding.len(),
+            });
+        }
+        let blob = crate::embedding_codec::encode_embedding(embedding);
+        let now_str = Utc::now().to_rfc3339();
+
+        // 1. INSERT OR REPLACE em `memory_embeddings`.
+        sqlx::query(
+            "INSERT OR REPLACE INTO memory_embeddings
+                (memory_id, provider, model, dimensions, vec_blob, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id.0.to_string())
+        .bind(provider)
+        .bind(model)
+        .bind(dimensions as i64)
+        .bind(blob)
+        .bind(&now_str)
+        .execute(self.pool)
+        .await?;
+
+        // 2. Atualiza cache em `memory_records`.
+        sqlx::query(
+            "UPDATE memory_records
+             SET embedding_status = 'ready',
+                 embedding_provider = ?1,
+                 embedding_model = ?2,
+                 embedding_dimensions = ?3,
+                 updated_at = ?4
+             WHERE id = ?5",
+        )
+        .bind(provider)
+        .bind(model)
+        .bind(dimensions as i64)
+        .bind(&now_str)
+        .bind(id.0.to_string())
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Marca uma memória com `embedding_status = 'failed'`
+    /// (o worker de embeddings tentou e falhou). Útil pro
+    /// painel da Etapa 5 mostrar "última falha" e pra evitar
+    /// retry em loop infinito.
+    pub async fn mark_embedding_failed(&self, id: &MemoryId) -> MemoryResult<()> {
+        let now_str = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE memory_records
+             SET embedding_status = 'failed', updated_at = ?1
+             WHERE id = ?2",
+        )
+        .bind(&now_str)
+        .bind(id.0.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Lê o embedding persistido de uma memória (modelo
+    /// específico). Retorna `Ok(None)` se não existe.
+    /// Retorna `Err(EmbeddingDimensionMismatch)` se o blob
+    /// persistido tem tamanho inconsistente.
+    pub async fn get_embedding(
+        &self,
+        id: &MemoryId,
+        provider: &str,
+        model: &str,
+    ) -> MemoryResult<Option<Vec<f32>>> {
+        let row: Option<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT dimensions, vec_blob
+             FROM memory_embeddings
+             WHERE memory_id = ?1 AND provider = ?2 AND model = ?3",
+        )
+        .bind(id.0.to_string())
+        .bind(provider)
+        .bind(model)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some((dim, blob)) => {
+                let embedding = crate::embedding_codec::decode_embedding(&blob, dim as usize)?;
+                Ok(Some(embedding))
+            }
+        }
+    }
+
+    /// Lista memórias com `embedding_status = 'pending'`,
+    /// limitadas a `limit`. Usada pelo `EmbeddingWorker`
+    /// pra encontrar o próximo lote.
+    pub async fn list_pending_embeddings(&self, limit: u32) -> MemoryResult<Vec<MemoryRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, scope_type, scope_id, type, content, origin,
+                    source_type, source_id, confidence, importance,
+                    embedding_status, embedding_provider, embedding_model,
+                    embedding_dimensions, created_at, updated_at,
+                    last_used_at, expires_at, superseded_by, superseded_at,
+                    user_confirmed, user_pinned, active, pending_review
+             FROM memory_records
+             WHERE active = 1
+               AND superseded_by IS NULL
+               AND embedding_status = 'pending'
+             ORDER BY created_at ASC
+             LIMIT ?1",
+        )
+        .bind(limit as i64)
+        .fetch_all(self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(row_to_record(r)?);
+        }
+        Ok(out)
     }
 }
 

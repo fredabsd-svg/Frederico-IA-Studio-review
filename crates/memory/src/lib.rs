@@ -54,14 +54,20 @@
 pub mod classifier;
 pub mod config;
 pub mod embedding;
+pub mod embedding_codec;
 pub mod error;
 pub mod memory_repo;
 pub mod retriever;
 pub mod sanitize;
+pub mod worker;
 
 pub use classifier::{MemoryClassifier, NoopMemoryClassifier};
 pub use config::{EvalGate, ScoringWeights};
-pub use embedding::{EmbeddingError, EmbeddingProvider, NoopEmbeddingAdapter};
+pub use embedding::{
+    EmbeddingError, EmbeddingProvider, NoopEmbeddingAdapter, OpenRouterEmbeddingAdapter,
+};
+pub use embedding_codec::{decode_embedding, encode_embedding};
 pub use error::MemoryError;
 pub use memory_repo::{MemoryRepo, NewMemoryInput};
 pub use retriever::{LexicalRetriever, Retriever};
+pub use worker::{EmbeddingWorker, EmbeddingWorkerHandle};
