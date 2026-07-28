@@ -1117,6 +1117,7 @@ dependencies = [
  "chrono",
  "frederico-agent-engine",
  "frederico-core",
+ "frederico-memory",
  "frederico-model-catalog",
  "frederico-provider-engine",
  "frederico-security",

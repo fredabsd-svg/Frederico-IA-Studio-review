@@ -214,6 +214,23 @@ fn main() {
             let tools: Vec<Arc<dyn Tool>> = vec![files_read];
             let allowed_for_run: Vec<ToolId> = vec![ToolId::new("files.read")];
 
+            // `MemoryExtractor` (Fase 4, Etapa 5). Usa
+            // `LlmMemoryClassifier` com `NoopCompletionProvider`
+            // por enquanto — Etapa 5.x injeta o
+            // `CompletionProvider` real (OpenRouter + gpt-4o-mini).
+            // O extractor roda em background via `tokio::spawn` e
+            // processa jobs do canal mpsc (256, sem
+            // `tokio::time::interval` — ADR-0014 §1).
+            let memory_extractor_handle = {
+                let classifier: Arc<dyn frederico_memory::classifier::MemoryClassifier> =
+                    Arc::new(frederico_memory::classifier::LlmMemoryClassifier::new(
+                        Arc::new(frederico_memory::classifier::NoopCompletionProvider),
+                    ));
+                let extractor =
+                    frederico_memory::worker::MemoryExtractor::start(db.pool(), classifier);
+                std::sync::Arc::new(extractor.handle())
+            };
+
             let orch = ChatOrchestrator::new(
                 providers,
                 runs,
@@ -225,6 +242,7 @@ fn main() {
                 jail,
                 tools,
                 allowed_for_run,
+                Some(memory_extractor_handle),
             );
             let orch = Arc::new(orch);
 

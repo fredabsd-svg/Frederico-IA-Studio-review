@@ -17,6 +17,7 @@ frederico-tool-registry = { workspace = true }
 frederico-provider-engine = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-security = { workspace = true }
+frederico-memory = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

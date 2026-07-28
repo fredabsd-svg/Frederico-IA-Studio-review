@@ -79,6 +79,7 @@ fn build_orchestrator(
         Jail::new(std::env::temp_dir().as_path()).unwrap(),
         vec![],
         vec![],
+        None, // memory_extractor (Etapa 5 da Fase 4)
     ))
 }
 

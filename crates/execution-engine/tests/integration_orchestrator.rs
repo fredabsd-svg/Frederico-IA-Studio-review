@@ -75,6 +75,7 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         jail,
         vec![],
         vec![],
+        None, // memory_extractor (Etapa 5 da Fase 4)
     );
     (Arc::new(orch), dir, sink)
 }
