@@ -261,6 +261,38 @@ impl Database {
         frederico_core::APP_VERSION
     }
 
+    /// Abre um banco SQLite **em memória** (`:memory:`). Usado
+    /// por testes de subsistemas (e.g. o runner de avaliação
+    /// do `frederico-memory`) que precisam de isolamento total
+    /// — sem arquivo, sem estado compartilhado entre runs.
+    ///
+    /// Roda as migrações e popula `app_info` igual ao
+    /// [`Self::open`]. O pool é single-connection (`max_connections = 1`)
+    /// porque SQLite em memória é local a uma conexão — com
+    /// várias, cada uma veria um banco separado.
+    pub async fn open_in_memory() -> StorageResult<Self> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .map_err(|source| StorageError::Open {
+                path: PathBuf::from(":memory:"),
+                source,
+            })?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO app_info (id, version, started_at, last_seen_at) \
+             VALUES (1, ?1, ?2, ?2) \
+             ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        )
+        .bind(frederico_core::APP_VERSION.to_string())
+        .bind(&now)
+        .execute(&pool)
+        .await?;
+        Ok(Self { pool })
+    }
+
     /// Acesso ao pool para os repositórios.
     pub fn pool(&self) -> &sqlx::SqlitePool {
         &self.pool

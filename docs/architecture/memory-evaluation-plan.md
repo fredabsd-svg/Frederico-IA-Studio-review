@@ -1,7 +1,7 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
-Fase correspondente: 4
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-28
+Fase correspondente: 4 (Etapa 1)
 -->
 
 # Plano de Avaliação de Memória

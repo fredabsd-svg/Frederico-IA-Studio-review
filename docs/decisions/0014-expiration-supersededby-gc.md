@@ -218,12 +218,17 @@ memória já expirada). Erro estruturado, não panic.
 **Mais difícil:**
 
 - A Etapa 1 da Fase 4 introduz dependência do `frederico-security`
-  (onde mora o `Clock` trait) ou define o `Clock` no
-  `frederico-core` (compartilhado). Decisão de packaging:
-  provavelmente **definir no `core` e mover o que já existe da
-  Fase 2 pra lá** é o caminho limpo. A Etapa 1 faz essa
-  refatoração mínima (1 PR de empacotamento) antes da Etapa 4
-  em si. Documentado na Etapa 1 da Fase 4.
+  (onde mora o `Clock` trait). **Decisão de empacotamento da
+  Etapa 1:** o `frederico-memory` importa o `Clock` do
+  `frederico-security` direto, sem mover o trait para o
+  `frederico-core`. Mover o `Clock` para o `core` continua sendo
+  trabalho válido (vários crates passariam a depender do `core`
+  em vez do `security`), mas tem custo de refatoração que não
+  cabe na Etapa 1 (atualiza 4 call sites da Fase 2/3: `execution-engine`,
+  `provider-engine/tests/recovery.rs`, `apps/desktop/src-tauri`,
+  e o próprio `security`). O ganho é arquitetural, não
+  funcional; **fica como pendência de empacotamento** registrada
+  em `docs/status.md` da Fase 4, sem bloquear a Etapa 1.
 - A `purge_expired` na inicialização tem que ser **best-effort**:
   se o banco está em uso (outro processo do app aberto), o
   `DELETE` pode falhar com `SQLITE_BUSY`. Mitigação: log do

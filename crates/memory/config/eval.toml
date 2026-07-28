@@ -1,0 +1,29 @@
+# eval.toml — gate de avaliação do `frederico-memory`.
+#
+# ATENÇÃO: este arquivo é **mutável por PR normal** (não
+# exige ADR novo). A Etapa 6 sobe os alvos para os valores
+# de produção (precisão ≥ 0.70, F1 ≥ 0.65, etc). Subir
+# alvos exige mais cenários no gold-set cobrindo o novo
+# limite — regra de `memory-evaluation-plan.md` §"Alvos".
+#
+# O runner de avaliação (`crates/memory/tests/evaluation.rs`)
+# lê este arquivo em tempo de teste e aplica os hard fails
+# + warnings. Defaults permissivos na Etapa 1 (precisão ≥ 0.0
+# — só falha se o runner retornar 0, indicando bug).
+
+[gate]
+# Hard fail abaixo.
+min_precision = 0.0
+
+# Hard fail abaixo.
+min_f1 = 0.0
+
+# Hard fail acima (regra do security-threat-model I4 — vazamento
+# entre projetos é intolerável, mesmo no gate mínimo).
+max_cross_scope_leak = 0.0
+
+# Hard fail acima (PROMPT MESTRE §10.13 — 2000ms).
+max_p99_ms = 2000
+
+# Warning (não hard fail) acima.
+max_p95_ms = 1000

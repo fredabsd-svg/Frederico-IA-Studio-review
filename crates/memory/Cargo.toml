@@ -1,0 +1,31 @@
+[package]
+name = "frederico-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Memória e continuidade do Frederico IA Studio (Fase 4, Etapa 1: fundação + retrieval lexical)."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+frederico-core = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-security = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# O runner de avaliação usa FakeClock pra determinismo (ADR-0008 §3.2,
+# ADR-0014 §4). As migrations rodam em :memory: e o retriever é
+# exercitado sem I/O de rede.
+tokio = { workspace = true }
+serde_json = { workspace = true }

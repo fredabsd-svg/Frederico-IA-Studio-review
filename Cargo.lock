@@ -1130,6 +1130,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "frederico-core",
+ "frederico-security",
+ "frederico-storage",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "frederico-model-catalog"
 version = "0.1.0"
 dependencies = [
