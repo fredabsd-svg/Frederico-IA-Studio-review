@@ -5,3 +5,4 @@ export * from "./providers";
 export * from "./catalog";
 export * from "./conversations";
 export * from "./stream";
+export * from "./memory";

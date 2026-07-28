@@ -34,7 +34,29 @@ export type AppOp =
       kind: "approval_respond";
       approval_id: string;
       decision: { approved: boolean; scope?: "Once" | "Run" | "Project"; reason?: string };
-    };
+    }
+  // --- Etapa 5 (Fase 4): painel de memória ---
+  | {
+      kind: "memory_list";
+      scope_type: string;
+      scope_id: string;
+      include_pending: boolean;
+    }
+  | {
+      kind: "memory_retrieve";
+      scope_type: string;
+      scope_id: string;
+      query: string;
+      k: number;
+    }
+  | {
+      kind: "memory_apply_correction";
+      old_id: string;
+      replacement: NewMemoryInputView;
+    }
+  | { kind: "memory_confirm_pending"; id: string }
+  | { kind: "memory_reject_pending"; id: string }
+  | { kind: "memory_purge_expired" };
 
 export interface AppInfo {
   version: string;
@@ -178,4 +200,72 @@ export interface ApprovalDecision {
   scope?: "Once" | "Run" | "Project";
   /** Razão da decisão (opcional; mostrada na auditoria). */
   reason?: string;
+}
+
+// --- Etapa 5 (Fase 4): tipos do painel de memória -------------------
+
+/** View de uma memória (espelha `frederico_core::MemoryRecord`). */
+export interface MemoryView {
+  id: string;
+  scope_type: string;
+  scope_id: string;
+  /** `"preference" | "fact" | "decision" | "correction" | ...` */
+  type_: string;
+  content: string;
+  /** `"user" | "assistant" | "external_content"`. */
+  origin: string;
+  source_type: string;
+  source_id: string | null;
+  confidence: number;
+  importance: number;
+  embedding_status: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+  superseded_by: string | null;
+  superseded_at: string | null;
+  user_confirmed: boolean;
+  user_pinned: boolean;
+  pending_review: boolean;
+}
+
+/** Decomposição do score final (`PROMPT MESTRE` §10.11 — explicabilidade). */
+export interface ScoreBreakdownView {
+  lexical: number;
+  recency: number;
+  semantic: number;
+  importance: number;
+  confirmation: number;
+  scope_match: boolean;
+}
+
+/** Hit do retrieval com score e explicabilidade. */
+export interface MemoryHitView {
+  record: MemoryView;
+  score: number;
+  score_breakdown: ScoreBreakdownView;
+  /** Frase curta explicando por que essa memória foi recuperada. */
+  explanation: string;
+}
+
+/** Resultado do `MemoryApplyCorrection`. */
+export interface CorrectionResultView {
+  old_id: string;
+  new_record: MemoryView;
+  superseded_at: string;
+}
+
+/** Input do `MemoryApplyCorrection` (espelha `NewMemoryInputView` do Rust). */
+export interface NewMemoryInputView {
+  scope_type: string;
+  scope_id: string;
+  /** O JSON usa `type_` (não `type`) por causa da palavra reservada em Rust. */
+  type_: string;
+  content: string;
+  origin: string;
+  source_type: string;
+  source_id: string | null;
+  confidence: number;
+  importance: number;
+  expires_at: string | null;
 }
