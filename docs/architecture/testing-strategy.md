@@ -80,6 +80,21 @@ O pipeline falha em:
 - fase marcada "concluída" no `status.md` sem a suíte da fase verde (§1.10);
 - arquivo gerado divergente da fonte (`REGRAS §1.9`).
 
+### O que o pipeline cobra hoje
+
+`scripts/check-docs.mjs` (passo "Docs guard") e `scripts/check-doc-impact.mjs` (passo "Doc-impact guard") implementam:
+
+| Verificação | Situação |
+|---|---|
+| Cabeçalho de spec ausente, malformado ou com `Estado` fora da lista | cobrado |
+| Carimbo de verificação vencido (60 dias) nos estados implementados | cobrado |
+| Trava do §1.13, com a isenção de escopo global | cobrado |
+| Crate/pacote sem o documento do §1.4 | cobrado |
+| Link interno ou âncora quebrada | cobrado |
+| PR que mexe em migrações / tool-registry / contratos sem tocar docs | cobrado, com a válvula do §1.3 |
+| Fase "concluída" sem a suíte verde | implícito: `cargo test --workspace` roda antes, no mesmo job — job vermelho reprova o PR inteiro |
+| Arquivo gerado divergente da fonte (§1.9) | **não cobrado** — não existe script de geração no repositório para comparar. Quando o primeiro existir, o check entra junto |
+
 ## Não-objetivos
 
 - 100% de cobertura de linha cego (cobertura é meio, não fim; o que importa é invariante coberto).

@@ -1,12 +1,14 @@
 <!--
 Estado: especificado
 Verificado contra o código em: —
-Fase correspondente: 3
+Fase correspondente: 7
 -->
 
 # Design do Sandbox Windows (stub)
 
-> Stub criado na Fase 0. Será aprofundado antes do início da Fase 3 (Motor de execução e ferramentas) — sandbox é estrutural, retrofit é caríssimo.
+> Stub criado na Fase 0. Será aprofundado antes do início da Fase 7 (Modo desenvolvedor) — sandbox é estrutural, retrofit é caríssimo.
+
+> **Alterado em relação ao plano original:** o cabeçalho dizia `Fase correspondente: 3`. A Fase 3 (Motor de execução e ferramentas) fechou entregando o `Jail` — o ponto único de normalização de caminho que cobre a ameaça I3 — mas **não** o sandbox descrito aqui (AppContainer/RestrictedToken/JobObject, proxy de rede local, env por allowlist). O `development-roadmap.md` posiciona o sandbox na Fase 7, e é essa a fase correspondente correta. A troca desfaz a violação da trava do §1.13, que acusava um spec `especificado` cuja fase já estava concluída.
 
 ## Decisão tomada
 

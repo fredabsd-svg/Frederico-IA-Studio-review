@@ -13,7 +13,7 @@ Fase correspondente: 1
 
 Declara os **traits de plataforma** que o núcleo usa para falar com o
 sistema operacional, sem importar nada de Windows ou Tauri (ver
-[ADR-0003](../../decisions/0003-nucleo-desacoplado-da-casca-tauri.md)).
+[ADR-0003](../decisions/0003-nucleo-desacoplado-da-casca-tauri.md)).
 A casca Tauri implementa esses traits e injeta na inicialização.
 Em testes, implementações em `security::fake::*` substituem.
 

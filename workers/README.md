@@ -1,8 +1,8 @@
 # workers/
 
 Workers sidecar do Frederico IA Studio (processos externos empacotados
-com o app). Conforme [ADR-0003](../decisions/0003-nucleo-desacoplado-da-casca-tauri.md)
-e [process-architecture.md](../architecture/process-architecture.md),
+com o app). Conforme [ADR-0003](../docs/decisions/0003-nucleo-desacoplado-da-casca-tauri.md)
+e [process-architecture.md](../docs/architecture/process-architecture.md),
 nenhum worker abre porta em `localhost` — comunicação é por JSON
 serializável via contrato em `packages/shared-contracts/`.
 
