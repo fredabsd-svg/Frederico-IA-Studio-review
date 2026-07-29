@@ -4,10 +4,15 @@
 //! outros crates. **Não importa nada de plataforma** (sem `tauri`, sem
 //! `windows`, sem paths do sistema) — a regra de pureza do núcleo é
 //! verificada por `scripts/check-core-purity.ps1` (REGRAS §1.10 e ADR-0003).
+//!
+//! A Fase 4 adiciona o submódulo [`memory`] com os tipos de
+//! Memória e Continuidade. Ver
+//! [`docs/architecture/memory-architecture.md`](../../docs/architecture/memory-architecture.md).
+
+pub mod memory;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use uuid::Uuid;
 
 /// Erro genérico do núcleo. Outros crates adicionam variantes por
 /// `From` conforme necessário, mas o ponto de partida é este.
@@ -24,21 +29,28 @@ pub enum CoreError {
 /// Resultado padrão do núcleo.
 pub type CoreResult<T> = Result<T, CoreError>;
 
+/// Macro helper para definir identificadores opacos (UUID newtype).
+/// Usado por `RunId`, `ConversationId`, `ProjectId`, etc. Exportada
+/// (`#[macro_export]`) pra que submódulos do crate (ex.: `memory`)
+/// possam declarar novos IDs sem repetir o boilerplate. Usa
+/// `::uuid::Uuid` (path absoluto) pra que o chamador não precise
+/// importar `uuid`.
+#[macro_export]
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
-        pub struct $name(pub Uuid);
+        pub struct $name(pub ::uuid::Uuid);
 
         impl $name {
             #[must_use]
             pub fn new() -> Self {
-                Self(Uuid::new_v4())
+                Self(::uuid::Uuid::new_v4())
             }
 
             #[must_use]
-            pub fn as_uuid(&self) -> Uuid {
+            pub fn as_uuid(&self) -> ::uuid::Uuid {
                 self.0
             }
         }
@@ -49,8 +61,8 @@ macro_rules! opaque_id {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 write!(f, "{}({})", stringify!($name), self.0)
             }
         }
@@ -258,6 +270,15 @@ pub fn require_non_empty(field: &'static str, value: &str) -> CoreResult<()> {
     }
     Ok(())
 }
+
+// Re-exports do submódulo `memory` (Fase 4). Facilita
+// `use frederico_core::{MemoryRecord, MemoryHit, ...}` no estilo
+// dos outros identificadores opacos do core.
+pub use memory::{
+    ClassificationContext, ConversationMessage, EmbeddingStatus, MemoryClassifierOutput, MemoryHit,
+    MemoryId, MemoryOrigin, MemoryRecord, MemoryScopeType, MemorySourceType, MemoryType, NewMemory,
+    RetrievalRequest, RetrievalResult, ScoreBreakdown,
+};
 
 #[cfg(test)]
 mod tests {

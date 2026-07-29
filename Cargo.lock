@@ -1077,10 +1077,12 @@ dependencies = [
 name = "frederico-desktop"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "directories",
  "frederico-core",
  "frederico-diagnostics",
  "frederico-execution-engine",
+ "frederico-memory",
  "frederico-model-catalog",
  "frederico-provider-engine",
  "frederico-security",
@@ -1115,6 +1117,7 @@ dependencies = [
  "chrono",
  "frederico-agent-engine",
  "frederico-core",
+ "frederico-memory",
  "frederico-model-catalog",
  "frederico-provider-engine",
  "frederico-security",
@@ -1127,6 +1130,26 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "frederico-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "frederico-core",
+ "frederico-security",
+ "frederico-storage",
+ "reqwest 0.12.28",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

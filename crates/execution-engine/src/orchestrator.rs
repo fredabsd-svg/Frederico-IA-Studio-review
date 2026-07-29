@@ -119,7 +119,7 @@ pub type ChatOrchestratorResult<T> = Result<T, ChatOrchestratorError>;
 /// catálogo, tooling (tool registry + jail + tools + allowed_for_run
 /// default).
 ///
-/// O construtor é grande (10 args) mas o `clippy::too_many_arguments`
+/// O construtor é grande (11 args) mas o `clippy::too_many_arguments`
 /// é justificado pela clareza — todos os componentes são injetados
 /// e estáveis durante o ciclo de vida.
 #[allow(clippy::too_many_arguments)]
@@ -146,6 +146,14 @@ pub struct ChatOrchestrator {
     /// de aprovação) carrega o `PermissionSet` real; aqui
     /// passamos um `default()` deny.
     pub allowed_for_run: Vec<ToolId>,
+    /// Handle opcional pro `MemoryExtractor` (Fase 4, Etapa 5).
+    /// Quando `Some`, o `send_message` enfileira um
+    /// `MemoryExtractionJob` após o run finalizar (Completed
+    /// ou Failed — classificador ainda é útil em Failed
+    /// porque a última resposta do assistant pode ter sido
+    /// gerada antes do timeout). `None` desabilita a
+    /// classificação automática (modo legado).
+    pub memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
 }
 
 impl ChatOrchestrator {
@@ -162,6 +170,7 @@ impl ChatOrchestrator {
         jail: Jail,
         tools: Vec<Arc<dyn Tool>>,
         allowed_for_run: Vec<ToolId>,
+        memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
     ) -> Self {
         Self {
             providers,
@@ -174,6 +183,7 @@ impl ChatOrchestrator {
             jail,
             tools,
             allowed_for_run,
+            memory_extractor,
         }
     }
 
@@ -341,6 +351,27 @@ impl ChatOrchestrator {
                 }
             }
 
+            // Etapa 5 (Fase 4): enfileira um `MemoryExtractionJob`
+            // se o `MemoryExtractor` foi configurado. Best-effort:
+            // se a carga das mensagens falhar (DB busy, schema
+            // drift), loga e segue — o worker da próxima run
+            // pega (regra do `ADR-0012 §1`).
+            if let Some(extractor) = this_for_err.memory_extractor.as_ref() {
+                match build_extraction_job(&this_for_err.db, run_id).await {
+                    Ok(job) => {
+                        extractor.enqueue(job);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            memory.extractor = "enqueue",
+                            run_id = %run_id,
+                            error = %e,
+                            "falha ao construir MemoryExtractionJob — seguindo adiante"
+                        );
+                    }
+                }
+            }
+
             this_for_err.sink.emit_run_status(run_id, final_status);
             let _ = this_for_err.runs.unregister(run_id).await;
         });
@@ -368,6 +399,86 @@ impl ChatOrchestrator {
             .list_for_message(&message_id, since_seq)
             .await?)
     }
+}
+
+/// Constrói um `MemoryExtractionJob` a partir do estado pós-run:
+/// carrega as últimas N mensagens da conversa (default 6,
+/// mesmo teto do `LlmMemoryClassifier`) e mapeia pra
+/// `Vec<ConversationMessage>`.
+///
+/// **Mapeamento `Message.role` → `ConversationMessage.source`:**
+/// - `"user"` → `"user_message"`
+/// - `"assistant"` → `"assistant_message"`
+/// - `"tool"` → `"tool_output:<run_id>"`
+/// - outros (`"system"`) → `"unknown"` (não chegam no
+///   classificador de v1 — só os 3 primeiros roles entram).
+///
+/// Best-effort: qualquer erro de DB vira `Err(String)` e o
+/// caller loga + segue. Não bloqueia o fluxo de Run.
+async fn build_extraction_job(
+    db: &Arc<Database>,
+    run_id: frederico_core::RunId,
+) -> Result<frederico_memory::MemoryExtractionJob, String> {
+    use chrono::Utc;
+    use frederico_core::{ConversationMessage, MemorySourceType};
+    use frederico_storage::{MessageRepo, RunRepo};
+
+    // (1) Carrega o Run pra pegar o `conversation_id`.
+    let run = RunRepo::new(db)
+        .get(&run_id)
+        .await
+        .map_err(|e| format!("RunRepo::get: {e}"))?;
+    let conversation_id = run.conversation_id;
+
+    // (2) Carrega todas as mensagens da conversa e pega as
+    // últimas 6 (default do `LlmMemoryClassifier`).
+    let all = MessageRepo::new(db)
+        .list_for_conversation(&conversation_id)
+        .await
+        .map_err(|e| format!("MessageRepo::list_for_conversation: {e}"))?;
+    const LAST_N: usize = 6;
+    let tail: Vec<_> = all
+        .iter()
+        .rev()
+        .take(LAST_N)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    // (3) Mapeia pra `ConversationMessage`.
+    let messages: Vec<ConversationMessage> = tail
+        .iter()
+        .filter_map(|m| {
+            let source = match m.role.as_str() {
+                "user" => MemorySourceType::new("user_message"),
+                "assistant" => MemorySourceType::new("assistant_message"),
+                "tool" => MemorySourceType::new(format!(
+                    "tool_output:{}",
+                    m.run_id
+                        .map(|r| r.0.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )),
+                _ => return None, // system, etc — pula
+            };
+            Some(ConversationMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                source,
+            })
+        })
+        .collect();
+
+    if messages.is_empty() {
+        return Err("nenhuma mensagem mapeada — conversa vazia?".to_string());
+    }
+
+    Ok(frederico_memory::MemoryExtractionJob::new(
+        run_id.0.to_string(),
+        conversation_id.0.to_string(),
+        messages,
+        Utc::now(),
+    ))
 }
 
 /// Models locais/simulados sem preço (a Etapa 4.x.y reintroduz o

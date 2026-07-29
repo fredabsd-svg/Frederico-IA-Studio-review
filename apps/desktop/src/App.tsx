@@ -10,6 +10,7 @@ import {
 import { Chat } from "./routes/Chat";
 import { Settings } from "./routes/Settings";
 import { About } from "./routes/About";
+import { Memories } from "./routes/Memories";
 
 /**
  * Frederico IA Studio — casca React.
@@ -93,6 +94,7 @@ export function App() {
           <h1>Frederico IA Studio</h1>
           <nav>
             <Link to="/chat">Chat</Link>
+            <Link to="/memories">Memórias</Link>
             <Link to="/settings">Configurações</Link>
             <Link to="/sobre">Sobre</Link>
           </nav>
@@ -102,6 +104,7 @@ export function App() {
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:id" element={<Chat />} />
+            <Route path="/memories" element={<Memories />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/sobre" element={<About />} />
           </Routes>

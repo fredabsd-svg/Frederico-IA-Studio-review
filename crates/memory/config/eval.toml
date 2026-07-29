@@ -1,0 +1,38 @@
+# eval.toml — gate de avaliação do `frederico-memory`.
+#
+# Este arquivo é **mutável por PR normal** (não exige ADR novo).
+# A Etapa 6 da Fase 4 sobe os alvos para os valores de produção
+# (precisão ≥ 0.70, F1 ≥ 0.65, vazamento = 0, p99 ≤ 2s).
+# Subir alvos exige mais cenários no gold-set cobrindo o novo
+# limite — regra de `memory-evaluation-plan.md` §"Alvos".
+#
+# O runner de avaliação (`crates/memory/tests/evaluation.rs`)
+# lê este arquivo em tempo de teste e aplica os hard fails
+# + warnings. Os números da Etapa 1 (precisão ≥ 0.0) foram
+# deliberadamente permissivos — só falhavam se o runner
+# quebrasse. A Etapa 6 fecha o gate de CI.
+#
+# Ver [`docs/architecture/memory-evaluation-plan.md`](../../../docs/architecture/memory-evaluation-plan.md).
+
+[gate]
+# Hard fail abaixo — alvo de produção (Etapa 6, plano §"Alvos").
+# Memória que erra o candidato principal mais de 30% das
+# vezes é inúteis pro retrieval (§10.13).
+min_precision = 0.70
+
+# Hard fail abaixo — alvo de produção. F1 combina P e R;
+# mínimo 0.65 significa que o motor tá no mínimo
+# recuperando 2 em cada 3 candidatos esperados.
+min_f1 = 0.65
+
+# Hard fail acima (regra do security-threat-model I4 — vazamento
+# entre projetos é intolerável, mesmo no gate mínimo).
+max_cross_scope_leak = 0.0
+
+# Hard fail acima (PROMPT MESTRE §10.13 — 2000ms é o teto
+# absoluto de latência do retrieval; estourar = bug).
+max_p99_ms = 2000
+
+# Warning (não hard fail) acima — p95 entre 1s e 2s é
+# aceitável, mas merece investigação.
+max_p95_ms = 1000
