@@ -1,0 +1,29 @@
+[package]
+name = "frederico-document-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "DocumentSpec, validação via JSON Schema, e geração do prompt do modo documental (Fase 5, Etapa 1: fundação)."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+# O crate é **puro** (verificado por `scripts/check-core-purity.ps1` —
+# ADR-0003). Não depende de `frederico-storage` (sem I/O de banco na
+# Etapa 1), nem de `frederico-core` (Etapa 1 só precisa de tipos
+# primitivos do Rust padrão). Crates que armazenam artefatos (storage,
+# execution-engine) entram a partir da Etapa 3, quando o `docs.generate`
+# passa a persistir o resultado.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `schemars` deriva `JsonSchema` automaticamente nos tipos do
+# `DocumentSpec`; `build.rs` consome o `schema_for!` e escreve o JSON
+# Schema em `$OUT_DIR` (REGRAS §1.9 — gerado vence manual).
+schemars = { workspace = true }
+# Validação em runtime do JSON recebido pelo `docs.generate`. Mesmo
+# crate que o `tool-registry` já usa.
+jsonschema = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

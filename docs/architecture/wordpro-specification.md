@@ -1,12 +1,21 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-28
 Fase correspondente: 5
 -->
 
+> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — o
+> catálogo de blocos do `DocumentSpec` (20 blocos) já está definido
+> e validado no `frederico-document-engine`; o WordPro **em si**
+> (renderização via `python-docx`, estilos "Tinta & Latão" e modo
+> "Sóbrio") entra na Etapa 3. Estilo centralizado (`PROMPT MESTRE`
+> §17.4) e modo Sóbrio (`§16.6`) já estão previstos no enum
+> `DocumentStyle`.
+
 # Especificação do WordPro Kit (stub)
 
-> Stub criado na Fase 0. Será aprofundado junto com a Fase 5.
+> Stub criado na Fase 0. Aprofundado na Etapa 1 da Fase 5 (catálogo
+> de blocos); renderização via `python-docx` entra na Etapa 3.
 
 ## Decisão tomada
 

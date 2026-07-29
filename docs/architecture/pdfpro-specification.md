@@ -1,12 +1,22 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-28
 Fase correspondente: 5
 -->
 
+> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — o
+> catálogo de blocos do `DocumentSpec` já está definido; o PDFPro
+> **em si** (escolha entre `reportlab` e `PyMuPDF` — ADR aberto da
+> Fase 0, decisão na Etapa 5; fontes embutidas; validação visual e
+> estrutural; **auditoria bloqueante** dentro do salvamento —
+> `PROMPT MESTRE` §19.6, sem interruptor) entra na Etapa 5. Fidelidade
+> Word → PDF e Excel → PDF entra junto.
+
 # Especificação do PDFPro Kit (stub)
 
-> Stub criado na Fase 0. Será aprofundado junto com a Fase 5.
+> Stub criado na Fase 0. Aprofundado na Etapa 1 da Fase 5 (catálogo
+> de blocos); renderização, validação visual/estrutural e auditoria
+> bloqueante entram na Etapa 5.
 
 ## Decisão tomada
 

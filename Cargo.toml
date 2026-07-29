@@ -11,6 +11,8 @@ members = [
     "crates/tool-registry",
     "crates/execution-engine",
     "crates/memory",
+    "crates/document-engine",
+    "crates/process-architecture",
     "packages/shared-contracts",
     "apps/desktop/src-tauri",
 ]
@@ -35,6 +37,8 @@ frederico-agent-engine = { path = "crates/agent-engine" }
 frederico-tool-registry = { path = "crates/tool-registry" }
 frederico-execution-engine = { path = "crates/execution-engine" }
 frederico-memory = { path = "crates/memory" }
+frederico-document-engine = { path = "crates/document-engine" }
+frederico-process-architecture = { path = "crates/process-architecture" }
 frederico-shared-contracts = { path = "packages/shared-contracts" }
 
 # Async runtime
@@ -74,8 +78,15 @@ eventsource-stream = "0.2"
 http = "1"
 bytes = "1"
 
-# Validação de JSON Schema (tool-registry)
-jsonschema = { version = "0.18", default-features = false }
+# Validação de JSON Schema (tool-registry, document-engine).
+# `draft202012` é necessário porque o `schemars` 0.8 (que o
+# `document-engine` usa para gerar o schema do `DocumentSpec`)
+# produz JSON Schema 2020-12.
+jsonschema = { version = "0.18", default-features = false, features = ["draft202012"] }
+# Geração de JSON Schema a partir de tipos Rust (document-engine — Etapa 1 da Fase 5).
+# `schemars` 0.8 casa com `jsonschema` 0.18 (mesma major do tool-registry).
+# `derive` é a feature default e habilita a macro `#[derive(JsonSchema)]`.
+schemars = { version = "0.8" }
 
 [profile.release]
 opt-level = 3

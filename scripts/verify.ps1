@@ -43,7 +43,14 @@ Invoke-Step "cargo fmt --check" {
 
 # Step 2
 Invoke-Step "cargo clippy" {
-    cargo clippy --workspace --all-targets -- -D warnings
+    # `-D clippy::await_holding_lock` é a trava que o ADR-0015
+    # instituiu: impede que `MutexGuard` (ou qualquer guard de lock
+    # do `std::sync` ou `tokio::sync`) seja segurado através de um
+    # `.await` — classe de bug que produziu o deadlock da
+    # `WorkerManager::invoke` na Etapa 2A. Mesmo espírito do
+    # `check-core-purity.ps1`: a máquina passa a coibir, em vez de
+    # depender de revisão manual.
+    cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock
 }
 
 # Step 3
