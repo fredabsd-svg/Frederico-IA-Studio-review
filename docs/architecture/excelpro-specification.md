@@ -1,12 +1,24 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-28
 Fase correspondente: 5
 -->
 
+> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — o
+> catálogo de blocos (`DocumentSpec` com `Kpis`, `Table`, `Chart`,
+> `KeyValue`) já está definido e validado; a restrição "Spreadsheet
+> aceita apenas `Kpis`/`Table`/`Chart`" já é regra semântica
+> validada em runtime. O ExcelPro **em si** (renderização via
+> `openpyxl`, fórmulas auditáveis, memória de cálculo como aba
+> oculta) entra na Etapa 4. A regra de moeda brasileira e datas
+> brasileiras (`PROMPT MESTRE` §18.2) será definida na Etapa 4 com
+> ADR próprio.
+
 # Especificação do ExcelPro Kit (stub)
 
-> Stub criado na Fase 0. Será aprofundado junto com a Fase 5.
+> Stub criado na Fase 0. Aprofundado na Etapa 1 da Fase 5 (catálogo
+> de blocos + restrição Spreadsheet); renderização via `openpyxl`
+> entra na Etapa 4.
 
 ## Decisão tomada
 

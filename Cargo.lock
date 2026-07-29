@@ -1110,6 +1110,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-document-engine"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "frederico-execution-engine"
 version = "0.1.0"
 dependencies = [

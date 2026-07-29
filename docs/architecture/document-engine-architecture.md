@@ -1,12 +1,27 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-28
 Fase correspondente: 5
 -->
 
+> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — crate
+> `frederico-document-engine` (puro, `unsafe_code = "forbid"`) com
+> o `DocumentSpec` (20 blocos: Cover, Toc, Heading, Paragraph, List,
+> Table, KeyValue, Kpis, Callout, Quote, Steps, Chart, Image, Code,
+> Divider, Spacer, PageBreak, Footer, Signatures, BackCover), validação
+> em duas camadas (JSON Schema gerado em runtime via `schemars` e
+> validado por `jsonschema` 0.18, com cache thread-safe em `OnceLock`;
+> regras semânticas em Rust puro), função pura
+> `document_mode_prompt()` que gera o prompt do modo documental a
+> partir do catálogo de blocos (REGRAS §1.9 — gerado vence manual).
+> 22/22 testes verde (2 unit + 20 integration). `cargo clippy
+> --workspace --all-targets -- -D warnings` limpo. Etapas 2 a 6
+> (worker Python + renderização) ainda abertas.
+
 # Arquitetura do Document Engine (stub)
 
-> Stub criado na Fase 0. Será aprofundado antes do início da Fase 5 (Documentos).
+> Stub criado na Fase 0. Aprofundado na Etapa 1 da Fase 5 — o esqueleto
+> virou o crate `frederico-document-engine`.
 
 ## Decisão tomada
 
