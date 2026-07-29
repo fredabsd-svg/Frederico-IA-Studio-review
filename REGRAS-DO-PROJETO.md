@@ -120,6 +120,7 @@ Regras:
 - O carimbo "Verificado contra o código em" deve ter menos de 60 dias nesses dois estados (mesma regra do §1.11). "Especificado" não tem prazo.
 - A promoção de "especificado" para os demais estados acontece **no mesmo commit em que a primeira parte do código entra**, com link para o teste que prova.
 - **Trava do caminho inverso:** nenhum documento permanece "especificado" depois que a fase dele começa. Se `docs/status.md` marcar a fase como "em andamento" ou "concluída" e o spec correspondente ainda estiver "especificado", é defeito — sem essa trava, um documento escaparia da §1.3 indefinidamente.
+- **Isenção de escopo global:** documentos que descrevem o programa inteiro, e não uma fase — visão de produto, roadmap, estratégia de testes —, ficam de fora da trava acima. O sinal é o próprio cabeçalho: `Fase correspondente` cobrindo todo o intervalo do projeto (`1-9`) ou marcada como "global"/"roadmap". Sem essa isenção a trava os pegaria desde a Fase 1 e nunca mais soltaria, já que a fase deles não termina — e a §1.1 diz justamente que o roadmap é o lugar do que ainda não existe. A isenção vale só para a trava; o cabeçalho continua obrigatório e o Estado continua tendo de ser verdadeiro.
 - A mudança de estado é registrada no `docs/status.md` e no `CHANGELOG.md` da fase.
 
 Divisão de responsabilidade na verificação — o CI cobra o que é mecânico, a revisão humana cobra o resto:
