@@ -137,4 +137,78 @@ O CI nunca declara que um documento "confere com o código": isso ele não sabe 
 
 ---
 
-*Próximas regras serão adicionadas como REGRA 2, REGRA 3, … neste mesmo arquivo.*
+## REGRA 2 — INTEGRIDADE DO CI
+
+### 2.1 Princípio único
+
+**O `main` verde é pré-condição para prosseguir — não é meta a perseguir depois.**
+
+Enquanto o CI do `main` estiver vermelho, o projeto está parado para efeito de avanço: o trabalho permitido é o que devolve o `main` ao verde. Esta regra é o par mecânico da REGRA 1: o §1.8 exige que `docs/status.md` reflita o estado real, e o único juiz do estado real que não depende da memória de quem escreveu é o pipeline. "Passou na minha máquina" não é evidência — é anedota.
+
+### 2.2 O que conta como "CI validado"
+
+O workflow `CI` (`.github/workflows/ci.yml`) concluiu com `success` **para o SHA exato** do commit em questão. Nada mais conta:
+
+- não conta ter passado num commit anterior da mesma branch;
+- não conta ter passado localmente, ainda que com os mesmos comandos;
+- não conta estar `in_progress` — pendente não é verde;
+- não conta um job verde isolado quando outro do mesmo run está vermelho.
+
+O SHA e o número do run são a evidência citável em `docs/status.md` e nas descrições de PR (§1.12).
+
+### 2.3 O que a regra tranca
+
+"Prosseguir" não é vago. A regra tranca cinco portas, e cada uma exige `main` verde no SHA corrente:
+
+1. **Mesclar qualquer PR** no `main`.
+2. **Promover fase** para `concluída` em `docs/status.md` (§1.8) — a evidência da promoção passa a incluir o run de CI verde do commit que consolidou a fase.
+3. **Iniciar a próxima fase** do PROMPT MESTRE.
+4. **Promover spec** de `especificado` para `parcialmente implementado` ou `implementado` (§1.13).
+5. **Publicar release ou tag.**
+
+Fora dessas portas, trabalhar com `main` vermelho é permitido e às vezes necessário — investigar, escrever o teste que reproduz, abrir o PR de correção. O que não se faz é **avançar de etapa** sobre um pipeline vermelho.
+
+### 2.4 Vermelho não se contorna
+
+Proibido, sem exceção:
+
+- mesclar com o CI vermelho ou pendente, inclusive por permissão de administrador;
+- marcar teste como `#[ignore]`, removê-lo, ou afrouxar uma asserção **com o objetivo de ficar verde**;
+- relaxar `-D warnings`, pular etapa do workflow ou reduzir escopo do `cargo test --workspace` para destravar merge;
+- reescrever a evidência em `docs/status.md` para uma suíte parcial que passa, quando a suíte completa não passa.
+
+Um teste pode ser removido ou reescrito quando **o teste é que está errado** — mas isso é um PR com justificativa própria, revisado como mudança de comportamento, nunca um atalho no meio de outro trabalho.
+
+### 2.5 Re-run diagnostica, não absolve
+
+Re-executar um job vermelho é legítimo **para descobrir se a falha é determinística**. O que o re-run não faz é apagar o vermelho.
+
+- Verde na segunda tentativa **não** reclassifica a falha como "ruído". Reclassifica como **teste instável**, que o §2.6 trata como defeito.
+- É proibido re-executar até passar e seguir em frente sem registrar nada. Esse é o hábito que transforma um pipeline em decoração.
+
+### 2.6 Teste instável é defeito bloqueante
+
+`docs/architecture/testing-strategy.md` já declara teste flaky como não-objetivo ("qualquer teste flaky é bloqueante até estabilizar ou ser substituído"). Aqui isso vira procedimento:
+
+1. Toda falha que não reproduz de forma determinística é registrada na coluna "Pendências" de `docs/status.md`, com o teste, o run e a hipótese de causa.
+2. O teste instável tem **prazo**: estabilizado ou substituído antes da promoção da fase corrente. Fase não é promovida com flaky em aberto.
+3. Quarentena (`#[ignore]` temporário) só é aceita **junto** com o registro do §2.6.1 e uma causa-raiz já identificada — quarentena sem diagnóstico é o §2.4 com outro nome.
+4. Instabilidade tem causa: relógio, paralelismo, caminho de arquivo compartilhado, porta de rede, ordem de teste. "Foi o CI" não é causa-raiz.
+
+### 2.7 Única válvula de escape
+
+Falha comprovadamente externa ao repositório — runner indisponível, rede do provedor de pacotes fora, ação de terceiro quebrada a montante — não é falha do projeto. Para valer:
+
+- a evidência da causa externa vai na descrição do PR (log que mostra a falha antes de qualquer código do projeto rodar);
+- a exceção vale para **aquele run**, não abre precedente;
+- se a mesma causa externa aparecer três vezes, ela deixou de ser externa: virou fragilidade do nosso pipeline, e entra como pendência.
+
+Falha em etapa que executa código do projeto (`cargo test`, `clippy`, `fmt`, `npm run build`, guard de pureza) **nunca** se enquadra aqui.
+
+### 2.8 Registro do bloqueio
+
+`main` vermelho por mais de um dia útil muda o estado da fase corrente para `bloqueada` em `docs/status.md` (§1.8), com o run e o motivo. O estado volta a `em andamento` quando o `main` voltar ao verde. Fase bloqueada por CI é informação de primeira linha para qualquer sessão nova — é o primeiro arquivo que ela lê.
+
+---
+
+*Próximas regras serão adicionadas como REGRA 3, REGRA 4, … neste mesmo arquivo.*

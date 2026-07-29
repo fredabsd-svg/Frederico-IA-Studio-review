@@ -187,13 +187,20 @@ mod tests {
 
     struct Tempdir(PathBuf);
 
+    /// Contador atômico: o relógio sozinho não garante unicidade (no Windows
+    /// a granularidade de `timestamp_nanos` é grosseira e testes paralelos
+    /// podem colidir no mesmo valor, compartilhando o mesmo diretório).
+    static TEMPDIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     impl Tempdir {
         fn new() -> Self {
             let base = std::env::temp_dir();
+            let n = TEMPDIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let unique = format!(
-                "frederico-tool-registry-files-read-{}-{}",
+                "frederico-tool-registry-files-read-{}-{}-{}",
                 std::process::id(),
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                n,
             );
             let dir = base.join(unique);
             fs::create_dir_all(&dir).unwrap();

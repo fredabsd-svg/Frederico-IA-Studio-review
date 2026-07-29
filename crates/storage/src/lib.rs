@@ -1879,12 +1879,20 @@ mod tests {
         assert!(openai.last_ok_at.is_some());
     }
 
+    /// Contador atômico: o relógio sozinho não garante unicidade (no Windows
+    /// a granularidade de `timestamp_nanos` é grosseira e testes paralelos
+    /// podem colidir no mesmo valor, compartilhando o mesmo banco e
+    /// disparando duas migrações concorrentes).
+    static TEMPDIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn tempdir() -> PathBuf {
         let base = std::env::temp_dir();
+        let n = TEMPDIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let unique = format!(
-            "frederico-storage-test-{}-{}",
+            "frederico-storage-test-{}-{}-{}",
             std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            n,
         );
         let dir = base.join(unique);
         std::fs::create_dir_all(&dir).unwrap();
