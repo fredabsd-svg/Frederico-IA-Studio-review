@@ -1190,6 +1190,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "frederico-test-support",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1266,6 +1267,13 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "frederico-test-support"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

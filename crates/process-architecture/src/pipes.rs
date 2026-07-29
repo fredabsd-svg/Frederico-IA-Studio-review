@@ -1,16 +1,38 @@
 //! Interface abstrata de transporte para o `WorkerManager`.
 //!
-//! O `WorkerManager` opera com `Box<dyn Pipe>` — a implementação
-//! concreta (named pipes Windows, in-process channel pra testes,
-//! unix socket, ...) vive em submódulos. A Etapa 2A entrega só o
-//! fake in-process; a Etapa 2B adiciona o `WindowsPipeClient`/
-//! `WindowsPipeServer` via `windows` crate (gateado em
-//! `#[cfg(target_os = "windows")]`).
+//! O transporte é **dividido em duas metades** ([`PipeReader`] e
+//! [`PipeWriter`]), em vez de uma trait única. A divisão é o que
+//! destrava o modelo de ator do `WorkerManager`
+//! ([`crate::manager`], ADR-0015):
+//!
+//! - A **task do ator** fica com **as duas metades juntas** (`Box<dyn
+//!   PipeReader>` + `Box<dyn PipeWriter>`) — ela é a única dona do
+//!   pipe. Sem `Arc<Mutex<Box<dyn Pipe>>>`, sem `MutexGuard` segurado
+//!   em `.await`.
+//! - [`PipeWriter`] é `Clone` (a `FakePipeClient` envelopa um
+//!   `mpsc::Sender`; a `WindowsPipeWriter` da Etapa 2B envelopa
+//!   `Arc<NamedPipeServer>`, que é `Clone` no `windows` crate). O
+//!   `WorkerManager::invoke` carrega um clone, sem lock.
+//! - [`PipeReader`] **não** é `Clone` — leitura é serializada pela
+//!   task do ator. Concorrência não vem de readers paralelos; vem
+//!   de **múltiplas requests em voo** com `request_id` distinto
+//!   (correlacionadas via `oneshot`).
 //!
 //! **Contrato:** line-delimited JSON. Cada mensagem termina em
 //! `\n`. O `read_line` lê até o próximo `\n` (inclusivo); o
 //! `write_line` aceita um buffer que **já inclui** o `\n` final
 //! (o `IpcMessage::encode_line` produz esse formato).
+//!
+//! # Por que não `Pipe = PipeReader + PipeWriter` (uma trait só)
+//!
+//! A versão da Etapa 2A original tinha uma trait `Pipe` única, e
+//! isso foi a raiz do deadlock (o `WorkerManager` envolvia
+//! `Arc<Mutex<Box<dyn Pipe>>>` e o `MutexGuard` era segurado em
+//! `tx.send().await` no write e em `rx.recv().await` no read).
+//! Dividir em `PipeReader` + `PipeWriter` separados torna o
+//! impossível (a `PipeReader` é o que é enviada à task; a
+//! `PipeWriter` é o que é clonada pro `invoke`; as duas nunca se
+//! atravessam).
 
 use std::fmt;
 
@@ -62,20 +84,28 @@ impl fmt::Display for PipeName {
     }
 }
 
-/// Conexão de transporte subjacente (named pipe, in-process, etc.).
-///
-/// O `WorkerManager` trata `Box<dyn Pipe>` como opaco — a única
-/// coisa que importa é o contrato line-delimited JSON.
+/// Metade de **leitura** do transporte. Não é `Clone` — a leitura
+/// é serializada pela task do ator. Concorrência vem de múltiplas
+/// requests em voo, não de readers paralelos.
 #[async_trait]
-pub trait Pipe: Send {
+pub trait PipeReader: Send {
     /// Lê uma linha (terminada em `\n`). Devolve `None` em EOF
     /// (peer fechou a conexão limpa).
     async fn read_line(&mut self) -> Result<Option<Vec<u8>>, ProcessError>;
+}
 
+/// Metade de **escrita** do transporte. É `Clone` — o
+/// `WorkerManager` carrega um clone, sem lock. Concorrência
+/// interna fica a cargo da implementação concreta: a
+/// `FakePipeWriter` envelopa um `mpsc::Sender` (que já é
+/// concorrente); a `WindowsPipeWriter` da Etapa 2B envelopa
+/// `Arc<NamedPipeServer>`, que é serializado pelo SO.
+#[async_trait]
+pub trait PipeWriter: Send + Sync {
     /// Escreve uma linha. O `line` **já deve incluir** o `\n`
     /// final.
-    async fn write_line(&mut self, line: &[u8]) -> Result<(), ProcessError>;
+    async fn write_line(&self, line: &[u8]) -> Result<(), ProcessError>;
 
     /// Fecha a conexão (idempotente).
-    async fn close(&mut self) -> Result<(), ProcessError>;
+    async fn close(&self) -> Result<(), ProcessError>;
 }

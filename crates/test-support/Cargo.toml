@@ -1,0 +1,22 @@
+[package]
+name = "frederico-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Helpers compartilhados de teste (timeouts, fakes de I/O). Sem dependência de plataforma."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+
+[dev-dependencies]
+# `test-util` é necessário pro atributo `start_paused` em
+# `#[tokio::test]`, que usamos pra testar o próprio `with_test_timeout`
+# sem esperar 60s de sleep real.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "test-util"] }
+
+[lib]
+path = "src/lib.rs"
