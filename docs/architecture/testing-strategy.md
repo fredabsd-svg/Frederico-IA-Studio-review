@@ -65,7 +65,9 @@ Cada spec em `docs/architecture/` lista invariantes com o rótulo "verificável 
 - **Máquina de referência declarada**: i5-3570, 16 GB, Windows 10 64 bits. CI fixa essa máquina como gate.
 - Medições ficam registradas em `docs/testing/perf-baseline.md` por versão, com tolerância de ±10% para evitar fragilidade.
 
-## CI (REGRAS §1.10 + §1.13)
+## CI (REGRAS §1.10 + §1.13 + REGRA 2)
+
+O que o pipeline verifica está abaixo. **Quando ele fica vermelho, quem manda é a REGRA 2**: `main` verde é pré-condição para mesclar, promover fase, promover spec, iniciar a fase seguinte ou publicar release; re-run diagnostica mas não absolve; teste instável é defeito bloqueante com prazo.
 
 O pipeline falha em:
 
