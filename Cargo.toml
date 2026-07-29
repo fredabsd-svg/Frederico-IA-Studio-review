@@ -12,6 +12,7 @@ members = [
     "crates/execution-engine",
     "crates/memory",
     "crates/document-engine",
+    "crates/process-architecture",
     "packages/shared-contracts",
     "apps/desktop/src-tauri",
 ]
@@ -37,6 +38,7 @@ frederico-tool-registry = { path = "crates/tool-registry" }
 frederico-execution-engine = { path = "crates/execution-engine" }
 frederico-memory = { path = "crates/memory" }
 frederico-document-engine = { path = "crates/document-engine" }
+frederico-process-architecture = { path = "crates/process-architecture" }
 frederico-shared-contracts = { path = "packages/shared-contracts" }
 
 # Async runtime

@@ -1,0 +1,35 @@
+[package]
+name = "frederico-process-architecture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Manager de workers sidecar + IPC via named pipes + handshake (Fase 5, Etapa 2A: fundação do process-architecture)."
+
+[lints.rust]
+# `deny` em vez de `forbid` para permitir `#![allow(unsafe_code)]`
+# **apenas** no módulo `windows_pipes` que entra na Etapa 2B. Por
+# enquanto, sem unsafe no crate. Mesma regra do `frederico-security`,
+# ADR-0007 §Implementação Windows.
+unsafe_code = "deny"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util", "process"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# A Etapa 2A é o **protocolo** (envelope, manifest, manager) + um
+# fake in-process pra testes. A Etapa 2B adiciona o
+# `WindowsPipeClient`/`WindowsPipeServer` via `windows` crate
+# (gateado em `#[cfg(windows)]`), o `bootstrap` do
+# `document-worker.exe`, e o `spawn_external` que abre o processo
+# filho. Por enquanto o crate compila em qualquer plataforma.
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+serde_json = { workspace = true }

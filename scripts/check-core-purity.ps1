@@ -31,7 +31,11 @@ if (-not (Test-Path $cratesDir)) {
 # Crates onde `tauri`/`windows`/etc. são permitidos. Cada entrada
 # é o NOME DA PASTA (igual ao `Cargo.toml` `name` exceto que
 # `frederico-` é stripado, ficando só `security`).
-$allowedPlatformCrates = @('security')
+# `process-architecture` é a Etapa 2B da Fase 5 — o `WindowsPipe`
+# (gateado em `#[cfg(windows)]`) usa o crate `windows` para named
+# pipes. Ver ADR-0007 §Implementação Windows (mesma filosofia do
+# `frederico-security`).
+$allowedPlatformCrates = @('security', 'process-architecture')
 
 $violations = New-Object System.Collections.Generic.List[string]
 
