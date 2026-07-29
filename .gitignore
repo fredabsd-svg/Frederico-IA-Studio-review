@@ -30,6 +30,10 @@ storage/test-dbs/
 
 # --- Logs / cobertura ---
 *.log
+# Feedback da Etapa 2A (Fase 5): `cargo test ... > test.log 2>&1`
+# + `tail -80 test.log` para todo teste de worker. Listado
+# explicitamente por clareza, embora `*.log` já cubra.
+test.log
 coverage/
 **/coverage/
 
