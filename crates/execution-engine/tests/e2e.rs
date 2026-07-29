@@ -135,9 +135,12 @@ impl Tempdir {
             // Se for AlreadyExists, tenta com outro counter (caminho
             // improvável mas defensivo).
             if e.kind() == std::io::ErrorKind::AlreadyExists {
-                let unique2 = format!("{unique}-retry");
-                std::fs::create_dir(&unique2).expect("criou retry");
-                return Self(PathBuf::from(unique2));
+                // O retry precisa ficar sob `base` como o caminho normal:
+                // `create_dir(&unique2)` criaria o diretório relativo ao
+                // cwd do processo de teste e devolveria um caminho relativo.
+                let dir2 = base.join(format!("{unique}-retry"));
+                std::fs::create_dir(&dir2).expect("criou retry");
+                return Self(dir2);
             }
             panic!("criou tempdir: {e}");
         }

@@ -23,6 +23,7 @@
 #![cfg(not(doctest))]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,12 +42,22 @@ use frederico_storage::{
 };
 use frederico_tool_registry::{Jail, ToolRegistry};
 
+/// Contador atômico: o relógio sozinho não garante unicidade. No Windows
+/// a granularidade de `timestamp_nanos` é grosseira, e os testes deste
+/// arquivo rodam em paralelo no mesmo processo — dois deles podiam cair no
+/// mesmo valor, compartilhar o mesmo `test.db` e disparar duas migrações
+/// concorrentes ("UNIQUE constraint failed: _sqlx_migrations.version").
+/// Mesmo padrão já aplicado no `execution-engine`.
+static TEMPDIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn tempdir() -> PathBuf {
     let base = std::env::temp_dir();
+    let n = TEMPDIR_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique = format!(
-        "frederico-recovery-test-{}-{}",
+        "frederico-recovery-test-{}-{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        n,
     );
     let dir = base.join(unique);
     std::fs::create_dir_all(&dir).expect("cria tempdir");

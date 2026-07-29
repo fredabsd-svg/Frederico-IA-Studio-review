@@ -1,6 +1,6 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-07-29
 Fase correspondente: 1-3
 -->
 
@@ -81,6 +81,21 @@ Aprofundar em `docs/architecture/windows-sandbox-design.md` na Fase 3. Resumo:
 - Cobertura de cada linha da tabela acima é obrigatória.
 - Suítes `tests/security/` e `tests/recovery/` (`PROMPT MESTRE` §28).
 - Máquina limpa (`PROMPT MESTRE` §28.5) é a verificação final de que as contramedidas funcionam sem dependência de ambiente pré-instalado.
+
+### O que já está coberto por teste (verificado em 2026-07-29)
+
+Promoção do Estado para `parcialmente implementado` (`REGRAS §1.13`). As linhas abaixo são as que têm contramedida implementada **e** teste que a prova; as demais da tabela continuam sendo especificação.
+
+| ID | Onde a contramedida vive | Teste que prova |
+|---|---|---|
+| T1 | `frederico_provider_engine::sanitize` (regex bloqueando `Authorization`, `api_key`, `Bearer `, `sk-`, …) | `crates/provider-engine/tests/fixtures_sanitize.rs::every_fixture_passes_sanitization` |
+| I3 | `Jail::resolve` — ponto único de normalização de caminho (`crates/tool-registry/src/workspace.rs`) | `reject_parent_dir_component`, `reject_nested_parent_dir`, `reject_absolute_windows_path`, `reject_unc_path`, `reject_symlink_pointing_outside` |
+| I4 | Filtro por escopo no retrieval (`frederico-memory`) | `crates/memory/tests/evaluation.rs` — gate `max_cross_scope_leak = 0` no `config/eval.toml` |
+| R1 | Tabela `tool_audit` append-only (migration `0005_tool_audit.sql`) + `DbAuditSink` | `crates/execution-engine/tests/audit.rs::audit_records_files_read_execution` |
+| D2 | `BudgetEnforcer` com `max_steps` (`crates/agent-engine/src/budget.rs`) | suíte do `frederico-execution-engine` (teste de budget) |
+| E2 | `determine_real_origin` — conteúdo externo vira `pending_review`, nunca instrução | cenários de prompt injection e malicious memory no `crates/memory/tests/fixtures/gold_set.jsonl` |
+
+**Limite explícito desta verificação:** foram conferidas as seis linhas acima contra o código. As demais (S1, S2, T2, T3, I1, I2, D1, D3, E1, E3, P1) **não** foram verificadas e permanecem especificação — várias dependem do sandbox (Fase 7) e dos workers sidecar (Fase 5), que não existem.
 
 ## Não-objetivos
 

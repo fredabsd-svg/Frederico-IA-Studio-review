@@ -65,7 +65,9 @@ Cada spec em `docs/architecture/` lista invariantes com o rótulo "verificável 
 - **Máquina de referência declarada**: i5-3570, 16 GB, Windows 10 64 bits. CI fixa essa máquina como gate.
 - Medições ficam registradas em `docs/testing/perf-baseline.md` por versão, com tolerância de ±10% para evitar fragilidade.
 
-## CI (REGRAS §1.10 + §1.13)
+## CI (REGRAS §1.10 + §1.13 + REGRA 2)
+
+O que o pipeline verifica está abaixo. **Quando ele fica vermelho, quem manda é a REGRA 2**: `main` verde é pré-condição para mesclar, promover fase, promover spec, iniciar a fase seguinte ou publicar release; re-run diagnostica mas não absolve; teste instável é defeito bloqueante com prazo.
 
 O pipeline falha em:
 
@@ -77,6 +79,21 @@ O pipeline falha em:
 - spec com `Estado: especificado` cuja fase está "em andamento" no `status.md` (§1.13);
 - fase marcada "concluída" no `status.md` sem a suíte da fase verde (§1.10);
 - arquivo gerado divergente da fonte (`REGRAS §1.9`).
+
+### O que o pipeline cobra hoje
+
+`scripts/check-docs.mjs` (passo "Docs guard") e `scripts/check-doc-impact.mjs` (passo "Doc-impact guard") implementam:
+
+| Verificação | Situação |
+|---|---|
+| Cabeçalho de spec ausente, malformado ou com `Estado` fora da lista | cobrado |
+| Carimbo de verificação vencido (60 dias) nos estados implementados | cobrado |
+| Trava do §1.13, com a isenção de escopo global | cobrado |
+| Crate/pacote sem o documento do §1.4 | cobrado |
+| Link interno ou âncora quebrada | cobrado |
+| PR que mexe em migrações / tool-registry / contratos sem tocar docs | cobrado, com a válvula do §1.3 |
+| Fase "concluída" sem a suíte verde | implícito: `cargo test --workspace` roda antes, no mesmo job — job vermelho reprova o PR inteiro |
+| Arquivo gerado divergente da fonte (§1.9) | **não cobrado** — não existe script de geração no repositório para comparar. Quando o primeiro existir, o check entra junto |
 
 ## Não-objetivos
 
