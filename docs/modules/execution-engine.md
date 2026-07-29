@@ -484,7 +484,7 @@ arguments e resultado. A Etapa 5.x introduz:
   `runs` com `ON DELETE CASCADE`, índices
   `idx_tool_audit_run_created` e `idx_tool_audit_tool_created`).
   **Append-only** — sem `UPDATE` nem `DELETE` (mitiga a ameaça
-  I7 do `security-threat-model.md`).
+  R1 do `security-threat-model.md`).
 - `ToolAuditRepo` no `storage` (`append` + `list_for_run`).
 - Trait `AuditSink` no `tool-registry` (pura, sem dependência
   de storage). `NoopAuditSink` (default) + `RecordingAuditSink`
