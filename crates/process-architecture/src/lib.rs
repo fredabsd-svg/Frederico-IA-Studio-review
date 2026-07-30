@@ -70,6 +70,9 @@ pub mod manager;
 pub mod pipes;
 pub mod protocol;
 
+#[cfg(windows)]
+pub mod windows_pipes;
+
 pub use env_allowlist::{build_worker_env, build_worker_env_with_defaults, EnvEntry};
 pub use error::{ProcessError, ProcessErrorKind};
 pub use fake::{
