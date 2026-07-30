@@ -1,6 +1,6 @@
 # Módulo `frederico-process-architecture`
 
-> Etapa 2B da Fase 5 — **parcial** (transporte real adicionado, smoke test com named pipes reais em `#[ignore]` aguardando diagnóstico de deadlock; `spawn_external` + `document-worker` Python ficam pra próxima sessão). Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) (ator) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) (impl ator, Etapa 2A) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md) (Tokio, inversão do handshake, byte stream). Estado: parcial. Verificado contra o código em 2026-07-29.
+> Etapa 2B da Fase 5 — **transporte + deadlock do smoke real resolvidos na Etapa 2B continuação** (2026-07-29). Os 2 testes `windows_pipe_server_client_roundtrip` e `windows_pipe_sequential_read_then_write` saíram do `#[ignore]` e rodam na suíte normal em < 100ms (fix: trocar `ready(READABLE | WRITABLE)` por `connect()` no `NamedPipeServer` — `connect()` envelopa o `ConnectNamedPipe` Win32, `ready()` trava esperando readiness que nunca chega pré-connect). Pendente: `WorkerManager::spawn_external` + `bootstrap.ps1` + `document-worker` Python stub. Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) (ator) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) (impl ator, Etapa 2A) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md) (Tokio, inversão do handshake, byte stream). Estado: parcial. Verificado contra o código em 2026-07-29.
 
 ## 1. O que este módulo faz
 
@@ -109,7 +109,7 @@ cargo test -p frederico-process-architecture --no-fail-fast > test.log 2>&1
 Get-Content test.log -Tail 50
 ```
 
-**9/9 unit + 10/10 integration verde** em ~0.5s (suite Etapa 2A). **Etapa 2B adiciona 3 unit tests no `windows_pipes.rs` (in-process com `tokio::io::duplex`) e 2 integration tests em `tests/windows_pipes_smoke.rs` marcados `#[ignore]`** (deadlock em diagnóstico — rodar com `cargo test -p frederico-process-architecture --test windows_pipes_smoke -- --ignored --nocapture`). Cobertura da abstração provada pelos unit tests; o smoke real fica pra próxima sessão.
+**24/24 verde** em < 1s (12 unit + 10 fake_worker integration + 2 windows_pipes_smoke integration). **Etapa 2B** adiciona 3 unit tests no `windows_pipes.rs` (in-process com `tokio::io::duplex`) e 2 integration tests em `tests/windows_pipes_smoke.rs` com **named pipes reais** — os 2 saíram do `#[ignore]` na Etapa 2B continuação e rodam na suíte normal (sem `--ignored`) em 0.00s e 0.01s respectivamente. Cobertura completa: abstração provada pelos unit tests, transporte real ponta-a-ponta provado pelos integration tests com `NamedPipeServer`/`Client` reais.
 
 | Regra / comportamento | Teste | Onde |
 |---|---|---|
@@ -135,8 +135,8 @@ Get-Content test.log -Tail 50
 | `WindowsPipeReader` lê linha via `duplex` | `windows_pipes::tests::windows_pipe_reader_reads_line` | unit |
 | `WindowsPipeWriter` clone escreve serializado | `windows_pipes::tests::windows_pipe_writer_clone_writes` | unit |
 | `shared_pipe_pair` compila e partilha `Arc<Mutex<>>` | `windows_pipes::tests::shared_pipe_pair_smoke_compiles` | unit |
-| Named pipe real server↔client roundtrip (`#[ignore]`) | `windows_pipes_smoke::windows_pipe_server_client_roundtrip` | integration |
-| Named pipe real read-then-write sequencial (`#[ignore]`) | `windows_pipes_smoke::windows_pipe_sequential_read_then_write` | integration |
+| Named pipe real server↔client roundtrip | `windows_pipes_smoke::windows_pipe_server_client_roundtrip` | integration (0.00s) |
+| Named pipe real read-then-write sequencial | `windows_pipes_smoke::windows_pipe_sequential_read_then_write` | integration (0.01s) |
 
 **Todos** os integration tests são embrulhados em
 `with_test_timeout` (5s default) — deadlock vira falha com nome
@@ -144,18 +144,13 @@ do teste em 5s.
 
 ## 6. O que ele **não** faz
 
-- **Não abre named pipes reais em produção (ainda).** A
-  abstração `WindowsPipeReader`/`Writer` está pronta e coberta
-  pelos unit tests in-process (`tokio::io::duplex`). O smoke
-  test com named pipes reais em `tests/windows_pipes_smoke.rs`
-  está **`#[ignore]`** — deadlocka em runtime e entra na
-  próxima sessão como diagnóstico. O contrato da abstração
-  está provado pelos unit tests; o gap é o transporte real
-  ponta-a-ponta, não a forma da API.
 - **Não spawna processos externos.** `spawn_external` via
-  `tokio::process::Command` entra na próxima sessão.
+  `tokio::process::Command` (que abre o `document-worker.exe`,
+  lê o `READY <pipe_name>` do stdout, faz `connect_pipe_client`,
+  e devolve o `WorkerHandle`) entra na próxima sessão da
+  Etapa 2B continuação.
 - **Não conhece Python nem o `document-worker`.** Sidecar
-  Python entra na próxima sessão.
+  Python + `bootstrap.ps1` entram na próxima sessão.
 - **Não tem revogação de token.** `WorkerAuth` é `String`
   opaco; revogação por lista negra entra em hardening futuro.
 - **Não tem schema JSON do envelope versionado.** O envelope
@@ -169,19 +164,22 @@ do teste em 5s.
 
 ## Pendências para a próxima sessão (Etapa 2B continuação)
 
-1. **Diagnosticar o deadlock do smoke test com named pipes reais**
-   em `tests/windows_pipes_smoke.rs` (instrumentar com
-   `tracing` no `ready()` e `lock().await`; considerar
-   `tokio-console` ou Win32 ETW). Tira o `#[ignore]` quando
-   o roundtrip com `NamedPipeServer`/`Client` reais
-   completar em < 1s.
-2. `WorkerManager::spawn_external(command, args, env)` que
+1. `WorkerManager::spawn_external(command, args, env)` que
    abre o `document-worker.exe` via `tokio::process::Command`,
    lê o `READY <pipe_name>` do stdout, faz `connect_pipe_client`,
    e devolve o `WorkerHandle` (mesma forma do `spawn_in_process`).
-3. `bootstrap.ps1` em `workers/document-worker/` que baixa
+2. `bootstrap.ps1` em `workers/document-worker/` que baixa
    Python embeddable + libs + Tesseract + fontes "Tinta &
    Latão".
-4. `document-worker` Python (manifest, protocol, server,
+3. `document-worker` Python (manifest, protocol, server,
    handlers stub).
-5. Revogação de token por lista negra (hardening).
+4. Revogação de token por lista negra (hardening).
+
+> **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
+> integration tests com named pipes reais em
+> `tests/windows_pipes_smoke.rs` saíram do `#[ignore]`. Fix
+> foi trocar `ready(READABLE | WRITABLE)` por `connect()` no
+> `NamedPipeServer` — `ready()` num server pré-connect trava
+> esperando readiness que nunca chega. Detalhes no header do
+> `tests/windows_pipes_smoke.rs` e no §4 "connect() no server,
+> ready() no client" do `src/windows_pipes.rs`.
