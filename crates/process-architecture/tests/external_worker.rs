@@ -60,14 +60,13 @@ const STUB_PS1: &str = "tests/stubs/worker-stub.ps1";
 /// `powershell.exe` — o cold-start do PowerShell 5.1 no Windows
 /// Server runner do GitHub Actions é mais lento que no
 /// Windows 11 local. Medido em PR #11 runs #30541220400 +
-/// #30541686745: o PowerShell no CI leva > 10s pra enviar
-/// `READY <name>` (default `ready_timeout` do
-/// `ExternalSpawnConfig` é 10s e falhou com Platform).
-/// 15s é folgado pro PowerShell completar `READY <name>` +
-/// handshake, mas curto o bastante pra que um deadlock real
-/// vire falha visível (em vez de sessão pendurada — o que era
-/// o sintoma do bug do `kill_on_drop` antes do fix).
-const E2E_POWERSHELL_TIMEOUT: Duration = Duration::from_secs(15);
+/// #30541686745 + #30542253439: o handshake E2E completo
+/// leva > 15s no CI (cancelou `with_test_timeout(15s)`).
+/// 60s é folgado pro CI acabar (local < 1s) mas curto o
+/// bastante pra que um deadlock real vire falha visível em
+/// vez de sessão pendurada — o que era o sintoma do bug do
+/// `kill_on_drop` antes do fix.
+const E2E_POWERSHELL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `ready_timeout` do `ExternalSpawnConfig` pro test E2E. Maior
 /// que o default 10s porque o PowerShell no CI runner pode
