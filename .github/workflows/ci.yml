@@ -34,6 +34,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Cache do `runtime/` do `document-worker` (Fase 5, Etapa 2B+X).
+      # Invalida quando `pyproject.toml` ou `bootstrap.ps1` mudam -
+      # bump de dep ou do script refaz a instalacao (download ~120 MB
+      # no primeiro run, ~0 nos subsequentes).
+      - name: Cache document-worker runtime
+        uses: actions/cache@v4
+        with:
+          path: workers/document-worker/runtime
+          key: document-worker-runtime-${{ hashFiles('workers/document-worker/pyproject.toml', 'workers/document-worker/bootstrap.ps1') }}
+
       - name: Install frontend deps
         working-directory: apps/desktop
         run: npm ci
@@ -59,6 +69,17 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+      # E2E do `document-worker` Python (Fase 5, Etapa 2B+X). O
+      # `verify-external.ps1` faz (1) idempotente do `bootstrap.ps1`
+      # e (2) roda os 6 testes E2E em
+      # `crates/process-architecture/tests/external_doc_worker.rs`
+      # (NAO `#[ignore]` - rodam em todo PR, nao sao pulados).
+      # Cold-start Python + libs ~3-5s; com cache ~1s. Falha aqui
+      # bloqueia merge (REGRAS 2.3 porta 1: CI vermelho nao entra).
+      - name: E2E document-worker handlers
+        shell: pwsh
+        run: ./scripts/verify-external.ps1
 
       - name: Core purity guard (ADR-0003)
         shell: pwsh

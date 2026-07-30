@@ -1,6 +1,6 @@
 # Módulo `frederico-process-architecture`
 
-> **Etapa 2B completa (2026-07-29, PRs #9 + #10 + #11):** transporte real sobre named pipes (Etapa 2B, ADR-0017), `WorkerManager::spawn_external` que abre processos sidecar via `tokio::process::Command` (Etapa 2B continuação), 3 integration tests E2E com stub PowerShell em `tests/external_worker.rs`. `WorkerManager` ganhou campo `child: Option<Child>` e `shutdown` faz `child.wait()` com timeout 5s + `kill` se o worker não respondeu ao `app.shutdown`. `IpcMessage::decode_line` agora tolera BOM UTF-8 e `\r\n` (defesa em profundidade — workers PowerShell/.NET enviam por default). `IpcOp` serializa com o **nome do contrato** (`worker.hello`, `app.ack`, etc) — a Etapa 2A tinha um bug sutil que serializava `Hello` como `"hello"` (sem prefixo), descoberto quando o stub PowerShell enviou o nome correto. `document-worker` Python stub (Etapa 2B continuação) — manifesto + protocolo + loop + handlers stub; `bootstrap.ps1` instala Python 3.12 embeddable + `pywin32` em `runtime/`. Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md). Estado: parcial. Verificado contra o código em 2026-07-29.
+> **Etapa 2B+X fechada (2026-07-30, PR #12):** 6 handlers reais do `document-worker` Python (docx.write/read, xlsx.write/read, pdf.write/read) + bootstrap estendido (python-docx, openpyxl, reportlab, pdfplumber, Adobe Source Sans 3 + Source Serif 4) + 6 testes E2E em `tests/external_doc_worker.rs` (rodam em CI, NAO `#[ignore]`) + `scripts/verify-external.ps1` + cache de `runtime/` no `.github/workflows/ci.yml` + novo ADR-0018 (handler = primitiva de baixo nível, OCR deferido pra Etapa 2B+Y). **Limitação conhecida do `pdf.read`:** PDFs 100% escaneados devolvem `code: pdf_scanned_no_ocr` no payload (sem OCR até 2B+Y). Estado: parcial. Verificado contra o código em 2026-07-30.
 
 ## 1. O que este módulo faz
 
@@ -154,11 +154,15 @@ do teste em 5s.
   conhece o envelope IPC, não o sidecar específico. **Stub de
   PowerShell** (`tests/stubs/worker-stub.ps1`) prova o
   `spawn_external` E2E sem depender de Python no CI.
-- **Não instala Tesseract nem fontes.** O `bootstrap.ps1`
-  do `document-worker` (Etapa 2B continuação) instala só
-  Python embeddable + pip + `pywin32`. Tesseract + fontes
-  "Tinta & Latão" entram numa entrega de bootstrap estendido
-  (pendência 1).
+- **Não instala Tesseract.** O `bootstrap.ps1` da Etapa
+  2B+X instala Python + pywin32 + python-docx + openpyxl +
+  reportlab + pdfplumber + 4 TTFs (Adobe Source Sans 3 +
+  Source Serif 4, "Tinta e Latao"). **Tesseract vai pra
+  Etapa 2B+Y** (pendência 1) — 1 capability de 7 puxa 90%
+  do peso, do risco de install e da variabilidade
+  "funciona na minha maquina" (Tesseract + por/eng
+  traineddata ~135 MB). Quando entrar, o
+  `manifest.json` volta a ter `ocr.run` (versao 0.3.0).
 - **Não tem revogação de token.** `WorkerAuth` é `String`
   opaco; revogação por lista negra entra em hardening futuro
   (pendência 3 — precisa de ADR).
@@ -173,23 +177,25 @@ do teste em 5s.
 
 ## Pendências para a próxima sessão
 
-1. **Tesseract + fontes "Tinta & Latão" no `bootstrap.ps1`** —
-   esta entrega instala só Python + pip + `pywin32`; a próxima
-   adiciona os binários pesados (Tesseract, pacote `por` de
-   lang data, fontes T&L).
-2. **Handlers reais do `document-worker`** — `docx.write`/
-   `docx.read`/`xlsx.write`/`xlsx.read`/`pdf.write`/`pdf.read`/
-   `ocr.run` (consumindo o `document-engine` Etapa 1).
-3. **Revogação de token por lista negra** (hardening) — o
+1. **Etapa 2B+Y (separada):** Tesseract bootstrap
+   (UB Mannheim Windows build, ~75 MB) + `por` + `eng`
+   traineddata (~60 MB) + `ocr.run` handler
+   (`pytesseract`) + `pdf.read` ganha fallback OCR pra
+   `scanned_pages`. Re-adiciona `ocr.run` no `manifest.json`
+   (versao bump 0.2.0 -> 0.3.0). Pode ser feita em job
+   noturno separado (CI gate principal nao depende de
+   Tesseract - edge cases de install/PATH/locale podem
+   produzir testes flaky). Ver [ADR-0018](../decisions/0018-document-worker-handlers-primitive.md) §Decisao 2d.
+2. **Revogação de token por lista negra** (hardening) — o
    `WorkerAuth` é `String` opaco; revogação por lista negra
    é a próxima peça. **Decisão de arquitetura:** o que a
    lista negra contém (hash do token? ID explícito?) precisa
    de ADR antes da implementação.
-4. **Tabela de capacidades dinâmica** — o `IpcOp` hoje é
+3. **Tabela de capacidades dinâmica** — o `IpcOp` hoje é
    lista fechada (8 opcodes hardcoded); a Etapa 3 vai precisar
    que tools dinâmicas (do `ToolRegistry`) sejam roteáveis.
    Pode entrar via `op = "tool.invoke"` com `capability` no
-   payload (como o `document-worker` stub já faz).
+   payload (como o `document-worker` já faz).
 
 > **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
 > integration tests com named pipes reais em
