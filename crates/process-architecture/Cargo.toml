@@ -16,6 +16,20 @@ description = "Manager de workers sidecar + IPC via named pipes + handshake (Fas
 # regra do `frederico-security`, ADR-0007 §Implementação Windows.
 unsafe_code = "deny"
 
+# Binário `worker_stub` — stub do sidecar usado pelos tests
+# E2E do `spawn_external` em `tests/external_worker.rs`.
+# Compilado via `cargo build` e invocado com
+# `env!("CARGO_BIN_EXE_worker_stub")` no test setup. O stub
+# implementa o protocolo completo do `process-architecture`
+# sobre `tokio::net::windows::named_pipe` (mesma stack do
+# manager). Substitui o stub PowerShell (`tests/stubs/worker-stub.ps1`)
+# que era flaky no Windows Server 2022 runner do GitHub
+# Actions (cold-start > 30s; PR #11). O PowerShell stub
+# continua em `tests/stubs/` como referência.
+[[bin]]
+name = "worker_stub"
+path = "src/bin/worker_stub.rs"
+
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util", "process"] }
 async-trait = { workspace = true }
