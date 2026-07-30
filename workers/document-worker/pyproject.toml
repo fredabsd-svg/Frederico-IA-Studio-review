@@ -1,0 +1,20 @@
+[project]
+name = "frederico-document-worker"
+version = "0.1.0"
+description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, OCR — Etapa 2B da Fase 5)"
+requires-python = ">=3.11"
+# Dependência central: `pywin32` é o que dá acesso ao
+# `CreateNamedPipe` / `ConnectNamedPipe` / `ReadFile` / `WriteFile`
+# do Windows via Python. ADR-0004 — comunicação por named pipes,
+# sem localhost. O `bootstrap.ps1` instala `pywin32` (e o
+# pip + Python embeddable) em `runtime/`.
+dependencies = [
+    "pywin32>=306",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["document-worker"]

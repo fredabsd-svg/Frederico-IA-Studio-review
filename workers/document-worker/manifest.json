@@ -1,0 +1,31 @@
+{
+  "worker_id": "document-worker",
+  "version": "0.1.0",
+  "capabilities": [
+    "docx.write",
+    "docx.read",
+    "xlsx.write",
+    "xlsx.read",
+    "pdf.write",
+    "pdf.read",
+    "ocr.run"
+  ],
+  "dependencies": [
+    {
+      "name": "python",
+      "version": "3.11+",
+      "source": "sys.version"
+    },
+    {
+      "name": "pywin32",
+      "version": ">=306",
+      "source": "pip show pywin32"
+    }
+  ],
+  "health": "unhealthy",
+  "compatibility": {
+    "min_os": "Windows 10 1903",
+    "arch": "x86_64",
+    "min_runtime": "Python 3.11+ with pywin32"
+  }
+}

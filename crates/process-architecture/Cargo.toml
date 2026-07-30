@@ -16,6 +16,20 @@ description = "Manager de workers sidecar + IPC via named pipes + handshake (Fas
 # regra do `frederico-security`, ADR-0007 §Implementação Windows.
 unsafe_code = "deny"
 
+# Binário `worker_stub` — stub do sidecar usado pelos tests
+# E2E do `spawn_external` em `tests/external_worker.rs`.
+# Compilado via `cargo build` e invocado com
+# `env!("CARGO_BIN_EXE_worker_stub")` no test setup. O stub
+# implementa o protocolo completo do `process-architecture`
+# sobre `tokio::net::windows::named_pipe` (mesma stack do
+# manager). Substitui o stub PowerShell (`tests/stubs/worker-stub.ps1`)
+# que era flaky no Windows Server 2022 runner do GitHub
+# Actions (cold-start > 30s; PR #11). O PowerShell stub
+# continua em `tests/stubs/` como referência.
+[[bin]]
+name = "worker_stub"
+path = "src/bin/worker_stub.rs"
+
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util", "process"] }
 async-trait = { workspace = true }
@@ -31,10 +45,26 @@ tracing = { workspace = true }
 # real `WindowsPipeReader`/`Writer` via `tokio::net::windows::named_pipe`
 # (gateado em `#[cfg(windows)]` no módulo `windows_pipes.rs`) — sem
 # `crate windows`, sem `unsafe` no nosso código (ADR-0017).
-# Smoke test com named pipes reais em `tests/windows_pipes_smoke.rs`
-# está `#[ignore]` (deadlock em diagnóstico — próxima sessão).
-# Pendente: `WorkerManager::spawn_external` + `bootstrap.ps1` +
-# `document-worker` Python stub.
+#
+# **Etapa 2B fechada em 2026-07-29 (PRs #9 + #10):**
+# 2 integration tests com named pipes reais (saíram do `#[ignore]`
+# na continuação); 1 ADR novo (0017). Suíte do crate: 32/32
+# verde (12 unit + 10 fake_worker integration + 2 windows_pipes_smoke
+# integration + 5 external unit + 3 external_worker integration).
+#
+# **Etapa 2B continuação (este commit):**
+# `WorkerManager::spawn_external` em `src/external.rs` (gateado
+# `#[cfg(windows)]`) — abre o processo via `tokio::process::Command`,
+# lê `READY <name>` do stdout (10s timeout), faz `connect_pipe_client`,
+# `ready()` no client, e segue o handshake `worker.hello`/`app.ack`
+# igual ao `spawn_in_process`. Stderr é pumpado pra `tracing::warn!`
+# em task separada. `WorkerManager` ganhou campo `child: Option<Child>`
+# e o `shutdown` agora faz `child.wait()` com timeout 5s (kill+wait
+# se o worker não respondeu ao `app.shutdown`). Stubs e tests em
+# `tests/stubs/worker-stub.ps1` + `tests/external_worker.rs` (3
+# tests E2E). `document-worker` Python (em `workers/document-worker/`)
+# e o `bootstrap.ps1` entregam juntos no mesmo PR — o stub PowerShell
+# prova o `spawn_external` end-to-end sem depender de Python no CI.
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }

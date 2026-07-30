@@ -144,8 +144,17 @@ pub struct WorkerManifest {
 /// Opcode — `op` do `IpcMessage`. Lista **fechada** — qualquer
 /// opcode desconhecido é erro de protocolo (futuro: dinâmico via
 /// `ToolRegistry`; v0.1 é hardcoded).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// **Serialização JSON:** o `as_str()` é o **contrato** —
+/// `worker.hello`, `app.ack`, etc, com o prefixo `worker.`/
+/// `app.`/`tool.` indicando a direção. NÃO usa o
+/// `rename_all = "snake_case"` default (que serializaria
+/// `Hello` como `"hello"`, sem prefixo — bug sutil descoberto
+/// na Etapa 2B quando o stub PowerShell enviava `worker.hello`
+/// e o decode rejeitava). A Etapa 2A serializava errado mas o
+/// fake in-process nunca testou com transporte real (não
+/// passava pelo JSON inter-processo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcOp {
     /// Worker → app: anuncia manifesto + pede auth token.
     Hello,
@@ -167,7 +176,9 @@ pub enum IpcOp {
 }
 
 impl IpcOp {
-    /// Nome em `snake_case` (estável, vai pro JSON).
+    /// Nome do opcode com prefixo de direção (estável, é o
+    /// **contrato** do envelope — workers em campo dependem
+    /// desses strings). Bump MAJOR em mudanças incompatíveis.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -179,6 +190,31 @@ impl IpcOp {
             Self::Error => "worker.error",
             Self::ToolInvoke => "tool.invoke",
             Self::ToolResult => "tool.result",
+        }
+    }
+}
+
+impl Serialize for IpcOp {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for IpcOp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s: String = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "worker.hello" => Ok(IpcOp::Hello),
+            "app.ack" => Ok(IpcOp::Ack),
+            "app.ping" => Ok(IpcOp::Ping),
+            "worker.pong" => Ok(IpcOp::Pong),
+            "app.shutdown" => Ok(IpcOp::Shutdown),
+            "worker.error" => Ok(IpcOp::Error),
+            "tool.invoke" => Ok(IpcOp::ToolInvoke),
+            "tool.result" => Ok(IpcOp::ToolResult),
+            other => Err(serde::de::Error::custom(format!(
+                "opcode desconhecido: {other:?} (esperado um dos: worker.hello, app.ack, app.ping, worker.pong, app.shutdown, worker.error, tool.invoke, tool.result)"
+            ))),
         }
     }
 }
@@ -294,17 +330,44 @@ impl IpcMessage {
     /// número de bytes consumidos (útil para callers com buffer
     /// parcial).
     ///
+    /// **Tolerância de framing** (defesa em profundidade — a
+    /// versão Etapa 2A só aceitava `\n`; a Etapa 2B precisa
+    /// aceitar o que o transporte real do Windows pode enviar):
+    ///
+    /// - **BOM UTF-8** (`\xEF\xBB\xBF`) no início — `StreamWriter`
+    ///   do .NET com `UTF8Encoding` (default) adiciona BOM.
+    ///   Workers PowerShell e .NET que não setam
+    ///   `new UTF8Encoding(false)` enviam com BOM.
+    /// - **Terminador** `\n` (Unix) ou `\r\n` (Windows /
+    ///   PowerShell). O `\r` extra é stripado antes do
+    ///   `serde_json::from_slice` (serde exige JSON sem
+    ///   whitespace trailing antes do terminador).
+    ///
     /// # Erros
-    /// - `Protocol` se a linha não tem `\n` terminal, se o JSON é
-    ///   inválido, ou se o `protocol_version` não bate.
+    /// - `Protocol` se a linha não tem `\n` (nem `\r\n`)
+    ///   terminal, se o JSON é inválido, ou se o `protocol_version`
+    ///   não bate.
     pub fn decode_line(line: &[u8]) -> Result<(Self, usize), crate::error::ProcessError> {
-        let line =
+        // Strip BOM UTF-8 opcional.
+        let (line, bom_consumed) = if line.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            (&line[3..], 3)
+        } else {
+            (line, 0)
+        };
+        // Aceita `\n` ou `\r\n` no fim.
+        let without_n =
             line.strip_suffix(b"\n")
                 .ok_or_else(|| crate::error::ProcessError::Protocol {
                     message: "linha sem \\n terminal".to_string(),
                 })?;
+        // Strip `\r` opcional (Windows / PowerShell).
+        let (payload, had_cr) = if let Some(stripped) = without_n.strip_suffix(b"\r") {
+            (stripped, true)
+        } else {
+            (without_n, false)
+        };
         let msg: Self =
-            serde_json::from_slice(line).map_err(|e| crate::error::ProcessError::Protocol {
+            serde_json::from_slice(payload).map_err(|e| crate::error::ProcessError::Protocol {
                 message: format!("JSON inválido: {e}"),
             })?;
         if msg.protocol_version != PROTOCOL_VERSION {
@@ -315,7 +378,10 @@ impl IpcMessage {
                 ),
             });
         }
-        Ok((msg, line.len() + 1))
+        // Total consumido: BOM (3 bytes opcionais) + payload + (1
+        // byte \r opcional) + (1 byte \n).
+        let consumed = bom_consumed + payload.len() + if had_cr { 2 } else { 1 };
+        Ok((msg, consumed))
     }
 }
 
