@@ -50,10 +50,22 @@
 use std::time::Duration;
 
 use frederico_process_architecture::{ExternalSpawnConfig, WorkerHealth};
-use frederico_test_support::with_test_timeout;
+use frederico_test_support::{with_test_timeout, with_test_timeout_at};
 use serde_json::json;
 
 const STUB_PS1: &str = "tests/stubs/worker-stub.ps1";
+
+/// Budget de timeout pro test E2E com PowerShell stub. Maior
+/// que o default 5s do `with_test_timeout` porque o stub é
+/// `powershell.exe` — o cold-start do PowerShell 5.1 no Windows
+/// Server runner do GitHub Actions é mais lento que no
+/// Windows 11 local (3-5s no CI vs. < 500ms local; medido em
+/// PR #11 run #30541220400). 15s é folgado pro PowerShell
+/// completar `READY <name>` + handshake, mas curto o bastante
+/// pra que um deadlock real vire falha visível (em vez de
+/// sessão pendurada — o que era o sintoma do bug do
+/// `kill_on_drop` antes do fix).
+const E2E_POWERSHELL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Helper: monta o `ExternalSpawnConfig` apontando pro stub
 /// PowerShell. Embrulhado em `with_test_timeout` no nível de
@@ -79,35 +91,40 @@ fn stub_config(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_spawn_roundtrip_full_protocol() {
-    with_test_timeout("external_spawn_roundtrip_full_protocol", async {
-        let cfg = stub_config(|c| c.with_cwd(env!("CARGO_MANIFEST_DIR")));
-        let (manager, handle) = frederico_process_architecture::WorkerManager::spawn_external(cfg)
-            .await
-            .expect("spawn_external deve succeed");
+    with_test_timeout_at(
+        "external_spawn_roundtrip_full_protocol",
+        E2E_POWERSHELL_TIMEOUT,
+        async {
+            let cfg = stub_config(|c| c.with_cwd(env!("CARGO_MANIFEST_DIR")));
+            let (manager, handle) =
+                frederico_process_architecture::WorkerManager::spawn_external(cfg)
+                    .await
+                    .expect("spawn_external deve succeed");
 
-        // 1. Manifesto carrega o que o stub reportou.
-        let manifest = handle.manifest();
-        assert_eq!(manifest.worker_id.to_string(), "stub-worker");
-        assert!(manifest.capabilities.contains(&"stub.echo".to_string()));
+            // 1. Manifesto carrega o que o stub reportou.
+            let manifest = handle.manifest();
+            assert_eq!(manifest.worker_id.to_string(), "stub-worker");
+            assert!(manifest.capabilities.contains(&"stub.echo".to_string()));
 
-        // 2. `invoke` roundtrip — o stub faz echo do payload.
-        let payload = json!({"action": "echo", "value": 42, "list": [1, 2, 3]});
-        let result = handle.invoke(payload.clone()).await.expect("invoke");
-        assert_eq!(result["ok"], json!(true));
-        assert_eq!(result["echo"], payload);
+            // 2. `invoke` roundtrip — o stub faz echo do payload.
+            let payload = json!({"action": "echo", "value": 42, "list": [1, 2, 3]});
+            let result = handle.invoke(payload.clone()).await.expect("invoke");
+            assert_eq!(result["ok"], json!(true));
+            assert_eq!(result["echo"], payload);
 
-        // 3. `ping` retorna `worker.pong`.
-        let pong = handle.ping().await.expect("ping");
-        assert_eq!(pong["status"], json!("ok"));
+            // 3. `ping` retorna `worker.pong`.
+            let pong = handle.ping().await.expect("ping");
+            assert_eq!(pong["status"], json!("ok"));
 
-        // 4. `health` virou `Ok` depois do pong.
-        let snap = handle.health_snapshot().await;
-        assert_eq!(snap.health, WorkerHealth::Ok);
+            // 4. `health` virou `Ok` depois do pong.
+            let snap = handle.health_snapshot().await;
+            assert_eq!(snap.health, WorkerHealth::Ok);
 
-        // 5. `shutdown` gracioso: app.shutdown → worker fecha
-        //    pipe → actor_task EOF → child.wait() retorna.
-        manager.shutdown().await.expect("shutdown");
-    })
+            // 5. `shutdown` gracioso: app.shutdown → worker fecha
+            //    pipe → actor_task EOF → child.wait() retorna.
+            manager.shutdown().await.expect("shutdown");
+        },
+    )
     .await
     .expect("E2E roundtrip não deve travar");
 }
