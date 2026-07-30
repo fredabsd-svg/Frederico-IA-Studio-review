@@ -1,7 +1,7 @@
 [project]
 name = "frederico-document-worker"
-version = "0.2.0"
-description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF e le os tres formatos - Fase 5, Etapa 2B+X)"
+version = "0.3.0"
+description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, le os tres formatos e faz OCR - Fase 5, Etapa 2B+Y)"
 requires-python = ">=3.11"
 # Dependencias centradas (todas instaladas pelo `bootstrap.ps1` em
 # `runtime/`, nao via pip do sistema):
@@ -13,20 +13,23 @@ requires-python = ">=3.11"
 #   reportlab     - handler `pdf.write` (com fontes Source Sans 3 / Source
 #                   Serif 4 embutidas - "Tinta e Latao" / ADR-0018)
 #   pdfplumber    - handler `pdf.read` (extracao de texto + deteccao de
-#                   paginas escaneadas)
+#                   paginas escaneadas, com fallback OCR se Tesseract
+#                   disponivel - Etapa 2B+Y / ADR-0019)
+#   pytesseract   - wrapper Python do Tesseract, handler `ocr.run` +
+#                   fallback automatico no `pdf.read` pra paginas
+#                   escaneadas (Etapa 2B+Y / ADR-0019)
 #
-# NOTA: `pytesseract` (OCR) e `pymupdf`/`matplotlib` (charts, Kpis do
-# DocumentSpec) NAO estao nesta versao 0.2.0. OCR entra na Etapa 2B+Y
-# (Tesseract + por/eng traineddata + handler `ocr.run` + fallback OCR no
-# `pdf.read`); `pymupdf` e `matplotlib` entram com a integracao do
-# DocumentSpec (Etapa 3 - os handlers da v0.2.0 sao primitivas de baixo
-# nivel, o kit WordPro/ExcelPro/PdfPro renderiza o spec, ver ADR-0018).
+# NOTA: `pymupdf` e `matplotlib` (charts, Kpis do DocumentSpec) NAO
+# estao nesta versao 0.3.0. Entram com a integracao do DocumentSpec
+# (Etapa 3 - os handlers da v0.3.0 sao primitivas de baixo nivel, o
+# kit WordPro/ExcelPro/PdfPro renderiza o spec, ver ADR-0018).
 dependencies = [
     "pywin32>=306",
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "reportlab>=4.0",
     "pdfplumber>=0.10",
+    "pytesseract>=0.3.10",
 ]
 
 [build-system]

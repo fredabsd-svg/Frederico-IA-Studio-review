@@ -1,14 +1,14 @@
-# bootstrap.ps1 - instala o runtime completo do `document-worker` v0.2.0
+# bootstrap.ps1 - instala o runtime completo do `document-worker` v0.3.0
 #
 # O `document-worker` precisa de:
 #   - Python 3.12.7 embeddable + pip (named pipes via pywin32)
 #   - pywin32 (acesso a CreateNamedPipe / ConnectNamedPipe / ReadFile / WriteFile)
 #   - python-docx, openpyxl, reportlab, pdfplumber (handlers reais, Etapa 2B+X)
+#   - pytesseract (wrapper Python do Tesseract - Etapa 2B+Y, ADR-0019)
+#   - Tesseract 5.4.0.20240606 (binario OCR - Etapa 2B+Y, ADR-0019)
+#   - por + eng + osd traineddata (tessdata_fast 4.1.0 - Etapa 2B+Y, ADR-0019)
 #   - Source Sans 3 + Source Serif 4 (TTF variable, identidade "Tinta e Latao" -
 #     Adobe Fonts, conforme PROMPT MESTRE 16.3 e ADR-0004 / ADR-0018)
-#
-# Tesseract OCR fica FORA deste bootstrap - vai pra Etapa 2B+Y (pendencia
-# separada, registrada no docs/modules/process-architecture.md).
 #
 # Estrategia: Python embeddable do python.org (zip distribuido oficialmente).
 # E o que a ADR-0004 "Python embutido" pede - nao depende de instalador do
@@ -23,6 +23,33 @@
 # Por que TTF variable e nao OTF: o Source Serif 4 release notes avisa que
 # Windows 10/11 tem bug com CFF2 variable OTF (corrompe texto). Mesma
 # mitigacao pro Source Sans 3 (consistencia). Detalhes no ADR-0018.
+#
+# Por que Tesseract 5.4.0.20240606 do UB-Mannheim GitHub Releases e nao
+# a versao mais nova do mirror (5.5.0.20241111): o mirror da
+# UB-Mannheim (`digi.bib.uni-mannheim.de`) tem dado 403 Forbidden pra
+# varios IPs/UAs em 2026; a versao do GitHub Releases e identica em
+# conteudo e tem URL estavel versionada (asset do release oficial).
+# Detalhes no ADR-0019 §Decisao 1.
+#
+# Por que tessdata_fast (nao tessdata, nao tessdata_best): tessdata_fast
+# e o conjunto integerized LSTM usado por Debian/Ubuntu e Tesseract.js -
+# ~5x mais rapido, ~95% da acuracia. Suficiente pro caso de uso
+# (Tinta e Latao). Detalhes no ADR-0019 §Decisao 2.
+#
+# Por que SHA-256 fixo em TUDO que baixamos: dois desenvolvedores, dois
+# downloads, dois resultados. Sem o hash, o bootstrap deixa de ser
+# reproduzivel e o worker pode usar artefatos diferentes em maquinas
+# diferentes. Detalhes no ADR-0019 §Decisao 1.3 (raw/main nao e estavel;
+# URL versionada com tag de release + SHA-256 do arquivo).
+#
+# Por que admin detection no bloco Tesseract: o instalador NSIS do
+# UB-Mannheim tem manifesto `requireAdministrator` no PE - PowerShell
+# 5.1 em contexto non-elevated bloqueia o Start-Process antes de
+# executar, e em dev local nao-admin e o caminho comum. Em CI
+# (GitHub Actions windows-latest) o runner roda como admin e o silent
+# install funciona. Em dev local, o bootstrap pula o bloco com
+# instrucoes claras. A instalacao real pra usuario final fica pro
+# instalador NSIS do Tauri (Fase 9) - que roda elevado.
 
 # NOTA sobre encoding: este script usa SOMENTE ASCII. Em-dash, crase, "e"
 # comercial e outros caracteres nao-ASCII foram removidos propositalmente.
@@ -179,6 +206,223 @@ if ($libsOk) {
 }
 
 # ---------------------------------------------------------------------------
+# Tesseract 5.4.0 (UB-Mannheim GitHub Releases) - Etapa 2B+Y
+# ---------------------------------------------------------------------------
+#
+# Binario OCR de verdade. Instalador NSIS (Nullsoft Install System) do
+# UB-Mannheim, com SHA-256 fixo pra reprodutibilidade.
+#
+# **Por que silent install com admin detection:**
+# O instalador NSIS tem `requestedExecutionLevel=requireAdministrator`
+# no manifesto PE. Em contexto non-elevated (PowerShell 5.1 dev local),
+# o Start-Process detecta o manifesto e bloqueia antes de executar.
+# Em CI (GitHub Actions windows-latest) o runner roda como admin e o
+# silent install funciona. Pra dev local nao-admin, o bootstrap pula
+# com instrucoes claras. A instalacao pro usuario final fica pro
+# instalador NSIS do Tauri (Fase 9) - que ja roda elevado.
+#
+# **Por que Tesseract 5.4.0.20240606 do GitHub Releases (nao mirror):**
+# O mirror `digi.bib.uni-mannheim.de` retornou 403 Forbidden em varios
+# IPs/UAs testados (2026-07). O release no GitHub e identico em
+# conteudo e tem URL estavel (asset de release oficial). Bump do SHA
+# so quando o mantenedor cortar novo release no GitHub.
+# Detalhes no ADR-0019 §Decisao 1.
+
+$TesseractDir = Join-Path $RuntimeDir 'tesseract'
+$TesseractExe = Join-Path $TesseractDir 'tesseract.exe'
+$TesseractInstallerUrl = 'https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe'
+$TesseractInstallerName = 'tesseract-ocr-w64-setup-5.4.0.20240606.exe'
+# SHA-256 do instalador (calculado em 2026-07-30, verificado contra
+# asset oficial do release v5.4.0.20240606 no GitHub do UB-Mannheim).
+$TesseractInstallerSha256 = 'C885FFF6998E0608BA4BB8AB51436E1C6775C2BAFC2559A19B423E18678B60C9'
+
+function Test-Administrator {
+    # Retorna $true se o processo atual tem privilegios administrativos.
+    # No Windows, verifica o role do token do processo via .NET.
+    $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($id)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Se Tesseract ja esta em runtime/, pula. O instalador NSIS escreve
+# o conteudo em runtime/tesseract/ via /D=path (silent).
+if (Test-Path $TesseractExe) {
+    Write-Host "[bootstrap] Tesseract ja presente em $TesseractDir - pulando." -ForegroundColor Yellow
+} elseif (-not (Test-Administrator)) {
+    # Nao-admin: pula com instrucoes. CI roda como admin; em dev local
+    # o usuario pode rodar o bootstrap como admin OU instalar Tesseract
+    # manualmente. Os testes E2E do document-worker vao falhar com
+    # mensagem clara se Tesseract nao estiver (causando panic com
+    # instrucao apontando pra ca).
+    Write-Host '[bootstrap] AVISO: contexto non-elevated - bloco Tesseract pulado.' -ForegroundColor Yellow
+    Write-Host '[bootstrap] Para instalar Tesseract:' -ForegroundColor Yellow
+    Write-Host '[bootstrap]   1) Abra PowerShell como Administrador e rode este bootstrap de novo, OU' -ForegroundColor Yellow
+    Write-Host '[bootstrap]   2) Baixe tesseract-ocr-w64-setup-5.4.0.20240606.exe do GitHub UB-Mannheim' -ForegroundColor Yellow
+    Write-Host '[bootstrap]      e instale em C:\src\Frederico\workers\document-worker\runtime\tesseract' -ForegroundColor Yellow
+    Write-Host '[bootstrap]   3) O instalador NSIS do Frederico (Fase 9) ja faz isso pro usuario final.' -ForegroundColor Yellow
+} else {
+    Write-Host "[bootstrap] instalando Tesseract 5.4.0 em $TesseractDir (silent install)" -ForegroundColor Cyan
+
+    # Baixa o instalador.
+    $InstallerPath = Join-Path $RuntimeDir $TesseractInstallerName
+    Write-Host "[bootstrap]   baixando $TesseractInstallerUrl"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $TesseractInstallerUrl -OutFile $InstallerPath -UseBasicParsing
+    } catch {
+        Write-Host "[bootstrap] ERRO baixando Tesseract installer: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    # Valida SHA-256 antes de executar - defesa contra MITM ou download
+    # corrompido. Se nao bater, aborta antes de invocar o instalador.
+    $actualHash = (Get-FileHash $InstallerPath -Algorithm SHA256).Hash
+    if ($actualHash -ne $TesseractInstallerSha256) {
+        Write-Host "[bootstrap] ERRO: SHA-256 do instalador Tesseract nao confere" -ForegroundColor Red
+        Write-Host "[bootstrap]   esperado: $TesseractInstallerSha256" -ForegroundColor Red
+        Write-Host "[bootstrap]   obtido:   $actualHash" -ForegroundColor Red
+        Write-Host "[bootstrap] O instalador pode ter sido trocado ou corrompido. Abortando." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host '[bootstrap]   SHA-256 OK'
+
+    # Cria destino.
+    New-Item -ItemType Directory -Path $TesseractDir -Force | Out-Null
+
+    # NSIS silent install. Flags:
+    #   /S             silent (sem UI)
+    #   /D=<path>      diretorio de instalacao (sem aspas; caminho sem espacos
+    #                  e seguro; se tivesse espacos, o NSIS quebra)
+    # O instalador UB-Mannheim e NSIS (verificado via magic "NullsoftInst$"
+    # no resource PE), NAO Inno Setup. Flags diferentes do Inno Setup.
+    Write-Host '[bootstrap]   rodando silent install (NSIS /S /D=<path>)...'
+    $proc = Start-Process -FilePath $InstallerPath -ArgumentList "/S", "/D=$TesseractDir" -Wait -PassThru -NoNewWindow
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "[bootstrap] ERRO: instalador Tesseract saiu com codigo $($proc.ExitCode)" -ForegroundColor Red
+        exit 1
+    }
+
+    # Limpa instalador.
+    Remove-Item $InstallerPath -Force
+
+    # Verifica que tesseract.exe apareceu.
+    if (-not (Test-Path $TesseractExe)) {
+        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $TesseractDir apos silent install" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "[bootstrap] Tesseract instalado:" -ForegroundColor Green
+    & $TesseractExe --version 2>&1 | Select-Object -First 3 | ForEach-Object { Write-Host "    $_" }
+}
+
+# ---------------------------------------------------------------------------
+# Tesseract tessdata (por + eng + osd) - Etapa 2B+Y
+# ---------------------------------------------------------------------------
+#
+# Traineddata do Tesseract vem do repo oficial `tesseract-ocr/tessdata_fast`
+# (NAO `tessdata` legacy, NAO `tessdata_best` pesado). Por que fast:
+# ~5x mais rapido, ~95% da acuracia, e o que Debian/Ubuntu empacota.
+#
+# **Por que tag `4.1.0` fixa (nao `main`):** `raw/main` muda sem aviso;
+# dois downloads, dois traineddata, dois resultados de OCR. Com a
+# tag fixa + SHA-256, o bootstrap e reproduzivel. Bump quando o
+# mantenedor cortar novo release.
+#
+# **Por que SHA-256 por arquivo:** alem da tag fixa, o hash ancora
+# exatamente o arquivo. Defesa contra MITM, download corrompido, ou
+# mudanca retroativa no release taggeado.
+#
+# **Por que `osd` (orientation/script detection):** o Tesseract usa
+# automaticamente pra detectar orientacao da pagina. Sem ele, PDFs
+# virados de cabeca pra baixo dao OCR vazio.
+
+$TessdataDir = Join-Path $TesseractDir 'tessdata'
+
+# Tesseract 5.4.0 instala tessdata/ com alguns idiomas de exemplo.
+# Verificamos se os 3 que precisamos (por, eng, osd) estao la.
+function Test-TessdataFile($name) {
+    $p = Join-Path $TessdataDir $name
+    if (-not (Test-Path $p)) { return $false }
+    $size = (Get-Item $p).Length
+    return $size -gt 100KB
+}
+
+$allTessdataOk = $true
+foreach ($name in @('por.traineddata', 'eng.traineddata', 'osd.traineddata')) {
+    if (-not (Test-TessdataFile $name)) { $allTessdataOk = $false; break }
+}
+
+if ($allTessdataOk) {
+    Write-Host '[bootstrap] tessdata Tesseract (por, eng, osd) ja presentes - pulando.' -ForegroundColor Yellow
+} elseif (-not (Test-Path $TesseractExe)) {
+    # Tesseract nao instalado - nao da pra validar tessdata
+    Write-Host '[bootstrap] AVISO: Tesseract nao instalado - bloco tessdata pulado.' -ForegroundColor Yellow
+} else {
+    Write-Host '[bootstrap] baixando tessdata Tesseract (por, eng, osd) - tessdata_fast 4.1.0' -ForegroundColor Cyan
+
+    # Manifesto versionado: tag + SHA-256 por arquivo. Bump de release
+    # = bump da tag E dos SHA-256 juntos.
+    $TessdataTag = '4.1.0'
+    $TessdataBaseUrl = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TessdataTag"
+    $TessdataFiles = @(
+        @{ Name = 'por.traineddata'; Sha256 = 'C4932B937207A9514B7514D518B931A99938C02A28A5A5A553F8599ED58B7DEB' }
+        @{ Name = 'eng.traineddata'; Sha256 = '7D4322BD2A7749724879683FC3912CB542F19906C83BCC1A52132556427170B2' }
+        @{ Name = 'osd.traineddata'; Sha256 = '9CF5D576FCC47564F11265841E5CA839001E7E6F38FF7F7AACF46D15A96B00FF' }
+    )
+
+    New-Item -ItemType Directory -Path $TessdataDir -Force | Out-Null
+
+    foreach ($f in $TessdataFiles) {
+        $dest = Join-Path $TessdataDir $f.Name
+        $url = "$TessdataBaseUrl/$($f.Name)"
+        Write-Host "[bootstrap]   $($f.Name) (tag $TessdataTag)"
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+        } catch {
+            Write-Host "[bootstrap] ERRO baixando $($f.Name): $_" -ForegroundColor Red
+            exit 1
+        }
+
+        # Valida SHA-256 imediatamente.
+        $actualHash = (Get-FileHash $dest -Algorithm SHA256).Hash
+        if ($actualHash -ne $f.Sha256) {
+            Write-Host "[bootstrap] ERRO: SHA-256 de $($f.Name) nao confere" -ForegroundColor Red
+            Write-Host "[bootstrap]   esperado: $($f.Sha256)" -ForegroundColor Red
+            Write-Host "[bootstrap]   obtido:   $actualHash" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    Write-Host '[bootstrap]   SHA-256 de todos os tessdata OK' -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# pytesseract (wrapper Python do Tesseract) - Etapa 2B+Y
+# ---------------------------------------------------------------------------
+#
+# `pytesseract` e o wrapper Python oficial do Tesseract. So wrapper -
+# o binario Tesseract (instalado acima) faz o trabalho pesado.
+# Sentinel: o modulo `pytesseract` tem que ser importavel.
+
+$pytesseractInstalled = $false
+try {
+    & $PythonExe -c 'import pytesseract' 2>$null
+    if ($LASTEXITCODE -eq 0) { $pytesseractInstalled = $true }
+} catch {}
+
+if ($pytesseractInstalled) {
+    Write-Host '[bootstrap] pytesseract ja instalado - pulando.' -ForegroundColor Yellow
+} else {
+    Write-Host '[bootstrap] instalando pytesseract'
+    & $PythonExe -m pip install pytesseract --no-warn-script-location
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[bootstrap] ERRO: pip install pytesseract falhou' -ForegroundColor Red
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Fontes "Tinta e Latao" - Adobe Source Sans 3 + Source Serif 4 (TTF variable)
 # ---------------------------------------------------------------------------
 #
@@ -256,7 +500,7 @@ $LibCheckPath = Join-Path $env:TEMP 'frederico_lib_check.py'
 @'
 import sys
 errors = []
-for lib in ['docx', 'openpyxl', 'reportlab', 'pdfplumber']:
+for lib in ['docx', 'openpyxl', 'reportlab', 'pdfplumber', 'pytesseract']:
     try:
         __import__(lib)
     except Exception as e:
@@ -276,6 +520,72 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "[bootstrap] $libsCheck" -ForegroundColor Green
 Remove-Item $LibCheckPath -Force -ErrorAction SilentlyContinue
+
+# 2b. Tesseract binary + tessdata (se instalado). Se nao foi instalado
+#     (contexto non-elevated), pula com warning - nao falha. Os
+#     testes E2E que dependem de Tesseract vao falhar com mensagem
+#     clara no Rust (panic com instrucao).
+if (Test-Path $TesseractExe) {
+    Write-Host '[bootstrap] verificando Tesseract + tessdata' -ForegroundColor Cyan
+    $tessVersion = & $TesseractExe --version 2>&1 | Select-Object -First 1
+    Write-Host "[bootstrap]   tesseract: $tessVersion" -ForegroundColor Green
+    $missingTessdata = @()
+    foreach ($name in @('por.traineddata', 'eng.traineddata', 'osd.traineddata')) {
+        if (-not (Test-Path (Join-Path $TessdataDir $name))) {
+            $missingTessdata += $name
+        }
+    }
+    if ($missingTessdata.Count -gt 0) {
+        Write-Host "[bootstrap] ERRO: tessdata faltando: $($missingTessdata -join ', ')" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host '[bootstrap]   tessdata OK (por, eng, osd)' -ForegroundColor Green
+
+    # **Verificacao de portabilidade (obrigatoria, ADR-0019 §Decisao 1):**
+    # Tesseract funciona quando invocado de um path NAO-canônico
+    # (copia runtime/tesseract pra outro lugar, TESSDATA_PREFIX apontando
+    # pra lá, OCR num processo com env limpo)? Se a arvore depender de
+    # registro ou variavel de ambiente global, o instalador nao serve
+    # pro nosso self-contained. Pula com warning se ja rodamos
+    # (idempotente), faz o teste full na primeira vez.
+    $PortabilityMarker = Join-Path $TesseractDir '.portability_checked'
+    if (Test-Path $PortabilityMarker) {
+        Write-Host '[bootstrap]   portabilidade ja verificada - pulando.' -ForegroundColor Yellow
+    } else {
+        Write-Host '[bootstrap]   testando portabilidade da arvore Tesseract...' -ForegroundColor Cyan
+        $PortabilityTemp = Join-Path $RuntimeDir '.tesseract-portability-test'
+        if (Test-Path $PortabilityTemp) {
+            Remove-Item -Recurse -Force $PortabilityTemp
+        }
+        # Copia a arvore (read-only pra OCR nao gravar no original).
+        $robocpy = robocopy $TesseractDir $PortabilityTemp /MIR /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+        # Verifica que tesseract.exe --list-langs funciona do path copiado,
+        # com TESSDATA_PREFIX apontando pro tessdata local.
+        $env:TESSDATA_PREFIX = $PortabilityTemp
+        try {
+            $listLangs = & "$PortabilityTemp\tesseract.exe" --list-langs 2>&1
+        } finally {
+            Remove-Item Env:TESSDATA_PREFIX -ErrorAction SilentlyContinue
+        }
+        $env:TESSDATA_PREFIX = $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[bootstrap] AVISO: Tesseract NAO e portatil a partir de um path arbitrario.' -ForegroundColor Yellow
+            Write-Host '[bootstrap]   O instalador provavelmente gravou chaves de registro/variaveis globais.' -ForegroundColor Yellow
+            Write-Host '[bootstrap]   Pra self-contained do bundle, registre isso no ADR-0019 §Plano alternativo.' -ForegroundColor Yellow
+        } else {
+            Write-Host '[bootstrap]   portabilidade OK: tesseract --list-langs retornou: $($listLangs[0..3] -join '" "')' -ForegroundColor Green
+            New-Item -ItemType File -Path $PortabilityMarker -Force | Out-Null
+        }
+        # Limpa temp.
+        if (Test-Path $PortabilityTemp) {
+            Remove-Item -Recurse -Force $PortabilityTemp
+        }
+    }
+} else {
+    Write-Host '[bootstrap] AVISO: Tesseract nao instalado - pular verificacao.' -ForegroundColor Yellow
+    Write-Host '[bootstrap]   Documentos com `ocr.run` ou PDF 100% escaneado vao falhar.' -ForegroundColor Yellow
+    Write-Host '[bootstrap]   Instale manualmente (veja instrucoes acima) ou rode o bootstrap como Admin.' -ForegroundColor Yellow
+}
 
 # 3. Fontes (4 arquivos, cada um > 50 KB, TTF magic header).
 $FontCheckPath = Join-Path $env:TEMP 'frederico_font_check.py'
@@ -332,7 +642,7 @@ $totalSize = (Get-ChildItem $RuntimeDir -Recurse -File | Measure-Object -Propert
 $totalSizeMB = [math]::Round($totalSize / 1MB, 1)
 
 Write-Host ''
-Write-Host "[bootstrap] OK - runtime completo do document-worker v0.2.0 em $RuntimeDir" -ForegroundColor Green
+Write-Host "[bootstrap] OK - runtime completo do document-worker v0.3.0 em $RuntimeDir" -ForegroundColor Green
 Write-Host "[bootstrap] Tamanho total: $totalSizeMB MB" -ForegroundColor Green
 Write-Host '[bootstrap] Pra rodar o worker:' -ForegroundColor Green
 Write-Host "    & '$PythonExe' '$ScriptDir\document-worker.py'"

@@ -1,13 +1,14 @@
 {
   "worker_id": "document-worker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "capabilities": [
     "docx.write",
     "docx.read",
     "xlsx.write",
     "xlsx.read",
     "pdf.write",
-    "pdf.read"
+    "pdf.read",
+    "ocr.run"
   ],
   "dependencies": [
     {
@@ -39,12 +40,36 @@
       "name": "pdfplumber",
       "version": ">=0.10",
       "source": "pip show pdfplumber"
+    },
+    {
+      "name": "pytesseract",
+      "version": ">=0.3.10",
+      "source": "pip show pytesseract"
+    },
+    {
+      "name": "tesseract",
+      "version": "5.4.0.20240606",
+      "source": "runtime/tesseract/tesseract.exe --version",
+      "sha256_installer": "C885FFF6998E0608BA4BB8AB51436E1C6775C2BAFC2559A19B423E18678B60C9"
+    },
+    {
+      "name": "tesseract-tessdata",
+      "version": "tessdata_fast 4.1.0",
+      "source": "runtime/tesseract/tessdata/*.traineddata",
+      "tag": "4.1.0",
+      "files": {
+        "por.traineddata": "C4932B937207A9514B7514D518B931A99938C02A28A5A5A553F8599ED58B7DEB",
+        "eng.traineddata": "7D4322BD2A7749724879683FC3912CB542F19906C83BCC1A52132556427170B2",
+        "osd.traineddata": "9CF5D576FCC47564F11265841E5CA839001E7E6F38FF7F7AACF46D15A96B00FF"
+      }
     }
   ],
   "health": "unhealthy",
   "compatibility": {
     "min_os": "Windows 10 1903",
     "arch": "x86_64",
-    "min_runtime": "Python 3.11+ with pywin32, python-docx, openpyxl, reportlab, pdfplumber"
+    "min_runtime": "Python 3.11+ with pywin32, python-docx, openpyxl, reportlab, pdfplumber, pytesseract, plus Tesseract 5.4.0 + tessdata_fast 4.1.0 (por, eng, osd)",
+    "ocr_languages_default": "por+eng",
+    "ocr_languages_available": ["por", "eng", "osd"]
   }
 }

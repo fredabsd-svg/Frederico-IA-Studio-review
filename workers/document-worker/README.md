@@ -4,40 +4,59 @@ Worker sidecar do Frederico IA Studio que gera documentos profissionais
 (DOCX, XLSX, PDF) e le os tres formatos. Python embutido (ADR-0004),
 comunica com o app via **named pipes** do Windows.
 
-## Estado atual (Etapa 2B+X, 2026-07-30)
+## Estado atual (Etapa 2B+Y, 2026-07-30)
 
-**6 handlers reais** (o esqueleto de protocolo + transporte da Etapa
-2B continuação agora consome bibliotecas de verdade):
+**7 handlers reais** (Etapa 2B+X entregou 6; o 7º, `ocr.run`, entra
+nesta etapa com Tesseract 5.4.0 + por/eng/osd traineddata):
 
-| Capability   | Input                                          | Library         |
-| ------------ | ---------------------------------------------- | --------------- |
-| `docx.write` | `path`, `title`, `sections`                    | python-docx     |
-| `docx.read`  | `path`                                         | python-docx     |
-| `xlsx.write` | `path`, `sheets`                               | openpyxl        |
-| `xlsx.read`  | `path` (opcional `sheet`)                      | openpyxl        |
-| `pdf.write`  | `path`, `title`, `sections`                    | reportlab       |
-| `pdf.read`   | `path`                                         | pdfplumber      |
+| Capability   | Input                                                  | Library                          |
+| ------------ | ------------------------------------------------------ | -------------------------------- |
+| `docx.write` | `path`, `title`, `sections`                            | python-docx                      |
+| `docx.read`  | `path`                                                 | python-docx                      |
+| `xlsx.write` | `path`, `sheets`                                       | openpyxl                         |
+| `xlsx.read`  | `path` (opcional `sheet`)                              | openpyxl                         |
+| `pdf.write`  | `path`, `title`, `sections`                            | reportlab                        |
+| `pdf.read`   | `path`, `ocr: "auto"|"never"|"only"` (opcional)         | pdfplumber + pytesseract (fallback OCR) |
+| `ocr.run`    | `path`, `lang: "por+eng"` (opcional)                   | pytesseract + Tesseract 5.4.0     |
 
-**`ocr.run` foi REMOVIDO do manifesto nesta versão.** Vai pra
-**Etapa 2B+Y** (Tesseract + por/eng traineddata) sozinho —
-ADR-0018 §Decisao 2d justifica a separação (1 capability de 7
-puxava 90% do peso, do risco de install e da variabilidade
-"funciona na minha maquina"). Versao bump 0.1.0 -> 0.2.0;
-quando 2B+Y entrar, vira 0.3.0 com `ocr.run` re-adicionado.
+**`pdf.read` com fallback OCR transparente (Etapa 2B+Y, ADR-0019):**
 
-**Path safety minima (ADR-0018 §Decisao 4):** handlers rejeitam
+- `text` e `ocr_text` são **sempre separados** (procedência,
+  mesma disciplina de `origin`/`external_content` da memória).
+  OCR troca 8 por B, 0 por O, 1 por l — e é exatamente em
+  CNPJ/competência/valor que o erro cai. Misturar apagaria a
+  procedência.
+- Parâmetro `ocr: "auto"` (default): se há páginas escaneadas
+  E Tesseract disponível, faz OCR delas e popula `ocr_text`.
+  `ocr: "never"`: rápido, só checa camada de texto. `ocr: "only"`:
+  força OCR de TODAS as páginas.
+- `ocr_truncated: true` quando o teto de páginas/timeout foi
+  atingido (`MAX_OCR_PAGES_PDF = 20`, `OCR_TIMEOUT_S_PER_PAGE = 30`).
+- `tesseract_version` no retorno = reprodutibilidade (3 meses
+  depois: "qual versão do Tesseract produziu esse texto?").
+
+**MUDANÇA VISÍVEL DO `pdf.read` (breaking change):** PDF 100%
+escaneado que antes (v0.2.0) retornava `ok: false, code:
+pdf_scanned_no_ocr` agora pode retornar `ok: true` com `text` do
+OCR + `extraction: "ocr"`. Caller que dependia do code antigo
+precisa migrar pra checar `extraction == "ocr"` ou `ocr_text`
+não-vazio. CHANGELOG registra.
+
+**`ocr.run` (Etapa 2B+Y):** OCR de uma imagem (PNG/JPG/TIFF/BMP)
+via Tesseract. `lang` validado com regex estrita
+(`^[a-z]{3}(+[a-z]{3})*$`) e contra os traineddata realmente
+instalados — erro estruturado (`code: "invalid_lang"`) com lista
+de disponíveis, em vez da mensagem críptica do Tesseract quando
+o idioma não existe. Códigos: `ocr_not_available`, `invalid_lang`,
+`tesseract_failed`, `ocr_timeout`, `image_not_found`.
+
+**Path safety minima (ADR-0018 §Decisão 4):** handlers rejeitam
 `..` como componente, exigem path absoluto ou relativo ao `cwd`,
 e validam gravabilidade do diretorio pai (write) ou legibilidade
 do arquivo (read). Allowlist mais forte (por `ToolManifest`) entra
 na Etapa 3; sandbox de OS (sandbox-runner) entra na Fase 7.
 
-**`pdf.read` limitacao conhecida:** PDFs 100% escaneados (imagens
-sem camada de texto) devolvem `code: pdf_scanned_no_ocr` no
-payload. `scanned_pages: [n, m, ...]` lista paginas sem texto
-quando ha mistura (texto + imagem). OCR de verdade vem na 2B+Y
-com Tesseract + fallback automatico. Registrado no CHANGELOG.
-
-**Fontes "Tinta e Latao" (ADR-0018 §Decisao 2b):** Adobe Source Sans 3
+**Fontes "Tinta e Latao" (ADR-0018 §Decisão 2b):** Adobe Source Sans 3
 (corpo) + Source Serif 4 (titulos), TTF variable, instaladas pelo
 `bootstrap.ps1` em `runtime/fonts/`. `pdf.write` registra no
 reportlab e embarca no PDF. O `worker.hello` e `worker.pong`
