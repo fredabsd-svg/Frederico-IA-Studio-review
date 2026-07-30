@@ -48,15 +48,29 @@
 //! extra. `ServerOptions::new()` em Rust Tokio usa byte stream
 //! por default.
 //!
-//! ## `ready()` antes do primeiro read/write
+//! ## `connect()` no server, `ready()` no client
 //!
-//! O `NamedPipeServer` exige `pipe.ready().await` antes de
-//! qualquer read/write (espera o `ConnectNamedPipe`). O
-//! `NamedPipeClient` (depois de `connect`) também exige.
-//! Quem chama o `shared_pipe_pair` é responsável por fazer
-//! o `ready` antes — o helper em si não chama. O
-//! `WorkerManager::spawn_external` da Etapa 2B cuida disso
-//! (vai ser responsabilidade do caller do teste, aqui).
+//! A Tokio 1.x expõe **dois métodos** diferentes:
+//!
+//! - **`pipe.connect().await`** no `NamedPipeServer` — espera o
+//!   `ConnectNamedPipe` Win32 (o client fazer `CreateFileW` no
+//!   nome). É o método certo **antes** do primeiro read/write
+//!   no server.
+//! - **`pipe.ready(interest).await`** no `NamedPipeClient`
+//!   (pós-`connect`) — espera o `Interest` ficar pronto. Na
+//!   prática retorna imediato (o client já está conectado), mas
+//!   a Tokio recomenda a chamada explícita.
+//!
+//! **NÃO** use `ready(READABLE | WRITABLE)` no `NamedPipeServer`
+//! pré-connect — ele trava esperando readiness que nunca chega
+//! (não há dados pra ler antes do connect, e `WRITABLE` fica
+//! preso esperando o próprio connect). A Etapa 2B original usou
+//! `ready()` no server e deadlockou; a Etapa 2B continuação trocou
+//! por `connect()` e o smoke test com named pipes reais passou
+//! em 0.01s (ver `tests/windows_pipes_smoke.rs` header).
+//!
+//! Quem chama o `shared_pipe_pair` é responsável por fazer o
+//! `connect()`/`ready()` antes — o helper em si não chama.
 //!
 //! ## `unsafe` neste módulo
 //!
@@ -298,8 +312,10 @@ pub fn shared_pipe_pair<R: AsyncRead + AsyncWrite + Unpin + Send>(
 /// O `IpcMessage` é line-delimited JSON, casa com byte stream.
 ///
 /// **Importante:** depois de criar o server, o caller DEVE
-/// chamar `server.ready().await` antes de qualquer read/write
-/// — é assim que a Tokio espera o `ConnectNamedPipe` do client.
+/// chamar `server.connect().await` antes de qualquer read/write
+/// — é assim que a Tokio espera o `ConnectNamedPipe` do client
+/// (ver seção `connect()` no server, `ready()` no client do
+/// header do módulo).
 pub fn create_pipe_server(name: &PipeName) -> Result<NamedPipeServer, ProcessError> {
     let full = full_pipe_path(name);
     ServerOptions::new()
@@ -326,7 +342,8 @@ pub fn create_pipe_server(name: &PipeName) -> Result<NamedPipeServer, ProcessErr
 /// e o `open` retorna rápido — tipicamente < 10ms).
 ///
 /// **Importante:** depois de conectar, o caller DEVE chamar
-/// `client.ready().await` antes do primeiro read/write.
+/// `client.ready(Interest::READABLE | Interest::WRITABLE).await`
+/// antes do primeiro read/write.
 pub fn connect_pipe_client(name: &PipeName) -> Result<NamedPipeClient, ProcessError> {
     let full = full_pipe_path(name);
     ClientOptions::new()
