@@ -193,7 +193,12 @@ fn generate_test_png_with_text(png_path: &Path, text: &str) {
         panic!("python.exe nao encontrado (mesmo path do doc_worker_config)");
     }
     // Script inline. ASCII-only pra evitar problemas de quoting do
-    // PowerShell 5.1 com aspas/escape.
+    // PowerShell 5.1 com aspas/escape. Atribuido a `let` separado
+    // (e nao `let script = r#"..."#.to_string();` no mesmo statement
+    // do Command::new) porque o rustfmt 1.97+ quebra o `.to_string()`
+    // em multi-linha, e ha diferenca entre rustfmt local antigo
+    // e o do CI. Manter em 1 statement sem `.to_string()` deixa
+    // o formatador em paz.
     let script = r#"
 from PIL import Image, ImageDraw, ImageFont
 import sys
@@ -206,10 +211,10 @@ draw = ImageDraw.Draw(img)
 draw.text((20, 80), text, fill='black')
 img.save(out, 'PNG')
 print('OK', out)
-"#.to_string();
+"#;
     let output = std::process::Command::new(&py)
         .arg("-c")
-        .arg(&script)
+        .arg(script)
         .arg(text)
         .arg(png_path)
         .output()
@@ -250,11 +255,10 @@ story = [
 ]
 doc.build(story)
 print('OK', pdf_out)
-"#
-.to_string();
+"#;
     let output = std::process::Command::new(&py)
         .arg("-c")
-        .arg(&script)
+        .arg(script)
         .arg(pdf_path)
         .arg(png_path)
         .output()

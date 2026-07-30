@@ -44,6 +44,24 @@ jobs:
           path: workers/document-worker/runtime
           key: document-worker-runtime-${{ hashFiles('workers/document-worker/pyproject.toml', 'workers/document-worker/bootstrap.ps1') }}
 
+      # E2E do `document-worker` Python (Fase 5, Etapa 2B+X/Y). O
+      # `verify-external.ps1` faz (1) bootstrap idempotente e
+      # (2) roda os 11 testes E2E em
+      # `crates/process-architecture/tests/external_doc_worker.rs`
+      # (NAO `#[ignore]` - rodam em todo PR, nao sao pulados).
+      # Cold-start Python + libs + Tesseract + tessdata ~3-5min;
+      # com cache ~1s. **RODA ANTES do `Tests`** porque o
+      # `cargo test --workspace` do step `Tests` re-roda os mesmos
+      # 11 E2E (estao em `tests/external_doc_worker.rs`, sao
+      # integration tests) e precisa do runtime ja instalado -
+      # se rodar sem bootstrap, todos os 11 E2E panicam com
+      # `python.exe nao encontrado` (CI run 30574758324, 2026-07-30).
+      # Falha aqui bloqueia merge (REGRAS 2.3 porta 1: CI vermelho
+      # nao entra).
+      - name: E2E document-worker handlers
+        shell: pwsh
+        run: ./scripts/verify-external.ps1
+
       - name: Install frontend deps
         working-directory: apps/desktop
         run: npm ci
@@ -67,19 +85,11 @@ jobs:
         # classe, em vez de depender de revisão manual.
         run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock
 
+      # Os 11 E2E do `external_doc_worker.rs` re-rodam aqui
+      # (cargo roda todos os integration tests). Sao idempotentes
+      # e encontram o runtime ja instalado pelo step anterior.
       - name: Tests
         run: cargo test --workspace
-
-      # E2E do `document-worker` Python (Fase 5, Etapa 2B+X). O
-      # `verify-external.ps1` faz (1) idempotente do `bootstrap.ps1`
-      # e (2) roda os 6 testes E2E em
-      # `crates/process-architecture/tests/external_doc_worker.rs`
-      # (NAO `#[ignore]` - rodam em todo PR, nao sao pulados).
-      # Cold-start Python + libs ~3-5s; com cache ~1s. Falha aqui
-      # bloqueia merge (REGRAS 2.3 porta 1: CI vermelho nao entra).
-      - name: E2E document-worker handlers
-        shell: pwsh
-        run: ./scripts/verify-external.ps1
 
       - name: Core purity guard (ADR-0003)
         shell: pwsh
