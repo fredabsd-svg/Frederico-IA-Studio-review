@@ -1,0 +1,15 @@
+# Runtime instalado pelo bootstrap.ps1 — não versionado.
+# Pra reinstalar: rode `pwsh -File .\bootstrap.ps1`.
+runtime/
+
+# Python padrão
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Editores
+.idea/
+.vscode/
+*.swp

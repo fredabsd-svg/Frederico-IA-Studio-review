@@ -1,6 +1,6 @@
 # Módulo `frederico-process-architecture`
 
-> Etapa 2B da Fase 5 — **transporte + deadlock do smoke real resolvidos na Etapa 2B continuação** (2026-07-29). Os 2 testes `windows_pipe_server_client_roundtrip` e `windows_pipe_sequential_read_then_write` saíram do `#[ignore]` e rodam na suíte normal em < 100ms (fix: trocar `ready(READABLE | WRITABLE)` por `connect()` no `NamedPipeServer` — `connect()` envelopa o `ConnectNamedPipe` Win32, `ready()` trava esperando readiness que nunca chega pré-connect). Pendente: `WorkerManager::spawn_external` + `bootstrap.ps1` + `document-worker` Python stub. Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) (ator) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) (impl ator, Etapa 2A) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md) (Tokio, inversão do handshake, byte stream). Estado: parcial. Verificado contra o código em 2026-07-29.
+> **Etapa 2B completa (2026-07-29, PRs #9 + #10 + #11):** transporte real sobre named pipes (Etapa 2B, ADR-0017), `WorkerManager::spawn_external` que abre processos sidecar via `tokio::process::Command` (Etapa 2B continuação), 3 integration tests E2E com stub PowerShell em `tests/external_worker.rs`. `WorkerManager` ganhou campo `child: Option<Child>` e `shutdown` faz `child.wait()` com timeout 5s + `kill` se o worker não respondeu ao `app.shutdown`. `IpcMessage::decode_line` agora tolera BOM UTF-8 e `\r\n` (defesa em profundidade — workers PowerShell/.NET enviam por default). `IpcOp` serializa com o **nome do contrato** (`worker.hello`, `app.ack`, etc) — a Etapa 2A tinha um bug sutil que serializava `Hello` como `"hello"` (sem prefixo), descoberto quando o stub PowerShell enviou o nome correto. `document-worker` Python stub (Etapa 2B continuação) — manifesto + protocolo + loop + handlers stub; `bootstrap.ps1` instala Python 3.12 embeddable + `pywin32` em `runtime/`. Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md). Estado: parcial. Verificado contra o código em 2026-07-29.
 
 ## 1. O que este módulo faz
 
@@ -28,18 +28,22 @@ O que está no repo e funciona:
 - `WorkerManager`, `WorkerHandle`, `WorkerSpawnConfig`.
 - `FakeWorkerConfig`, `FakeWorkerHandle`, `FakePipeReader`, `FakePipeWriter`, `spawn_fake_worker`, `unique_pipe_name`.
 
-**Adicionado na Etapa 2B (parcial):**
+**Adicionado na Etapa 2B (parcial) + continuação (esta entrega):**
 
 - `WindowsPipeReader<R>` + `WindowsPipeWriter<W>` (genéricos sobre `AsyncRead`/`AsyncWrite`) + `shared_pipe_pair(inner)` — sobre `tokio::net::windows::named_pipe` (ADR-0017). Gateado em `#[cfg(windows)]`; o CI em Linux compila o `lib.rs` sem o módulo.
 - `create_pipe_server(name)` + `connect_pipe_client(name)` + `full_pipe_path(name)` + `PIPE_PREFIX` — helpers de bootstrap do pipe. Caller é responsável pelo `ready()` antes do primeiro read/write.
 - Modo **byte stream** (default Tokio, casa com line-delimited JSON do envelope).
-- **Inversão do handshake** (ADR-0017): worker cria o server, app se conecta como client; worker anuncia o nome via stdout `READY <pipe_name>`. `spawn_external` é a próxima peça (Etapa 2B continuação).
+- **Inversão do handshake** (ADR-0017): worker cria o server, app se conecta como client; worker anuncia o nome via stdout `READY <pipe_name>`.
+- **`WorkerManager::spawn_external(config: ExternalSpawnConfig)`** (cfg windows) — `tokio::process::Command` que abre o worker, lê `READY <name>` do stdout com timeout 10s, faz `connect_pipe_client` + `ready(READABLE | WRITABLE).await`, segue o handshake `worker.hello`/`app.ack` (mesmo do `spawn_in_process`), e devolve `(WorkerManager, WorkerHandle)` indistinguível do fake. `WorkerManager` ganhou campo `child: Option<Child>`; o `shutdown` faz `child.wait()` com timeout 5s + `kill` se o worker não respondeu ao `app.shutdown`. **PATH do pai é injetado automaticamente** (exceção documentada do §Invariantes — workers precisam pra resolver DLLs/binários; PATH não é segredo).
+- `ExternalSpawnConfig` (com `new`/`with_args`/`with_env`/`with_cwd`/`with_auth_token`/`with_ready_timeout`) — re-exportado em `lib.rs` (`#[cfg(windows)]`).
+- **`IpcMessage::decode_line` tolera BOM UTF-8** e **`\r\n`** no fim (defesa em profundidade — `StreamWriter` do .NET e PowerShell enviam assim por default).
+- **`IpcOp` serializa com o nome do contrato** (`worker.hello`, `app.ack`, etc) — a Etapa 2A tinha um bug sutil que serializava `Hello` como `"hello"` (sem prefixo `worker.`); descoberto quando o stub PowerShell enviou o nome correto. Custom `Serialize`/`Deserialize` substitui o `rename_all = "snake_case"` anterior.
 
-**Fora desta entrega (próxima sessão):**
+**Fora desta entrega (próximas etapas da Fase 5):**
 
-- `spawn_external(command, args, env)` — `tokio::process::Command` que abre o `document-worker.exe`, lê o `READY <pipe_name>` do stdout, e chama `connect_pipe_client`.
-- `bootstrap.ps1` em `workers/document-worker/` (Python embeddable + libs + Tesseract + fontes "Tinta & Latão" — ADR-0004).
-- `document-worker` Python (manifest, protocol, server, handlers stub).
+- `ToolRegistry` da Etapa 3 consome `WorkerHandle::invoke` (integração casca ↔ worker — `docs.generate`).
+- Handlers reais do `document-worker` (`docx.write`/`docx.read`/... + OCR) — dependem do `document-engine` (Etapa 1, já fechado) e de Tesseract + fontes "Tinta & Latão" do `bootstrap.ps1` estendido.
+- **Tesseract + fontes** no `bootstrap.ps1` (Etapa 2B+X) — esta entrega instala só Python + pip + `pywin32`; a próxima adiciona os binários pesados.
 
 **Não-público (interno):**
 
@@ -144,15 +148,20 @@ do teste em 5s.
 
 ## 6. O que ele **não** faz
 
-- **Não spawna processos externos.** `spawn_external` via
-  `tokio::process::Command` (que abre o `document-worker.exe`,
-  lê o `READY <pipe_name>` do stdout, faz `connect_pipe_client`,
-  e devolve o `WorkerHandle`) entra na próxima sessão da
-  Etapa 2B continuação.
-- **Não conhece Python nem o `document-worker`.** Sidecar
-  Python + `bootstrap.ps1` entram na próxima sessão.
+- **Não conhece Python nem o `document-worker`.** O
+  `document-worker` Python stub (Etapa 2B continuação) vive
+  em `workers/document-worker/` — o `process-architecture` só
+  conhece o envelope IPC, não o sidecar específico. **Stub de
+  PowerShell** (`tests/stubs/worker-stub.ps1`) prova o
+  `spawn_external` E2E sem depender de Python no CI.
+- **Não instala Tesseract nem fontes.** O `bootstrap.ps1`
+  do `document-worker` (Etapa 2B continuação) instala só
+  Python embeddable + pip + `pywin32`. Tesseract + fontes
+  "Tinta & Latão" entram numa entrega de bootstrap estendido
+  (pendência 1).
 - **Não tem revogação de token.** `WorkerAuth` é `String`
-  opaco; revogação por lista negra entra em hardening futuro.
+  opaco; revogação por lista negra entra em hardening futuro
+  (pendência 3 — precisa de ADR).
 - **Não tem schema JSON do envelope versionado.** O envelope
   é validado por tipos Rust; o schema (via `schemars` 0.8,
   mesma estratégia do `document-engine`) entra quando a Etapa 3
@@ -162,18 +171,25 @@ do teste em 5s.
   — `WorkerManager` não tem. O invoke só termina por timeout,
   response do worker, ou morte do worker (EOF).
 
-## Pendências para a próxima sessão (Etapa 2B continuação)
+## Pendências para a próxima sessão
 
-1. `WorkerManager::spawn_external(command, args, env)` que
-   abre o `document-worker.exe` via `tokio::process::Command`,
-   lê o `READY <pipe_name>` do stdout, faz `connect_pipe_client`,
-   e devolve o `WorkerHandle` (mesma forma do `spawn_in_process`).
-2. `bootstrap.ps1` em `workers/document-worker/` que baixa
-   Python embeddable + libs + Tesseract + fontes "Tinta &
-   Latão".
-3. `document-worker` Python (manifest, protocol, server,
-   handlers stub).
-4. Revogação de token por lista negra (hardening).
+1. **Tesseract + fontes "Tinta & Latão" no `bootstrap.ps1`** —
+   esta entrega instala só Python + pip + `pywin32`; a próxima
+   adiciona os binários pesados (Tesseract, pacote `por` de
+   lang data, fontes T&L).
+2. **Handlers reais do `document-worker`** — `docx.write`/
+   `docx.read`/`xlsx.write`/`xlsx.read`/`pdf.write`/`pdf.read`/
+   `ocr.run` (consumindo o `document-engine` Etapa 1).
+3. **Revogação de token por lista negra** (hardening) — o
+   `WorkerAuth` é `String` opaco; revogação por lista negra
+   é a próxima peça. **Decisão de arquitetura:** o que a
+   lista negra contém (hash do token? ID explícito?) precisa
+   de ADR antes da implementação.
+4. **Tabela de capacidades dinâmica** — o `IpcOp` hoje é
+   lista fechada (8 opcodes hardcoded); a Etapa 3 vai precisar
+   que tools dinâmicas (do `ToolRegistry`) sejam roteáveis.
+   Pode entrar via `op = "tool.invoke"` com `capability` no
+   payload (como o `document-worker` stub já faz).
 
 > **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
 > integration tests com named pipes reais em

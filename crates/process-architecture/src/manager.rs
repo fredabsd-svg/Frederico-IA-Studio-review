@@ -52,6 +52,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use uuid::Uuid;
 
@@ -59,7 +60,8 @@ use crate::error::ProcessError;
 use crate::fake::FakeWorkerConfig;
 use crate::pipes::{PipeReader, PipeWriter};
 use crate::protocol::{
-    IpcMessage, IpcOp, RequestId, WorkerAuth, WorkerHealthSnapshot, WorkerId, WorkerManifest,
+    IpcMessage, IpcOp, RequestId, WorkerAuth, WorkerHealth, WorkerHealthSnapshot, WorkerId,
+    WorkerManifest,
 };
 
 /// Comando que o caller (`WorkerHandle`) envia ao ator. O ator
@@ -316,7 +318,8 @@ impl Default for WorkerSpawnConfig {
 pub struct WorkerManager {
     /// `JoinHandle` da task do **fake server** (lado worker do
     /// fake). O `shutdown` espera ela terminar pra confirmar que
-    /// o worker morreu limpo.
+    /// o worker morreu limpo. `None` no caminho `spawn_external`
+    /// (não tem fake — tem `child` direto).
     server_task: Option<tokio::task::JoinHandle<()>>,
     /// `JoinHandle` da task do **ator** (lado manager). O
     /// `shutdown` espera ela terminar depois de receber o
@@ -328,6 +331,18 @@ pub struct WorkerManager {
     /// que o `shutdown` consegue mandar o comando mesmo se o
     /// `handle` foi dropado.
     command_tx: mpsc::Sender<ManagerCommand>,
+    /// Handle do **processo filho** (só preenchido no caminho
+    /// `spawn_external` — o fake in-process não tem child). O
+    /// `shutdown` chama `wait()` com timeout e, se o worker
+    /// não morreu em 5s, chama `kill()` (TerminateProcess no
+    /// Windows) seguido de `wait()`.
+    ///
+    /// **Por que `Option<Child>` e não `Option<JoinHandle>`:**
+    /// `Child::wait(&mut self)` é `&mut self` (não consome) na
+    /// Tokio 1.x, então o manager pode chamar `wait()` e
+    /// `kill()` no mesmo `Child` em momentos diferentes. Não
+    /// precisa de task separada.
+    child: Option<Child>,
 }
 
 impl WorkerManager {
@@ -404,44 +419,52 @@ impl WorkerManager {
                 message: format!("write do `app.ack` falhou: {e}"),
             })?;
 
-        // 4. Constrói o estado partilhado.
-        let (command_tx, command_rx) = mpsc::channel::<ManagerCommand>(64);
-        let health = fake.health.clone();
-        let state = Arc::new(WorkerState {
-            command_tx: command_tx.clone(),
-            pending: Mutex::new(HashMap::new()),
-            health,
-            auth,
-            worker_id,
-            manifest: Arc::new(manifest),
-        });
-
-        // 5. Spawna a task do **ator** — fica com o `reader` e a
-        //    `writer` (movidos). A partir daqui, o ator é o único
-        //    dono do pipe.
-        let actor_state = state.clone();
+        // 4. Constrói o estado partilhado + spawna o ator.
+        //    O helper `assemble_actor_and_state` é compartilhado
+        //    com o `spawn_external` (Etapa 2B) — mesma estrutura
+        //    de ator, mesmo `WorkerHandle`, só muda o transporte.
         let actor_writer: Box<dyn PipeWriter> = Box::new(fake.writer);
         let actor_reader: Box<dyn PipeReader> = Box::new(hello_reader);
-        let actor_task = tokio::spawn(run_actor(
+        assemble_actor_and_state(
             actor_reader,
             actor_writer,
-            command_rx,
-            actor_state,
-        ));
+            auth,
+            worker_id,
+            manifest,
+            fake.health.clone(),
+            Some(fake.server_task),
+            timeout,
+        )
+    }
 
-        let handle = WorkerHandle {
-            state: state.clone(),
-            default_invoke_timeout: timeout,
-        };
+    /// Spawna um worker **externo** (processo real) e faz o
+    /// handshake sobre named pipes do Windows.
+    ///
+    /// **Gateado em `#[cfg(windows)]`** — named pipes são
+    /// Windows. Em outras plataformas o método não existe (o
+    /// crate inteiro compila sem o módulo de plataforma).
+    /// Implementação em [`crate::external::spawn_external`].
+    ///
+    /// Devolve `(WorkerManager, WorkerHandle)` na mesma forma
+    /// do `spawn_in_process` — `WorkerHandle::invoke`/`ping`
+    /// são indistinguíveis. O `WorkerManager::shutdown` sabe
+    /// esperar o child process de ambos os caminhos (fake e
+    /// external).
+    #[cfg(windows)]
+    pub async fn spawn_external(
+        config: crate::external::ExternalSpawnConfig,
+    ) -> Result<(WorkerManager, WorkerHandle), ProcessError> {
+        crate::external::spawn_external(config).await
+    }
 
-        Ok((
-            WorkerManager {
-                server_task: Some(fake.server_task),
-                actor_task: Some(actor_task),
-                command_tx,
-            },
-            handle,
-        ))
+    /// Anexa o `Child` do processo filho ao manager. Chamado
+    /// **uma vez** pelo `external::spawn_external` depois do
+    /// handshake bem-sucedido — antes do handshake o child é
+    /// propriedade do helper (pra `kill()` em caso de falha
+    /// de handshake).
+    #[cfg(windows)]
+    pub(crate) fn attach_child(&mut self, child: Child) {
+        self.child = Some(child);
     }
 
     /// Shutdown gracioso. Envia `app.shutdown`, espera a task do
@@ -449,17 +472,26 @@ impl WorkerManager {
     /// espera a task do fake server terminar (ela saiu no
     /// `Shutdown`).
     ///
+    /// Se o manager veio de um `spawn_external` (tem `Child`
+    /// anexado), também faz `child.wait()` com timeout 5s — se o
+    /// worker não respondeu ao `app.shutdown` em 5s, é morto
+    /// com `kill()` (TerminateProcess no Windows) seguido de
+    /// `wait()` pra limpar o handle do SO.
+    ///
     /// # Erros
     /// - `ProcessError::Transport` se o canal pro ator já estiver
     ///   fechado (ator caiu sozinho).
-    /// - `ProcessError::JoinError` embrulhado se uma das tasks
+    /// - `ProcessError::Transport` embrulhado se uma das tasks
     ///   panicou.
+    /// - `ProcessError::Platform` se o `kill` no child falhar
+    ///   (improvável — `kill` só falha se o child já saiu, e
+    ///   nesse caso `wait` retorna).
     pub async fn shutdown(mut self) -> Result<(), ProcessError> {
         // Envia o comando de shutdown. O ator escreve
-        // `app.shutdown`, e o fake server morre depois de
-        // processar. O `read_line` do ator devolve `None` (EOF) e
-        // o loop termina — o pending de Shutdown é despachado com
-        // `Ok(())`.
+        // `app.shutdown`, e o fake server (ou worker externo)
+        // morre depois de processar. O `read_line` do ator
+        // devolve `None` (EOF) e o loop termina — o pending de
+        // Shutdown é despachado com `Ok(())`.
         let (tx, rx) = oneshot::channel();
         let cmd = ManagerCommand::Shutdown { reply: tx };
         self.command_tx
@@ -479,12 +511,102 @@ impl WorkerManager {
             })?;
         }
         // Espera a task do fake server terminar (ela já saiu
-        // quando viu o `Shutdown`).
+        // quando viu o `Shutdown`). `None` no caminho external.
         if let Some(task) = self.server_task.take() {
             let _ = task.await;
         }
+        // Reap o child process (caminho external). Com timeout
+        // 5s — se o worker não respondeu ao `app.shutdown`,
+        // `wait` ficaria pendurado pra sempre; o `kill`
+        // (TerminateProcess) garante o fim.
+        if let Some(mut child) = self.child.take() {
+            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(_status) => {
+                    // Worker morreu limpo (respondeu ao app.shutdown).
+                }
+                Err(_timeout) => {
+                    // Worker travou — mata e reapa.
+                    if let Err(e) = child.kill().await {
+                        // `kill` falha só se o processo já saiu —
+                        // nesse caso `wait` retorna. Não é fatal.
+                        tracing::warn!(?e, "shutdown: kill do child falhou (já saiu?)");
+                    }
+                    if let Err(e) = child.wait().await {
+                        tracing::warn!(?e, "shutdown: wait pós-kill falhou");
+                    }
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Helper privado: monta o `WorkerState` + spawna o ator + cria
+/// o `WorkerManager` e o `WorkerHandle`. Compartilhado entre
+/// [`WorkerManager::spawn_in_process`] (Etapa 2A) e
+/// `external::spawn_external` (Etapa 2B) — o ator é o mesmo
+/// nos dois caminhos, só muda o transporte (fake `mpsc` vs.
+/// named pipes reais).
+///
+/// `health` vem do caller: o fake já tem o próprio
+/// `Arc<RwLock<WorkerHealthSnapshot>>` que o server task
+/// atualiza; o caminho external cria um novo (só o ator
+/// atualiza, via `Pong`/`Error` recebidos).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn assemble_actor_and_state(
+    actor_reader: Box<dyn PipeReader>,
+    writer_for_actor: Box<dyn PipeWriter>,
+    auth: WorkerAuth,
+    worker_id: WorkerId,
+    manifest: WorkerManifest,
+    health: Arc<RwLock<WorkerHealthSnapshot>>,
+    server_task: Option<tokio::task::JoinHandle<()>>,
+    default_invoke_timeout: Duration,
+) -> Result<(WorkerManager, WorkerHandle), ProcessError> {
+    let (command_tx, command_rx) = mpsc::channel::<ManagerCommand>(64);
+    let state = Arc::new(WorkerState {
+        command_tx: command_tx.clone(),
+        pending: Mutex::new(HashMap::new()),
+        health,
+        auth,
+        worker_id,
+        manifest: Arc::new(manifest),
+    });
+
+    let actor_state = state.clone();
+    let actor_task = tokio::spawn(run_actor(
+        actor_reader,
+        writer_for_actor,
+        command_rx,
+        actor_state,
+    ));
+
+    let handle = WorkerHandle {
+        state: state.clone(),
+        default_invoke_timeout,
+    };
+
+    Ok((
+        WorkerManager {
+            server_task,
+            actor_task: Some(actor_task),
+            command_tx,
+            child: None,
+        },
+        handle,
+    ))
+}
+
+/// Helper para o caminho `spawn_external`: cria o
+/// `WorkerHealthSnapshot` inicial (`Unhealthy` — só vira `Ok`
+/// depois do primeiro `Pong` positivo). O ator é o único que
+/// atualiza esse snapshot (a partir das responses que entram).
+pub(crate) fn fresh_health_snapshot() -> Arc<RwLock<WorkerHealthSnapshot>> {
+    Arc::new(RwLock::new(WorkerHealthSnapshot {
+        health: WorkerHealth::Unhealthy,
+        last_check_at: chrono::Utc::now(),
+        message: None,
+    }))
 }
 
 impl Drop for WorkerManager {

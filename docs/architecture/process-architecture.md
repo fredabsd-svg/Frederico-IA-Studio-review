@@ -4,7 +4,7 @@ Verificado contra o código em: 2026-07-29
 Fase correspondente: 5
 -->
 
-> Última verificação: 2026-07-29. Reflete a **Fase 5** (Documentos) — `WorkerManager` redesenhado como ator (Etapa 2A, ADR-0015 + ADR-0016), transporte real sobre named pipes do Windows via Tokio (Etapa 2B, ADR-0017) com smoke test com pipes reais fechando em < 100ms (2 testes `windows_pipe_server_client_roundtrip` + `windows_pipe_sequential_read_then_write` saíram do `#[ignore]` na Etapa 2B continuação), handshake `worker.hello` / `app.ack` com `WorkerAuth` (UUID v4) já implementado, e o envelope IPC completo com 8 opcodes estáveis em snake_case. A integração com o `ToolRegistry` (Etapa 3) — onde o `docs.generate` consome o `WorkerHandle::invoke` — ainda não começou. O detalhe da implementação (manager + transport + testes + armadilhas) vive em [`docs/modules/process-architecture.md`](../modules/process-architecture.md) (atualizado na Etapa 2B continuação).
+> Última verificação: 2026-07-29. Reflete a **Fase 5** (Documentos) — `WorkerManager` redesenhado como ator (Etapa 2A, ADR-0015 + ADR-0016), transporte real sobre named pipes do Windows via Tokio (Etapa 2B, ADR-0017) com smoke test com pipes reais fechando em < 100ms, **`WorkerManager::spawn_external` que abre processos sidecar via `tokio::process::Command` (Etapa 2B continuação)** + 3 integration tests E2E com stub PowerShell em `tests/external_worker.rs`, `WorkerManager` com `child: Option<Child>` e `shutdown` tolerante a kill (timeout 5s), `IpcMessage::decode_line` tolerando BOM UTF-8 e `\r\n` (defesa em profundidade), `IpcOp` corrigido pra serializar com o nome do contrato (`worker.hello` etc) — bug sutil da Etapa 2A que serializava `Hello` como `"hello"`, e o `document-worker` Python stub (Etapa 2B continuação) com manifesto + protocolo + loop + handlers stub + `bootstrap.ps1` que instala Python 3.12 embeddable + `pywin32`. A integração com o `ToolRegistry` (Etapa 3) — onde o `docs.generate` consome o `WorkerHandle::invoke` — ainda não começou. O detalhe da implementação (manager + transport + spawn + testes + armadilhas) vive em [`docs/modules/process-architecture.md`](../modules/process-architecture.md) (atualizado na Etapa 2B continuação).
 
 # Arquitetura de Processos
 
@@ -61,12 +61,17 @@ struct IpcMessage {
 Sequência obrigatória no boot do app:
 
 1. Carrega ferramentas **internas** (registradas estaticamente no binário principal).
-2. Spawn de cada worker registrado em `config/workers.toml` (Etapa 2B continuação: `WorkerManager::spawn_external` lê `READY <pipe_name>` do stdout do filho e usa pra fazer `connect_pipe_client`).
+2. **Spawn de cada worker registrado** em `config/workers.toml` via `WorkerManager::spawn_external` (Etapa 2B continuação, 2026-07-29):
+   - `tokio::process::Command` com `stdin = null`, `stdout`/`stderr` piped, `CREATE_NO_WINDOW` no Windows.
+   - **Lê a primeira linha do stdout com timeout 10s** — espera `READY <pipe_name>`. Inversão do handshake (ADR-0017 §Decisão 2): o worker cria o `NamedPipeServer` e anuncia o nome; o app lê e usa o nome pra `connect_pipe_client`. Se o worker não envia `READY` em 10s, `kill`+`wait` best-effort e `ProcessError::Platform`.
+   - Stderr do worker é **pumpado em background** pra `tracing::warn!` (linha a linha) — crash do worker fica visível nos logs do app.
+   - `connect_pipe_client(name)` (síncrono, em `spawn_blocking` pra não bloquear o runtime) + `client.ready(READABLE | WRITABLE).await` (pós-connect).
 3. **Handshake síncrono** `worker.hello` → manifest + schema + saúde. O manager lê o `hello`, gera um `WorkerAuth` (UUID v4), e responde com `app.ack` carregando o token. **Daí em diante**, toda `tool.invoke` carrega o token — o worker valida contra o auth que recebeu.
-4. Validação de `protocol_version` (incompatível = falha de boot).
+4. Validação de `protocol_version` (incompatível = falha de boot). **O `decode_line` tolera BOM UTF-8 e `\r\n`** (defesa em profundidade — workers PowerShell/.NET enviam assim por default).
 5. Healthcheck ativo (ping com TTL curto).
 6. Inventário consolidado no `ToolRegistry` (Etapa 3).
 7. Workers que falham no handshake são marcados `unhealthy`; suas ferramentas ficam `unavailable` na UI e no cálculo de interseção (ver [`tool-registry-specification.md`](./tool-registry-specification.md)).
+8. **Shutdown** do app: `WorkerManager::shutdown` envia `app.shutdown`, espera o ator terminar (EOF do pipe), e **se houver child (caminho `spawn_external`), faz `child.wait()` com timeout 5s** — se o worker não respondeu ao `app.shutdown` em 5s, `child.kill()` (TerminateProcess) + `wait` pra limpar o handle do SO.
 
 ### Transporte (Windows)
 

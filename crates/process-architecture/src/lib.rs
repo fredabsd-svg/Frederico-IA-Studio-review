@@ -65,6 +65,8 @@
 
 pub mod env_allowlist;
 pub mod error;
+#[cfg(windows)]
+pub mod external;
 pub mod fake;
 pub mod manager;
 pub mod pipes;
@@ -75,6 +77,8 @@ pub mod windows_pipes;
 
 pub use env_allowlist::{build_worker_env, build_worker_env_with_defaults, EnvEntry};
 pub use error::{ProcessError, ProcessErrorKind};
+#[cfg(windows)]
+pub use external::ExternalSpawnConfig;
 pub use fake::{
     spawn_fake_worker, unique_pipe_name, FakePipeReader, FakePipeWriter, FakeWorkerConfig,
     FakeWorkerHandle,
