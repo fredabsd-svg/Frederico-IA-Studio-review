@@ -4,13 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Manager de workers sidecar + IPC via named pipes + handshake (Fase 5, Etapa 2A: fundação do process-architecture)."
+description = "Manager de workers sidecar + IPC via named pipes + handshake (Fase 5, Etapa 2A: fundação do process-architecture; Etapa 2B: transporte real sobre Tokio + ADR-0017)."
 
 [lints.rust]
 # `deny` em vez de `forbid` para permitir `#![allow(unsafe_code)]`
-# **apenas** no módulo `windows_pipes` que entra na Etapa 2B. Por
-# enquanto, sem unsafe no crate. Mesma regra do `frederico-security`,
-# ADR-0007 §Implementação Windows.
+# no módulo `windows_pipes` (Etapa 2B) **ou** em outro módulo
+# que precise da `windows` crate (Etapa 3+ se virar necessário,
+# ex.: security descriptor customizado). Por enquanto o módulo
+# `windows_pipes.rs` não usa `unsafe` — a Tokio envelopa o
+# `HANDLE` Win32 de forma segura (ADR-0017 §Decisão 5). Mesma
+# regra do `frederico-security`, ADR-0007 §Implementação Windows.
 unsafe_code = "deny"
 
 [dependencies]
@@ -24,11 +27,14 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # A Etapa 2A é o **protocolo** (envelope, manifest, manager) + um
-# fake in-process pra testes. A Etapa 2B adiciona o
-# `WindowsPipeClient`/`WindowsPipeServer` via `windows` crate
-# (gateado em `#[cfg(windows)]`), o `bootstrap` do
-# `document-worker.exe`, e o `spawn_external` que abre o processo
-# filho. Por enquanto o crate compila em qualquer plataforma.
+# fake in-process pra testes. A Etapa 2B adiciona o transporte
+# real `WindowsPipeReader`/`Writer` via `tokio::net::windows::named_pipe`
+# (gateado em `#[cfg(windows)]` no módulo `windows_pipes.rs`) — sem
+# `crate windows`, sem `unsafe` no nosso código (ADR-0017).
+# Smoke test com named pipes reais em `tests/windows_pipes_smoke.rs`
+# está `#[ignore]` (deadlock em diagnóstico — próxima sessão).
+# Pendente: `WorkerManager::spawn_external` + `bootstrap.ps1` +
+# `document-worker` Python stub.
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
