@@ -246,6 +246,20 @@ pub async fn spawn_external(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // **kill_on_drop(true):** se o `WorkerManager` for dropado
+        // sem `shutdown` explícito (cenário comum: o test caller
+        // é cancelado por `with_test_timeout` antes de chegar no
+        // `manager.shutdown()`), o `Child` é dropado junto, e a
+        // Tokio mata o processo via `TerminateProcess`. Sem
+        // isso, o processo fica zumbizando segurando o pipe e o
+        // `cargo test` trava esperando ele morrer (a CI do PR
+        // #11 travou 6h por isso — o `tokio::time::timeout(5s)`
+        // cancelou a future do test, mas o `powershell.exe`
+        // continuava vivo). É a mesma razão do `Drop` best-effort
+        // do `WorkerManager` (que documenta o caso), mas
+        // aplicado **no nível do `Child`** pra que o `Drop` async
+        // do `WorkerManager` não seja necessário.
+        .kill_on_drop(true)
         .env_clear()
         .envs(env);
     if let Some(cwd) = &config.cwd {
