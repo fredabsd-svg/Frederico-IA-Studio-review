@@ -286,8 +286,20 @@ if (Test-Path $TesseractExe) {
     }
     Write-Host '[bootstrap]   SHA-256 OK'
 
-    # Cria destino.
-    New-Item -ItemType Directory -Path $TesseractDir -Force | Out-Null
+    # CUIDADO com diretorio pre-existente: o instalador NSIS do
+    # UB-Mannheim tem comportamento problematico quando o path em
+    # `/D=` ja existe - em alguns casos instala em subpath (ex:
+    # `tesseract/tesseract-ocr/`) ou aborta silenciosamente. Em CI
+    # run 30575610679 (2026-07-30), o `runtime/tesseract/` ja
+    # existia (porque o cache de runtime/ foi parcialmente restaurado
+    # e continha um tesseract/ vazio ou corrompido de run anterior),
+    # o instalador rodou em ~11s com exit 0 mas tesseract.exe nao
+    # apareceu no path esperado. Solucao: NAO pre-criar; se ja
+    # existe, apaga antes de invocar o instalador.
+    if (Test-Path $TesseractDir) {
+        Write-Host "[bootstrap]   removendo $TesseractDir pre-existente"
+        Remove-Item -Path $TesseractDir -Recurse -Force
+    }
 
     # NSIS silent install. Flags:
     #   /S             silent (sem UI)
@@ -305,9 +317,18 @@ if (Test-Path $TesseractExe) {
     # Limpa instalador.
     Remove-Item $InstallerPath -Force
 
-    # Verifica que tesseract.exe apareceu.
+    # Verifica que tesseract.exe apareceu. Se nao apareceu, lista o
+    # conteudo do diretorio pra debugar.
     if (-not (Test-Path $TesseractExe)) {
-        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $TesseractDir apos silent install" -ForegroundColor Red
+        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $TesseractExe apos silent install" -ForegroundColor Red
+        if (Test-Path $TesseractDir) {
+            Write-Host "[bootstrap]   Conteudo atual de $TesseractDir (top 30):" -ForegroundColor Red
+            Get-ChildItem -Path $TesseractDir -Force -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 30 |
+                ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Red }
+        } else {
+            Write-Host "[bootstrap]   $TesseractDir nao foi criado pelo instalador" -ForegroundColor Red
+        }
         exit 1
     }
 
