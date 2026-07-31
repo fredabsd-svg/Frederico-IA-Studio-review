@@ -286,29 +286,27 @@ if (Test-Path $TesseractExe) {
     }
     Write-Host '[bootstrap]   SHA-256 OK'
 
-    # CUIDADO com diretorio pre-existente: o instalador NSIS do
-    # UB-Mannheim tem comportamento problematico quando o path em
-    # `/D=` ja existe - em alguns casos instala em subpath (ex:
-    # `tesseract/tesseract-ocr/`) ou aborta silenciosamente. Em CI
-    # run 30575610679 (2026-07-30), o `runtime/tesseract/` ja
-    # existia (porque o cache de runtime/ foi parcialmente restaurado
-    # e continha um tesseract/ vazio ou corrompido de run anterior),
-    # o instalador rodou em ~11s com exit 0 mas tesseract.exe nao
-    # apareceu no path esperado. Solucao: NAO pre-criar; se ja
-    # existe, apaga antes de invocar o instalador.
+    # CUIDADO: o instalador NSIS do UB-Mannheim IGNORA o `/D=<path>`
+    # custom devido ao NSIS macro `MULTIUSER_INSTALLMODE_INSTDIR`
+    # (issue tesseract-ocr/tesseract#4360 confirmada em 2026-07-30 -
+    # o `MULTIUSER_INSTALLMODE_INSTDIR` sobrescreve o command line).
+    # O instalador SEMPRE usa o path default do Windows
+    # (tipicamente `C:\Program Files\Tesseract-OCR` no w64-setup),
+    # mesmo passando `/D=...` corretamente. Tentamos `/D=...` em CI
+    # run 30575610679 e 30576068265: instalador rodou em ~8s com exit
+    # 0 mas tesseract.exe nao apareceu no path esperado (foi pro
+    # `C:\Program Files\Tesseract-OCR`).
+    #
+    # **Estrategia adotada:** instala com `/S` no path default do
+    # Windows + copia o conteudo pro nosso `runtime/tesseract/`. Self-
+    # contained, reproduzivel, e o SHA-256 ainda protege contra MITM.
     if (Test-Path $TesseractDir) {
         Write-Host "[bootstrap]   removendo $TesseractDir pre-existente"
         Remove-Item -Path $TesseractDir -Recurse -Force
     }
 
-    # NSIS silent install. Flags:
-    #   /S             silent (sem UI)
-    #   /D=<path>      diretorio de instalacao (sem aspas; caminho sem espacos
-    #                  e seguro; se tivesse espacos, o NSIS quebra)
-    # O instalador UB-Mannheim e NSIS (verificado via magic "NullsoftInst$"
-    # no resource PE), NAO Inno Setup. Flags diferentes do Inno Setup.
-    Write-Host '[bootstrap]   rodando silent install (NSIS /S /D=<path>)...'
-    $proc = Start-Process -FilePath $InstallerPath -ArgumentList "/S", "/D=$TesseractDir" -Wait -PassThru -NoNewWindow
+    Write-Host '[bootstrap]   rodando silent install (NSIS /S - /D ignorado pelo instalador)...'
+    $proc = Start-Process -FilePath $InstallerPath -ArgumentList '/S' -Wait -PassThru -NoNewWindow
     if ($proc.ExitCode -ne 0) {
         Write-Host "[bootstrap] ERRO: instalador Tesseract saiu com codigo $($proc.ExitCode)" -ForegroundColor Red
         exit 1
@@ -317,18 +315,37 @@ if (Test-Path $TesseractExe) {
     # Limpa instalador.
     Remove-Item $InstallerPath -Force
 
-    # Verifica que tesseract.exe apareceu. Se nao apareceu, lista o
-    # conteudo do diretorio pra debugar.
-    if (-not (Test-Path $TesseractExe)) {
-        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $TesseractExe apos silent install" -ForegroundColor Red
-        if (Test-Path $TesseractDir) {
-            Write-Host "[bootstrap]   Conteudo atual de $TesseractDir (top 30):" -ForegroundColor Red
-            Get-ChildItem -Path $TesseractDir -Force -Recurse -ErrorAction SilentlyContinue |
-                Select-Object -First 30 |
-                ForEach-Object { Write-Host "    $($_.FullName)" -ForegroundColor Red }
-        } else {
-            Write-Host "[bootstrap]   $TesseractDir nao foi criado pelo instalador" -ForegroundColor Red
+    # O instalador UB-Mannheim w64-setup instala em
+    # `C:\Program Files\Tesseract-OCR` (verificado em 5.4.0 e
+    # 5.5.0). Procuramos tesseract.exe no path default e copiamos
+    # o conteudo pro nosso runtime/tesseract/.
+    $DefaultTesseractDir = Join-Path $env:ProgramFiles 'Tesseract-OCR'
+    $DefaultTesseractExe = Join-Path $DefaultTesseractDir 'tesseract.exe'
+    if (-not (Test-Path $DefaultTesseractExe)) {
+        # Fallback: alguns installers antigos usam path sem espaco.
+        $DefaultTesseractDir = 'C:\Tesseract-OCR'
+        $DefaultTesseractExe = Join-Path $DefaultTesseractDir 'tesseract.exe'
+    }
+    if (-not (Test-Path $DefaultTesseractExe)) {
+        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $DefaultTesseractExe (path default do instalador)" -ForegroundColor Red
+        Write-Host '[bootstrap]   Procurando tesseract.exe em outros locais comuns:' -ForegroundColor Red
+        @('C:\Program Files\Tesseract-OCR', 'C:\Program Files (x86)\Tesseract-OCR', 'C:\Tesseract-OCR', 'C:\Tesseract') | ForEach-Object {
+            $candidate = Join-Path $_ 'tesseract.exe'
+            if (Test-Path $candidate) { Write-Host "    ACHOU: $candidate" -ForegroundColor Red }
         }
+        exit 1
+    }
+
+    # Copia o conteudo do path default pro nosso runtime/tesseract/.
+    # Usamos `Copy-Item -Recurse -Force` pra manter a estrutura
+    # (tesseract.exe, *.dll, tessdata/ com os idiomas default, etc).
+    Write-Host "[bootstrap]   copiando de $DefaultTesseractDir para $TesseractDir"
+    New-Item -ItemType Directory -Path $TesseractDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $DefaultTesseractDir '*') -Destination $TesseractDir -Recurse -Force
+
+    # Verifica que tesseract.exe apareceu no destino final.
+    if (-not (Test-Path $TesseractExe)) {
+        Write-Host "[bootstrap] ERRO: tesseract.exe nao apareceu em $TesseractExe apos copia" -ForegroundColor Red
         exit 1
     }
 

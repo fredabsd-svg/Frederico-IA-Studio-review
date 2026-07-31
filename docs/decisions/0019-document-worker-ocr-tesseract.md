@@ -42,7 +42,7 @@ Três correções vieram do feedback do usuário antes da execução
 
 ## Decisão
 
-### 1. Tesseract source: silent install do UB-Mannheim com admin detection
+### 1. Tesseract source: silent install no path default + cópia pra `runtime/tesseract/`
 
 Tesseract no Windows é distribuído pelo **UB-Mannheim** somente como
 instalador NSIS (Nullsoft Install System) — não há zip portable
@@ -54,55 +54,78 @@ disso, em contexto non-elevated o PowerShell 5.1 detecta o manifesto
 e bloqueia o `Start-Process` antes de executar — o instalador nem
 roda.
 
-**Estratégia em 3 camadas:**
+**Problema descoberto em CI runs 30575610679 e 30576068265
+(2026-07-30):** o instalador NSIS do UB-Mannheim **IGNORA o
+`/D=<path>` custom** (issue tesseract-ocr/tesseract#4360
+confirmada — o NSIS macro `MULTIUSER_INSTALLMODE_INSTDIR`
+sobrescreve o command line, é bug do instalador). O instalador
+**sempre** usa o path default do Windows (tipicamente
+`C:\Program Files\Tesseract-OCR` no w64-setup), mesmo passando
+`/D=...` corretamente. Resultado: silent install rodou em ~8s
+com exit 0 mas `runtime/tesseract/tesseract.exe` não apareceu —
+o instalador colocou tudo em `C:\Program Files\Tesseract-OCR\`.
+
+**Estratégia final (4 etapas):**
 
 a) **Bootstrap detecta admin/elevation** via
    `[System.Security.Principal.WindowsPrincipal]::IsInRole(Administrator)`.
-   Se admin: roda `tesseract-ocr-w64-setup-5.4.0.20240606.exe /S /D=<runtime\tesseract>`
-   (NSIS: `/S` = silent, `/D=path` = destination dir — **diferente
-   do Inno Setup** `/VERYSILENT /CURRENTUSER /SUPPRESSMSGBOXES /
-   NORESTART`; foi verificado via magic `NullsoftInst$` no
-   resource PE que o instalador UB-Mannheim é NSIS, não Inno).
-   Se não-admin: pula com warning + 3 opções de instrução (rodar
-   como Admin, instalar manualmente em `runtime/tesseract/`, ou
-   esperar o instalador NSIS do Frederico na Fase 9).
+   Se **não-admin**: pula com warning + 3 opções de instrução
+   (rodar como Admin, instalar manualmente em
+   `runtime/tesseract/`, ou esperar o instalador NSIS do
+   Frederico na Fase 9). Se **admin**: segue.
 
-b) **URL fixa do GitHub Releases** (não mirror). O mirror
+b) **Silent install no path default** (sem `/D=`): roda
+   `tesseract-ocr-w64-setup-5.4.0.20240606.exe /S`. NSIS
+   `MULTIUSER_INSTALLMODE_INSTDIR` força o destino pro
+   `C:\Program Files\Tesseract-OCR\` (w64-setup). Foi
+   verificado via magic `NullsoftInst$` no resource PE que o
+   instalador UB-Mannheim é NSIS (não Inno Setup — Inno usa
+   `Inno Setup` magic e flags `/VERYSILENT /CURRENTUSER
+   /SUPPRESSMSGBOXES /NORESTART`, completamente diferentes).
+
+c) **Cópia pro nosso `runtime/tesseract/`**: após o install,
+   `Copy-Item -Recurse` de `C:\Program Files\Tesseract-OCR\*`
+   pro `$RuntimeDir\tesseract\`. Estrutura preservada
+   (`tesseract.exe`, `*.dll`, `tessdata/` com idiomas default).
+   Self-contained, reproduzível, o SHA-256 ainda protege contra
+   MITM. O `runtime/` então é cacheado (chave =
+   `hash(pyproject.toml + bootstrap.ps1)`).
+
+d) **URL fixa do GitHub Releases** (não mirror). O mirror
    `digi.bib.uni-mannheim.de` retornou **403 Forbidden** para
-   vários IPs/UAs testados em 2026-07 (não foi User-Agent — `curl`
-   com `-A "Mozilla/5.0"` também foi bloqueado; o `digi.bib`
-   aparentemente bloqueia por outro critério). A versão do GitHub
-   Releases (`https://github.com/UB-Mannheim/tesseract/releases/
+   vários IPs/UAs testados em 2026-07 (não foi User-Agent —
+   `curl` com `-A "Mozilla/5.0"` também foi bloqueado; o
+   `digi.bib` aparentemente bloqueia por outro critério). A
+   versão do GitHub Releases
+   (`https://github.com/UB-Mannheim/tesseract/releases/
    download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe`)
    é **idêntica em conteúdo** à do mirror, tem URL versionada
-   (asset de release oficial mantido por `stweil` do UB-Mannheim),
-   e 1.4M downloads comprovam estabilidade.
+   (asset de release oficial mantido por `stweil` do
+   UB-Mannheim), e 1.4M downloads comprovam estabilidade.
 
-c) **SHA-256 fixo** do instalador: `C885FFF6998E0608BA4BB8AB51436E1C6775C2BAFC2559A19B423E18678B60C9`
-   (47.9 MB). Validado **antes** da execução — defesa contra MITM
-   ou download corrompido. Se o SHA não bater, aborta antes de
-   invocar o instalador.
+e) **SHA-256 fixo** do instalador:
+   `C885FFF6998E0608BA4BB8AB51436E1C6775C2BAFC2559A19B423E18678B60C9`
+   (47.9 MB). Validado **antes** da execução — defesa contra
+   MITM ou download corrompido. Se o SHA não bater, aborta
+   antes de invocar o instalador.
 
 **Verificação de portabilidade (obrigatória, roda na primeira
 execução):** copia `runtime/tesseract/` para outro path, seta
 `TESSDATA_PREFIX` apontando pro `tessdata/` local, e roda
 `tesseract.exe --list-langs`. Se a árvore for portátil (não
 depender de registro ou variável de ambiente global), o resultado
-é cached num marker (`.portability_checked`). Se **não** for
-portátil, o bootstrap loga warning e o ADR-0019 §Plano alternativo
-entra em ação (ver abaixo).
+é cached num marker (`.portability_checked`).
 
-**Plano alternativo (registrado, não decisão):** se a verificação
+**Plano alternativo (registrado, não-decisão):** se a verificação
 de portabilidade falhar (Tesseract grava em HKLM ou em variável
-de ambiente global), o plano B é extrair o instalador NSIS via
-`innoextract` — **mas `innoextract` é pra Inno Setup, não NSIS**.
-A alternativa real seria compilar `7-Zip` com codec NSIS completo
-(no Windows isso é viável mas adiciona ~1.5 MB de dep externa no
-bootstrap) ou aceitar que o bootstrap depende de Tesseract pré-
-instalado no `runtime/tesseract/` (instalação manual via `.exe`).
-**Não foi necessário ativar o plano B na implementação** — a
-árvore se mostrou portátil na primeira execução local. Mas o
-lugar de registrar o plano alternativo é aqui.
+de ambiente global), o plano B seria extrair o instalador NSIS
+via `7-Zip` com codec NSIS completo (no Windows isso é viável
+mas adiciona ~1.5 MB de dep externa no bootstrap) ou aceitar
+que o bootstrap depende de Tesseract pré-instalado no
+`runtime/tesseract/` (instalação manual via `.exe`). **Não foi
+necessário ativar o plano B na implementação** — a árvore se
+mostrou portátil na primeira execução local. Mas o lugar de
+registrar o plano alternativo é aqui.
 
 ### 2. Idiomas: `tessdata_fast` 4.1.0, `por+eng` como default, `lang` parametrizável
 
