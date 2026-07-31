@@ -1,24 +1,23 @@
 <!--
 Estado: implementado
 Verificado contra o código em: 2026-07-31
-Fase correspondente: 5 (Etapa 3 + Etapa 4)
+Fase correspondente: 5 (Etapa 3 + Etapa 4 + Etapa 5 PR 1)
 -->
 
-> Última verificação: 2026-07-31. Reflete a Etapa 3 + Etapa 4
-> da Fase 5 — crate `frederico-document-kits` com `Kit` trait,
-> `KitRegistry`, `DocumentFormat` (enum gerado a partir dos kits
-> implementados, **atualmente `["docx", "xlsx"]`**, REGRAS §1.9),
-> `WordProKit` v0.1 (DocumentSpec.blocks → payload do
-> `docx.write`), `ExcelProKit` v0.1 (Spreadsheet → `.xlsx` com
-> formatos numéricos brasileiros), `PdfProKit` como skeleton
-> (`is_implemented = false`, **não** aparece no schema do
-> `docs.generate`), `DocsGenerateTool` (tool único exposto ao
-> modelo, roteador + validação) e `DocsInspectTool` (round-trip
-> parcial `.docx`/`.xlsx` → `DocumentSpec` + `coverage`).
-> Suíte do crate: **84/84 verde** (35 Etapa 3 + 49 Etapa 4:
-> 13 `sheet_name` + 10 `excelpro` + 10 `inspect` + 1 E2E
-> ExcelPro + 1 E2E inspect). ADR-0018 §Decisão 1 mantida:
-> handler = primitiva, kit = renderer.
+> Última verificação: 2026-07-31. Reflete a Etapa 3 + Etapa 4 +
+> **Etapa 5 PR 1** da Fase 5 — crate `frederico-document-kits` com
+> `Kit` trait, `KitRegistry`, `DocumentFormat` (enum gerado a
+> partir dos kits implementados, **atualmente `["docx", "xlsx",
+> "pdf"]`** após o bump atômico do `DocumentFormat::Pdf` no PR 1
+> da Etapa 5, REGRAS §1.9), `WordProKit` v0.1, `ExcelProKit`
+> v0.1, `PdfProKit` com `is_implemented() == true` mas
+> `render()` retornando `KitError::NotImplemented { etapa:
+> "5.v0.1" }` (a v0.1 do `render` entra no PR 2), `DocsGenerateTool`
+> e `DocsInspectTool`. Suíte do crate: **84/84 verde** (Etapa 3
+> + Etapa 4; Etapa 5 PR 1 só toca enum + skeleton + testes de
+> `validate_semantic` no `document-engine` — sem novos testes
+> aqui). ADR-0018 §Decisão 1 mantida: handler = primitiva, kit
+> = renderer.
 
 # `frederico-document-kits`
 
@@ -54,10 +53,14 @@ enum `["docx"]` na Etapa 3, gerado a partir de
   `docx.write` v0.3.0), Kpis, Callout, Quote, Steps,
   Code, Divider, Spacer, PageBreak, Signatures,
   BackCover, Footer, Toc, KeyValue, Chart (placeholder).
-- `ExcelProKit`, `PdfProKit` — skeletons (`is_implemented
-  = false`). Provam a forma do trait. Quando Etapa 4/5
-  implementarem, basta trocar `is_implemented` por
-  `true` e o `render` por uma implementação real.
+- `ExcelProKit` v0.1 (Etapa 4, real) e `PdfProKit` com
+  `is_implemented() == true` (Etapa 5 PR 1, skeleton
+  funcional — `render` retorna `KitError::NotImplemented
+  { etapa: "5.v0.1" }` até o PR 2). O `is_implemented =
+  true` reflete que o **kit existe e está registrado**;
+  a v0.1 do `render` do PDFPro entra no PR 2 (fontes
+  Tinta & Latão embutidas, identidade visual, modo
+  Sóbrio, 20 blocos).
 - `DocsGenerateTool` — `impl Tool` async. Roteador: valida
   `output_path` contra a allowlist, re-valida o
   DocumentSpec, roteia pro kit certo, devolve `ToolResult`.
@@ -130,11 +133,13 @@ enum `["docx"]` na Etapa 3, gerado a partir de
   na Etapa 4).
 - `KitRegistry` — `new`, `register`, `get`, `all`,
   `implemented`, `implemented_formats` (atualmente
-  retorna `["docx", "xlsx"]`),
+  retorna `["docx", "xlsx", "pdf"]` após o PR 1 da
+  Etapa 5),
   `find_for_format`, `len`, `is_empty`.
 - `WordProKit` v0.1 (implementado, Etapa 3),
   `ExcelProKit` v0.1 (implementado, Etapa 4),
-  `PdfProKit` (skeleton, Etapa 5).
+  `PdfProKit` (skeleton funcional, `is_implemented() ==
+  true`, Etapa 5 PR 1; `render` real entra no PR 2).
 - `DocsGenerateTool` — `new(Arc<KitRegistry>,
   WorkerToolDispatcher)`, `manifest()`, async `execute()`.
 - `DocsInspectTool` (Etapa 4) — `new(WorkerToolDispatcher)`,
@@ -211,12 +216,16 @@ enum `["docx"]` na Etapa 3, gerado a partir de
   Substituir por `true` é o gate de promoção.
 
 - **PDFPro sem auditoria bloqueante = não é PDFPro.**
-  O skeleton do `PdfProKit` é honesto sobre isso: o
-  `is_implemented() == false` **permanece** até a
-  Etapa 5 entregar a auditoria do §19.6 junto.
-  Entregar um `pdf.write` sem a auditoria (mesmo
-  que funcione) é o precedente ruim que a Etapa 3
-  evita.
+  O PR 1 da Etapa 5 (ADR-0021) flipou o
+  `is_implemented() == true` no `PdfProKit` mas
+  mantém o `render` retornando `NotImplemented` com
+  `etapa: "5.v0.1"`. A v0.1 do `render` (fontes
+  Tinta & Latão embutidas, identidade visual, modo
+  Sóbrio, 20 blocos) entra no PR 2. A auditoria
+  bloqueante do §19.6 (visual + estrutural) entra
+  nos PRs 3 e 4. Entregar um `pdf.write` sem
+  auditoria (mesmo que funcione) é o precedente
+  ruim que a Etapa 3 evita.
 
 - **Tool::execute é async (Etapa 3 da Fase 5).** A
   mudança no `Tool` trait (era sync, virou

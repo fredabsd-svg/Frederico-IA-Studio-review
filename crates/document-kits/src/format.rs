@@ -49,6 +49,18 @@ pub enum DocumentFormat {
     /// novo; Etapa 4 v0.1 ancorada no primitivo.
     #[serde(alias = "xlsx")]
     Xlsx,
+
+    /// PDF (`.pdf`).
+    ///
+    /// Implementado na Etapa 5 da Fase 5 (ADR-0021): `PdfProKit`
+    /// real substitui o skeleton. Renderiza `DocumentSpec` em
+    /// `.pdf` com fontes Tinta & Latão embutidas, identidade
+    /// visual "Tinta & Latão" + modo Sóbrio, e passa pela
+    /// auditoria bloqueante do `PROMPT MESTRE` §19.6
+    /// (visual §19.3 + estrutural §19.4) **dentro do salvamento**
+    /// — reprovação = artefato não é entregue. Sem interruptor.
+    #[serde(alias = "pdf")]
+    Pdf,
 }
 
 impl DocumentFormat {
@@ -59,6 +71,7 @@ impl DocumentFormat {
         match self {
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
+            Self::Pdf => "pdf",
         }
     }
 
@@ -68,6 +81,7 @@ impl DocumentFormat {
         match self {
             Self::Docx => ".docx",
             Self::Xlsx => ".xlsx",
+            Self::Pdf => ".pdf",
         }
     }
 
@@ -77,6 +91,7 @@ impl DocumentFormat {
         match self {
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Self::Pdf => "application/pdf",
         }
     }
 }
@@ -96,7 +111,11 @@ mod tests {
         // O que sai no schema (snake_case) tem que bater com
         // o que a serde produz. Se um dia alguém mudar o
         // rename, este teste pega.
-        for fmt in [DocumentFormat::Docx, DocumentFormat::Xlsx] {
+        for fmt in [
+            DocumentFormat::Docx,
+            DocumentFormat::Xlsx,
+            DocumentFormat::Pdf,
+        ] {
             let json = serde_json::to_string(&fmt).unwrap();
             let expected = format!("\"{}\"", fmt.as_str());
             assert_eq!(json, expected, "DocumentFormat::{fmt:?} divergente");
@@ -107,5 +126,6 @@ mod tests {
     fn extension_includes_dot() {
         assert_eq!(DocumentFormat::Docx.extension(), ".docx");
         assert_eq!(DocumentFormat::Xlsx.extension(), ".xlsx");
+        assert_eq!(DocumentFormat::Pdf.extension(), ".pdf");
     }
 }

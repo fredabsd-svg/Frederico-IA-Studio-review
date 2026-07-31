@@ -23,15 +23,22 @@ use crate::blocks::DocumentBlock;
 ///
 /// Aceita qualquer string no formato `MAJOR.MINOR.PATCH` — a
 /// comparação é lexicográfica por componente. A Etapa 1 define a
-/// `0.1.0`; bumps futuros acontecem quando o catálogo ou as regras
-/// semânticas mudam.
+/// `0.1.0`. **Etapa 5 bump**: `0.2.0` adiciona o campo
+/// `DocumentMetadata.watermark: Option<WatermarkSpec>` (opcional,
+/// `#[serde(default, skip_serializing_if = "Option::is_none")]` —
+/// backward-compat com 0.1.0). Mudança de catálogo continua MINOR;
+/// remoção de campo ou mudança de semântica incompatível seria
+/// MAJOR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct SpecVersion(pub String);
 
 impl Default for SpecVersion {
     fn default() -> Self {
-        Self("0.1.0".to_string())
+        // Bump pra 0.2.0 na Etapa 5 (ADR-0021). O JSON Schema gerado
+        // em runtime via `schemars` reflete o novo campo
+        // `watermark` automaticamente.
+        Self("0.2.0".to_string())
     }
 }
 
@@ -86,11 +93,61 @@ pub enum DocumentStyle {
     Sobrio,
 }
 
-/// Metadados do documento. Não afeta a renderização — vão para
-/// propriedades do arquivo (`docProps/core.xml` no `.docx`,
-/// metadados PDF, etc.) e para o `DocumentMetadataView` que o
-/// `docs.inspect` devolve na Etapa 4.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+/// Posição da marca d'água visual na página. Opt-in via
+/// `DocumentMetadata.watermark` (`PROMPT MESTRE` §5.3 + §16.5;
+/// ADR-0021 §D-PDF2). A combinação com `DocumentStyle::Sobrio` é
+/// rejeitada pelo validador (`validate_semantic` regra 8) — modo
+/// Sóbrio é para registráveis, e tarja visual atravessando
+/// instrumento da Junta é erro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WatermarkPosition {
+    /// Centro da página, fonte grande (default 72pt), opacidade baixa.
+    /// Caso de uso padrão "CONFIDENCIAL" atravessando a página.
+    Center,
+    /// Diagonal do canto inferior esquerdo ao superior direito
+    /// (rotação 45°). Cobre a página inteira.
+    Diagonal,
+    /// Canto inferior direito, fonte menor (default 14pt).
+    /// Visível mas discreto.
+    BottomRight,
+    /// Canto superior direito, fonte menor (default 14pt).
+    TopRight,
+}
+
+/// Especificação da marca d'água visual. Opt-in (D-PDF2 do
+/// ADR-0021). O `DocumentSpec.confidentiality` é separado — vai
+/// como metadado / cabeçalho / nota de rodapé conforme o `style`.
+/// A marca d'água visual é uma camada por cima do conteúdo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WatermarkSpec {
+    /// Texto da marca. Ex: "CONFIDENCIAL", "USO INTERNO", "RASCUNHO".
+    /// Comprimento máximo recomendado: 32 chars (renderizado em fonte
+    /// grande no centro, fica ilegível se passar disso).
+    pub text: String,
+    /// Posição na página.
+    pub position: WatermarkPosition,
+    /// Opacidade de 0.0 a 1.0. `None` = 0.15 (visível mas não
+    /// obstrutivo). PDF/A-2 aceita transparência; PDF/A-1 não —
+    /// irrelevante na v1 (PDF/A-1 não está implementado), mas
+    /// registrado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// Tamanho da fonte em pontos. `None` = default conforme
+    /// `position` (72pt para Center/Diagonal, 14pt para Corner).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
+}
+
+/// Metadados do documento. Não afeta a renderização do
+/// **conteúdo** (vai para propriedades do arquivo:
+/// `docProps/core.xml` no `.docx`, metadados PDF, etc.) — mas o
+/// campo `watermark` (Etapa 5, ADR-0021 §D-PDF2) é renderizado
+/// como overlay visual **opt-in** quando o kit suporta. O
+/// `DocumentSpec.confidentiality` continua sendo o portador do
+/// nível de confidencialidade como metadado / cabeçalho / nota de
+/// rodapé.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct DocumentMetadata {
     /// Título (vai pra `<dc:title>` no `.docx` e `/Title` no PDF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,6 +164,12 @@ pub struct DocumentMetadata {
     /// Comentário / descrição.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Marca d'água visual **opt-in** (Etapa 5, ADR-0021
+    /// §D-PDF2). `None` = sem marca visual (default). O
+    /// validador rejeita a combinação com
+    /// `DocumentStyle::Sobrio` (`validate_semantic` regra 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<WatermarkSpec>,
 }
 
 /// O `DocumentSpec` — o contrato raiz.

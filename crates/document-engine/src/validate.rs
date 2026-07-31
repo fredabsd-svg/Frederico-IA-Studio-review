@@ -101,7 +101,7 @@ pub fn validate_against_schema(value: &Value) -> Result<(), DocumentError> {
 /// Schema). Recebe o spec já desserializado — a Etapa 3 usa
 /// `serde_json::from_value` antes desta chamada.
 ///
-/// ## Regras (v0.1)
+/// ## Regras (v0.2)
 ///
 /// 1. `blocks` não pode ser vazio.
 /// 2. `spec_version` deve ser `MAJOR.MINOR.PATCH` parseável.
@@ -117,6 +117,11 @@ pub fn validate_against_schema(value: &Value) -> Result<(), DocumentError> {
 ///    multi-aba vira uma **lista** de specs (Etapa 4 decide o
 ///    formato de batch).
 /// 7. `language` deve estar em minúsculas (BCP-47 recomenda).
+/// 8. `style == Sobrio` rejeita `metadata.watermark.is_some()` (Etapa
+///    5, ADR-0021 §D-PDF2). Modo Sóbrio é para registráveis (ata,
+///    contrato, alteração contratual); tarja visual atravessando
+///    instrumento da Junta Comercial é erro. O validador rejeita a
+///    combinação em vez de obedecer silenciosamente.
 pub fn validate_semantic(spec: &DocumentSpec) -> Result<(), DocumentError> {
     // (1) blocks não vazio
     if spec.blocks.is_empty() {
@@ -150,6 +155,18 @@ pub fn validate_semantic(spec: &DocumentSpec) -> Result<(), DocumentError> {
                 "language {:?} deve estar em minúsculas (BCP-47)",
                 spec.language
             ),
+        });
+    }
+
+    // (8) Sobrio + marca d'água rejeitados (Etapa 5, ADR-0021
+    // §D-PDF2). O validador do spec rejeita a combinação, em vez
+    // de obedecer silenciosamente. Modo Sóbrio é para registráveis
+    // (ata, contrato, alteração contratual); tarja visual
+    // atravessando instrumento da Junta Comercial é erro.
+    if spec.style == crate::spec::DocumentStyle::Sobrio && spec.metadata.watermark.is_some() {
+        return Err(DocumentError::Semantic {
+            path: "/metadata/watermark".to_string(),
+            message: "marca d'água visual (watermark) não pode ser usada com DocumentStyle::Sobrio; modo Sóbrio é para registráveis (Junta Comercial) e tarja visual é inadequada".to_string(),
         });
     }
 
@@ -244,5 +261,165 @@ fn block_kind(block: &DocumentBlock) -> &'static str {
         DocumentBlock::Footer { .. } => "footer",
         DocumentBlock::Signatures { .. } => "signatures",
         DocumentBlock::BackCover { .. } => "back_cover",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blocks::{CalloutKind, Cover, KpiCard};
+    use crate::spec::{
+        DocumentMetadata, DocumentStyle, DocumentType, SpecVersion, WatermarkPosition,
+        WatermarkSpec,
+    };
+
+    /// Helper: spec mínimo válido, com `style` e watermark
+    /// customizáveis. Blocks não vazios (regra 1) e
+    /// `spec_version` MAJOR.MINOR.PATCH (regra 2) garantidos.
+    fn spec_with(style: DocumentStyle, watermark: Option<WatermarkSpec>) -> DocumentSpec {
+        DocumentSpec {
+            spec_version: SpecVersion("0.2.0".to_string()),
+            doc_type: DocumentType::Report,
+            style,
+            language: "pt-br".to_string(),
+            blocks: vec![DocumentBlock::Cover(Cover {
+                title: "Teste".to_string(),
+                subtitle: None,
+                author: None,
+                date: None,
+            })],
+            metadata: DocumentMetadata {
+                title: None,
+                author: None,
+                organization: None,
+                keywords: None,
+                description: None,
+                watermark,
+            },
+            confidentiality: None,
+        }
+    }
+
+    /// Regra 8: `style == Sobrio` rejeita `watermark.is_some()`.
+    /// Etapa 5 (ADR-0021 §D-PDF2): modo Sóbrio é para
+    /// registráveis; tarja visual atravessando instrumento da
+    /// Junta é erro. O validador rejeita em vez de obedecer
+    /// silenciosamente.
+    #[test]
+    fn sobrio_rejects_watermark() {
+        let spec = spec_with(
+            DocumentStyle::Sobrio,
+            Some(WatermarkSpec {
+                text: "CONFIDENCIAL".to_string(),
+                position: WatermarkPosition::Diagonal,
+                opacity: None,
+                font_size: None,
+            }),
+        );
+        let err = validate_semantic(&spec).unwrap_err();
+        match err {
+            DocumentError::Semantic { path, message } => {
+                assert_eq!(path, "/metadata/watermark");
+                assert!(
+                    message.contains("Sobrio"),
+                    "mensagem deve mencionar Sóbrio: {message}"
+                );
+            }
+            other => panic!("esperava Semantic, recebi {other:?}"),
+        }
+    }
+
+    /// Tinta & Latão + watermark é aceito (regra 8 não
+    /// dispara). Caso de uso: relatório interno com tarja
+    /// CONFIDENCIAL diagonal.
+    #[test]
+    fn tinta_e_latao_accepts_watermark() {
+        let spec = spec_with(
+            DocumentStyle::TintaELatao,
+            Some(WatermarkSpec {
+                text: "USO INTERNO".to_string(),
+                position: WatermarkPosition::Center,
+                opacity: Some(0.10),
+                font_size: Some(72.0),
+            }),
+        );
+        assert!(validate_semantic(&spec).is_ok());
+    }
+
+    /// Default (sem watermark, qualquer estilo) é aceito. O
+    /// default de `metadata.watermark` é `None` — o caso
+    /// comum, sem opt-in.
+    #[test]
+    fn no_watermark_is_accepted_for_every_style() {
+        for style in [DocumentStyle::TintaELatao, DocumentStyle::Sobrio] {
+            let spec = spec_with(style, None);
+            assert!(
+                validate_semantic(&spec).is_ok(),
+                "style {style:?} sem watermark deve aceitar"
+            );
+        }
+    }
+
+    /// Bump de `SpecVersion` 0.1.0 → 0.2.0 continua validando
+    /// o formato MAJOR.MINOR.PATCH (regra 2). Defesa contra
+    /// alguém voltar o default sem perceber.
+    #[test]
+    fn spec_version_0_2_0_passes_format_check() {
+        let spec = spec_with(DocumentStyle::TintaELatao, None);
+        // O spec construído pelo helper já tem "0.2.0".
+        assert_eq!(spec.spec_version.0, "0.2.0");
+        assert!(validate_semantic(&spec).is_ok());
+    }
+
+    /// Smoke: `Cover` é um bloco válido (não dispara regra 6
+    /// `Spreadsheet`). Garante que a regra 8 foi adicionada
+    /// sem quebrar regras pré-existentes.
+    #[test]
+    fn cover_block_accepted_in_report_style() {
+        let spec = spec_with(DocumentStyle::TintaELatao, None);
+        assert!(validate_semantic(&spec).is_ok());
+    }
+
+    /// Smoke: `Kpis` com 3 cartões é aceito (regra 3, 2 ≤ n ≤
+    /// 4). Cobertura mínima pra garantir que o helper não
+    /// distorceu o teste.
+    #[test]
+    fn kpis_three_cards_accepted() {
+        let mut spec = spec_with(DocumentStyle::TintaELatao, None);
+        spec.blocks = vec![DocumentBlock::Kpis {
+            items: vec![
+                KpiCard {
+                    label: "Receita".to_string(),
+                    value: "R$ 100k".to_string(),
+                    delta: None,
+                    delta_label: None,
+                },
+                KpiCard {
+                    label: "Margem".to_string(),
+                    value: "30%".to_string(),
+                    delta: None,
+                    delta_label: None,
+                },
+                KpiCard {
+                    label: "Clientes".to_string(),
+                    value: "150".to_string(),
+                    delta: None,
+                    delta_label: None,
+                },
+            ],
+        }];
+        assert!(validate_semantic(&spec).is_ok());
+    }
+
+    /// Smoke de não-regressão: `Callout` continua aceito em
+    /// `style = TintaELatao` sem watermark.
+    #[test]
+    fn callout_block_accepted_in_tinta_e_latao() {
+        let mut spec = spec_with(DocumentStyle::TintaELatao, None);
+        spec.blocks = vec![DocumentBlock::Callout {
+            kind: CalloutKind::Info,
+            text: "Tudo ok".to_string(),
+        }];
+        assert!(validate_semantic(&spec).is_ok());
     }
 }
