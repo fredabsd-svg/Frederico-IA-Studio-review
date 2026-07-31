@@ -189,8 +189,18 @@ impl WorkerToolDispatcher {
 ///   (worker) confere a existência depois — não somos
 ///   gate de existência, somos gate de **diretório
 ///   permitido**.
+/// - **Divergência 8.3 vs long no Windows (Etapa 3
+///   hotfix):** quando o path **não pode** ser canonicalizado,
+///   o `allowed` **também não é canonicalizado**. Senão o
+///   `canonicalize()` do `allowed` resolve nomes no formato
+///   curto 8.3 (`RUNNER~1`) pro formato longo (`runneradmin`)
+///   enquanto o path fica em formato curto, e o `starts_with`
+///   falha mesmo o path estando dentro do dir. Bug apareceu
+///   no CI do PR #13 (TEMP = `C:\Users\RUNNER~1\...`); local
+///   passava porque o username `conta` não tem short name 8.3.
 /// - Path traversal via `..` é coberto pelo
-///   `canonicalize` (resolve `..` no nível do FS).
+///   `canonicalize` (resolve `..` no nível do FS) ou pelo
+///   `normalize_lexically` (colapsa `..` textual).
 ///
 /// ## Verbatim prefix no Windows
 ///
@@ -206,13 +216,36 @@ pub fn validate_against_allowlist(
     if allowed.is_empty() {
         return Ok(());
     }
-    let canonical = safe_resolve(path_str);
+
+    // Decide ANTES se vamos canonicalizar o `allowed`: só
+    // canonicalizamos se o path_str TAMBÉM puder ser
+    // canonicalizado. Isso garante que os dois lados da
+    // comparação fiquem na mesma forma (long ou "como
+    // está") e evita a divergência 8.3 vs long no Windows
+    // (CI do PR #13 — `RUNNER~1` vs `runneradmin`).
+    let path_canonical = Path::new(path_str).canonicalize().ok();
+    let use_canonical = path_canonical.is_some();
+    let canonical = path_canonical.map_or_else(
+        || normalize_lexically(Path::new(path_str)),
+        |c| strip_windows_verbatim(&c),
+    );
 
     for allowed_path in allowed {
-        let allowed_canonical_raw = allowed_path
-            .canonicalize()
-            .unwrap_or_else(|_| allowed_path.clone());
-        let allowed_canonical = strip_windows_verbatim(&allowed_canonical_raw);
+        let allowed_canonical = if use_canonical {
+            // Path existe: canonicalizar o allowed (formato
+            // long). Se o allowed não puder canonicalizar
+            // (caso degenerado), cai pro "como está" —
+            // `strip_windows_verbatim` apenas.
+            allowed_path
+                .canonicalize()
+                .map(|c| strip_windows_verbatim(&c))
+                .unwrap_or_else(|_| strip_windows_verbatim(allowed_path))
+        } else {
+            // Path NÃO existe: NÃO canonicalizar o allowed
+            // — senão divergência de formato (Windows
+            // 8.3 vs long). Compara lexicalmente.
+            strip_windows_verbatim(allowed_path)
+        };
         if canonical.starts_with(&allowed_canonical) {
             return Ok(());
         }
@@ -278,20 +311,6 @@ fn normalize_lexically(p: &Path) -> PathBuf {
     } else {
         out.iter().collect()
     }
-}
-
-/// Resolve o path pedido em forma "segura pra comparar":
-/// canonicaliza se o FS resolver; se não, cai pro
-/// `normalize_lexically` (que cobre `..` textual). Em ambos
-/// os casos, strippa o verbatim prefix do Windows.
-fn safe_resolve(path_str: &str) -> PathBuf {
-    let p = Path::new(path_str);
-    let canonical = p.canonicalize().unwrap_or_else(|_| {
-        // canonicalize falhou — provavelmente o path não
-        // existe. Normaliza lexicalmente.
-        normalize_lexically(p)
-    });
-    strip_windows_verbatim(&canonical)
 }
 
 #[cfg(test)]
@@ -391,10 +410,45 @@ mod tests {
         // Path que não existe: canonicalize falha, caímos no
         // fallback `path como está`. Se o path literal está
         // dentro da allowlist (string-level starts_with), passa.
+        //
+        // **Caso 8.3 vs long (Windows):** este teste pegou o
+        // bug do PR #13 — no CI, `TEMP = C:\Users\RUNNER~1\...`
+        // e o `canonicalize(dir)` resolve `RUNNER~1` para
+        // `runneradmin` (formato long) enquanto o `path` não
+        // existe e cai no `normalize_lexically` (formato
+        // curto). `starts_with` falhava. Fix: quando path não
+        // pode canonicalizar, allowed também não canonicaliza.
+        // Local passava antes do fix porque o username
+        // `conta` não tem short name 8.3.
         let dir = tempdir();
         let not_yet_created = dir.join("will_be_created.docx");
         let allowed = vec![dir.clone()];
         validate_against_allowlist(not_yet_created.to_str().unwrap(), &allowed).unwrap();
+    }
+
+    #[test]
+    fn path_nonexistent_inside_deep_subdir_passes() {
+        // Variante do teste anterior: path com 2 níveis de
+        // subdir inexistente. Confirma que `normalize_lexically`
+        // preserva os componentes e o `starts_with` continua
+        // batendo.
+        let dir = tempdir();
+        let deep = dir.join("a").join("b").join("file.docx");
+        let allowed = vec![dir.clone()];
+        validate_against_allowlist(deep.to_str().unwrap(), &allowed).unwrap();
+    }
+
+    #[test]
+    fn path_nonexistent_outside_with_short_form_allowed_fails() {
+        // Path não existente FORA do allowed (que está em
+        // formato "como está" porque path não pode
+        // canonicalizar). Deve falhar consistentemente.
+        let dir = tempdir();
+        let outside = std::env::temp_dir().join("frederico_outside_workspace.docx");
+        let allowed = vec![dir.clone()];
+        let err = validate_against_allowlist(outside.to_str().unwrap(), &allowed)
+            .expect_err("deveria falhar");
+        assert!(matches!(err, DispatchError::PathNotAllowed { .. }));
     }
 
     #[test]
