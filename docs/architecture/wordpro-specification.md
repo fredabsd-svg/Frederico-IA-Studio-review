@@ -58,7 +58,45 @@ Relatório executivo, parecer técnico, relatório contábil, relatório fiscal,
 
 ## Decisões
 
-Nenhuma nova. Decisões serão tomadas quando o spec for aprofundado.
+- D-WP1 (Etapa 3): **fallback textual para blocos sem cobertura
+  direta no `docx.write` v0.3.0** — Table vira texto tab-separado
+  no parágrafo, Image vira caption (sem embed de binário), Chart
+  vira placeholder textual. Caller que precisa da versão rica
+  usa o `xlsx.write` (Table real) ou o `pdf.write` (imagem real).
+  Extensão do `python-docx` para Table real fica para a Etapa 6
+  (junto com identidade visual Word).
+
+- D-WP2 (Etapa 4): **quebra de contrato do `docx.read` para
+  carregar `style`** — `paragraphs` mudou de `[str]` para
+  `[{text, style}]` (Etapa 4 da Fase 5, ADR-0020 §7). O
+  `docs.inspect` usa o style real do `python-docx` pra
+  reconstruir heading (antes era heurística de string match em
+  "Heading 1 " que falhava 100% das vezes — `python-docx` não
+  prefixa o style no texto). Caller que dependia de `[str]`
+  precisa migrar: extrair `paragraphs[i].text` ao invés de
+  `paragraphs[i]` direto. **CHANGELOG registra como breaking
+  change visível** (afeta 1 teste de integração no
+  `process-architecture` que foi atualizado no mesmo commit).
+
+## Limitações registradas (v0.1)
+
+1. **Tabela vira texto tab-separado** no `.docx` (limitação do
+   `docx.write` v0.3.0). O `docs.inspect` .docx não tem como
+   distinguir tabela real de texto tab-separado — `coverage.preserved`
+   não inclui `table` quando o spec original tinha Table, e a
+   table não vai pra `coverage.lost` (o inspect sabe ler tabela
+   real; é o gerador que não escreve). Extensão fica pra Etapa 6.
+
+2. **Imagem vira caption** (sem embed de binário no `docx.write`
+   v0.3.0).
+
+3. **Chart vira placeholder textual** (sem chart visual).
+
+4. **Sem identidade visual "Tinta & Latão"** no `.docx` (handler
+   primitivo, v0.1 deliberadamente "feia" em tipografia — Etapa 6
+   traz o estilo via `python-docx` estendido).
+
+5. **Sem modo Sóbrio** para registráveis (§16.6) — Etapa 6.
 
 ## Referências
 
@@ -66,3 +104,4 @@ Nenhuma nova. Decisões serão tomadas quando o spec for aprofundado.
 - [`document-engine-architecture.md`](./document-engine-architecture.md)
 - [`pdfpro-specification.md`](./pdfpro-specification.md) (fidelidade Word → PDF)
 - `docs/development-roadmap.md` (Fase 5)
+- [ADR-0020](../decisions/0020-fase-5-etapa-4-excelpro-inspect.md) — D-WP2 (quebra de contrato do `docx.read`).

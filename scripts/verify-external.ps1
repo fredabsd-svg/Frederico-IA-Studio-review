@@ -84,5 +84,32 @@ Invoke-Step "E2E docs.generate full vertical" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
+# Step 4 - Teste E2E do `docs.generate` para `.xlsx` (Etapa 4
+# da Fase 5). Valida o full vertical do ExcelPro: DocumentSpec
+# (Spreadsheet com Kpis + Table + Table + Chart) → kit →
+# dispatcher → worker → .xlsx → reopen via openpyxl → Painel
+# 1ª aba + 3 sheets + has_total + has_brl_format +
+# has_pct_format + charts_sheet_count=0. Inclui também
+# validação do `sheets: [{block_index, sheet_name}]` no
+# output do `generate` e `warnings` com chart.
+Invoke-Step "E2E docs.generate xlsx" {
+    cargo test -p frederico-document-kits --test e2e_docs_generate_xlsx
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
+# Step 5 - Teste E2E do `docs.inspect` (Etapa 4 da Fase 5).
+# Valida o round-trip: spec com Cover + 2 Headings + Paragraph
+# + Table → generate .docx → inspect no mesmo arquivo →
+# `coverage.preserved` tem heading+paragraph (NÃO table — é
+# limitação do WordPro v0.1), `coverage.lost` inclui cover
+# (NÃO table — inspect sabe ler tabela real), 2 headings
+# preservados com os textos certos, 0 tables e 0 covers
+# em `spec.blocks`. Round-trip pela mesma porta que o
+# modelo usa (não pelo handler direto).
+Invoke-Step "E2E docs.inspect" {
+    cargo test -p frederico-document-kits --test e2e_docs_inspect
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
 Write-Host ""
-Write-Host "E2E document-worker handlers + docs.generate - TODOS OS TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
