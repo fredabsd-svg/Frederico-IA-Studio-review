@@ -163,6 +163,17 @@ fn tesseract_exe() -> PathBuf {
         .join("tesseract.exe")
 }
 
+/// True se o tesseract.exe do runtime existe (>= 100 KB).
+/// Usado pelos testes adaptativos que precisam saber se o
+/// worker pode fazer OCR **neste ambiente** (CI gate + CI
+/// noturno instalam Tesseract via bootstrap; dev local
+/// pode estar sem). Mesma condicao que o worker Python
+/// checa em `_tesseract_executable_present()`.
+fn is_tesseract_available() -> bool {
+    let tess = tesseract_exe();
+    tess.is_file() && tess.metadata().map(|m| m.len() > 100_000).unwrap_or(false)
+}
+
 fn tesseract_or_panic() -> PathBuf {
     let tess = tesseract_exe();
     if !tess.is_file() {
@@ -457,7 +468,16 @@ async fn e2e_pdf_write_and_read() {
             .await
             .expect("invoke pdf.read");
         assert_eq!(read_result["ok"], json!(true));
-        assert_eq!(read_result["ocr_available"], json!(false));
+        // `ocr_available` e flag do WORKER (Tesseract + pytesseract
+        // presentes no runtime), nao deste PDF especifico. Adaptativo:
+        // CI gate + noturno instalam Tesseract via bootstrap; dev local
+        // pode estar sem.
+        let expected_ocr_available = is_tesseract_available();
+        assert_eq!(
+            read_result["ocr_available"],
+            json!(expected_ocr_available),
+            "ocr_available deve refletir o estado do runtime Tesseract"
+        );
         let page_count = read_result["page_count"].as_u64().unwrap();
         assert!(page_count >= 1);
         let text = read_result["text"].as_str().unwrap_or("");
@@ -546,7 +566,15 @@ async fn e2e_pdf_read_reports_ocr_unavailable() {
             .await
             .expect("invoke pdf.read");
         assert_eq!(read_result["ok"], json!(true));
-        assert_eq!(read_result["ocr_available"], json!(false));
+        // `ocr_available` reflete o estado do runtime, nao deste
+        // PDF. Adaptativo: em CI com Tesseract instalado, deve ser
+        // `true`; em dev local sem Tesseract, deve ser `false`.
+        let expected_ocr_available = is_tesseract_available();
+        assert_eq!(
+            read_result["ocr_available"],
+            json!(expected_ocr_available),
+            "ocr_available deve refletir o estado do runtime Tesseract"
+        );
         assert!(read_result["page_count"].as_u64().unwrap() >= 1);
         assert!(read_result["scanned_pages"].is_array());
         // O PDF nao e escaneado - `scanned_pages` deve ser vazio.
@@ -730,8 +758,12 @@ async fn e2e_ocr_run_with_invalid_lang() {
     .expect("e2e_ocr_run_with_invalid_lang nao deve travar");
 }
 
-/// `ocr.run` com Tesseract indisponivel: retorna `code: "ocr_not_available"`
-/// sem crash. **NAO** requer Tesseract (testa o caminho de erro).
+/// `ocr.run` adaptativo: se Tesseract esta disponivel no runtime
+/// (CI gate + CI noturno instalam via bootstrap), faz OCR de verdade
+/// e espera `ok: true` com texto. Se Tesseract NAO esta disponivel
+/// (dev local sem Admin), espera `ok: false, code: ocr_not_available`
+/// — handler captura o `_tesseract_executable_present() == false` e
+/// devolve erro estruturado. **NAO** `#[ignore]` - REGRAS §2.6.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_ocr_run_without_tesseract() {
     with_test_timeout_at("e2e_ocr_run_without_tesseract", E2E_TIMEOUT, async {
@@ -753,15 +785,35 @@ async fn e2e_ocr_run_without_tesseract() {
             }))
             .await
             .expect("invoke deve retornar response");
-        assert_eq!(result["ok"], json!(false));
-        // Pode ser `ocr_not_available` (Tesseract nao instalado) ou
-        // pytesseract nao instalado - ambos sao o mesmo code
-        // (handler trata de forma identica).
-        let code = result["code"].as_str().unwrap_or("");
-        assert!(
-            code == "ocr_not_available",
-            "code esperado ocr_not_available, veio {code}: {result}"
-        );
+
+        if is_tesseract_available() {
+            // CI: Tesseract foi instalado pelo bootstrap. OCR deve
+            // rodar de verdade. `qualquer texto` e o que geramos via
+            // Pillow no PNG; OCR pode falhar em reconhecer 100% (fonte
+            // default), mas a chamada tem que retornar `ok: true` com
+            // algum texto (vazio e aceitavel - o que NAO pode e erro
+            // estruturado).
+            assert_eq!(
+                result["ok"],
+                json!(true),
+                "com Tesseract disponivel, ocr.run deve retornar ok:true: {result}"
+            );
+            // `text` deve ser string (pode ser vazia se OCR nao
+            // reconheceu nada, mas nao pode estar ausente).
+            assert!(
+                result["text"].is_string(),
+                "campo text deve ser string: {result}"
+            );
+        } else {
+            // Dev local: Tesseract nao instalado. Handler devolve
+            // erro estruturado.
+            assert_eq!(result["ok"], json!(false));
+            let code = result["code"].as_str().unwrap_or("");
+            assert!(
+                code == "ocr_not_available",
+                "code esperado ocr_not_available, veio {code}: {result}"
+            );
+        }
 
         manager.shutdown().await.expect("shutdown");
     })
