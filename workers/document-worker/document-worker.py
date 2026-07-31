@@ -715,11 +715,54 @@ def handle_docx_read(payload: dict) -> dict:
 # ---- xlsx.write -----------------------------------------------------------
 
 
+# Mapeamento de aliases semanticos (`"BRL"`, `"PCT"`, `"THOUSANDS"`)
+# pra Excel format strings. O kit manda o alias (mais
+# legivel que o format string cru do Excel) e o handler
+# resolve. Aliases nao reconhecidos sao tratados como
+# format string cru (passa direto pro openpyxl).
+# Adicionar constante aqui quando um novo alias for
+# necessario.
+XLSX_FORMAT_ALIASES = {
+    # Moeda brasileira (R$ 1.234,56)
+    "BRL": 'R$ #,##0.00',
+    # Percentual com 2 casas (12,34%)
+    "PCT": '0.00%',
+    # Separador de milhar com 2 casas (1.234,56)
+    "THOUSANDS": '#,##0.00',
+    # Inteiro com separador de milhar (1.234)
+    "INT": '#,##0',
+}
+
+
+def _resolve_xlsx_format(value):
+    """Resolve um alias de formato (ou retorna o valor cru
+    se nao for alias). Aceita string; se nao for string,
+    retorna None (sem formato aplicado — defensivo).
+    """
+    if not isinstance(value, str):
+        return None
+    return XLSX_FORMAT_ALIASES.get(value, value)
+
+
 def handle_xlsx_write(payload: dict) -> dict:
     """xlsx.write: escreve um arquivo .xlsx com 1+ sheets.
 
-    Input: `{"path": str, "sheets": [{"name": str, "headers": [str], "rows": [[]]}]}`
-    Output: `{"ok": true, "path": str, "size_bytes": int, "sheets_written": int, "total_rows": int}`
+    Input: `{"path": str, "sheets": [{"name": str, "headers": [str], "rows": [[]], "column_formats": {<col_idx>: <format>}?}]}`
+
+    `column_formats` (opcional, Etapa 4 da Fase 5): mapa
+    `{col_idx: format_alias_or_string}`. Aplica
+    `cell.number_format` em todas as celulas da coluna
+    (exceto o header). Aceita aliases semanticos (`"BRL"`,
+    `"PCT"`, `"THOUSANDS"`, `"INT"`) ou Excel format
+    strings crus. Backward-compat: sheets sem
+    `column_formats` continuam funcionando (Etapa 3 da
+    Fase 5 e anteriores).
+
+    Output: `{"ok": true, "path": str, "size_bytes": int, "sheets_written": int, "total_rows": int, "cells_formatted": int}`
+
+    `cells_formatted` conta quantas celulas receberam
+    `cell.number_format` (zero em sheets sem
+    `column_formats`).
     """
     path = validate_path(_payload_field(payload, "path", str), "write")
     sheets = _payload_field(payload, "sheets", list)
@@ -729,6 +772,7 @@ def handle_xlsx_write(payload: dict) -> dict:
     wb.remove(default)
     total_rows = 0
     sheets_written = 0
+    cells_formatted = 0
     for sh in sheets:
         if not isinstance(sh, dict):
             raise ValueError("sheet precisa ser um dict")
@@ -739,11 +783,33 @@ def handle_xlsx_write(payload: dict) -> dict:
         rows = sh.get("rows", [])
         if not isinstance(headers, list) or not isinstance(rows, list):
             raise ValueError("'headers' e 'rows' precisam ser listas")
+        column_formats = sh.get("column_formats")
+        if column_formats is not None and not isinstance(column_formats, dict):
+            raise ValueError("'column_formats' precisa ser um dict {col_idx: format}")
         ws = wb.create_sheet(title=name)
         if headers:
             ws.append(headers)
         for row in rows:
             ws.append(row)
+        # Aplica `column_formats` em todas as celulas
+        # de dados (rows, nao header). Itera por coluna
+        # pra evitar recriar o dicionario em cada celula.
+        # Roda DEPOIS do `ws.append` pra que `cell.value`
+        # e `cell.row` correspondam ao que o usuario
+        # mandou.
+        if column_formats:
+            for col_idx, fmt_value in column_formats.items():
+                excel_fmt = _resolve_xlsx_format(fmt_value)
+                if excel_fmt is None:
+                    continue
+                col = int(col_idx) + 1  # openpyxl e 1-indexed
+                # header (linha 1, se houver) NAO recebe
+                # format. Data rows comecam na linha 2.
+                for row_offset in range(2, 2 + len(rows)):
+                    cell = ws.cell(row=row_offset, column=col)
+                    if cell.value is not None:
+                        cell.number_format = excel_fmt
+                        cells_formatted += 1
         total_rows += len(rows)
         sheets_written += 1
     wb.save(str(path))
@@ -753,6 +819,7 @@ def handle_xlsx_write(payload: dict) -> dict:
         "size_bytes": path.stat().st_size,
         "sheets_written": sheets_written,
         "total_rows": total_rows,
+        "cells_formatted": cells_formatted,
     }
 
 
