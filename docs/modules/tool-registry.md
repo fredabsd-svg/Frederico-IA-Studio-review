@@ -1,13 +1,15 @@
 <!--
-Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-27
-Fase correspondente: 3 (Etapas 2 e 3)
+Estado: implementado
+Verificado contra o código em: 2026-07-31
+Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3)
 -->
 
 # `frederico-tool-registry`
 
 Tool Registry, manifesto de ferramentas, validação 10-passos, jail,
-`files.read` in-process e `PermissionSet` (Fase 3, Etapas 2 e 3).
+`files.read` in-process, `PermissionSet`, `WorkerToolDispatcher` com
+allowlist forte, e o trait `Tool` com `execute` `async`
+(Fase 3 Etapas 2/3 + Fase 5 Etapa 3).
 
 ## 1. O que este módulo faz
 
@@ -44,6 +46,32 @@ interseção com o Passo 5 do `validate_tool_call`.
 - A `FilesReadTool` — a única ferramenta do catálogo inicial. Lê
   arquivo do workspace, com paginação via `max_bytes` (default
   1 MB, máximo 50 MB) e jail aplicado.
+
+**Etapa 3 da Fase 5 (worker-backed tools):**
+
+- `ToolManifest::allowed_paths: Vec<PathBuf>` — allowlist de
+  diretórios para ferramentas worker-backed. Default vazio
+  (sem restrição além da do worker). Builder:
+  `.allowed_path(p)` / `.allowed_paths(vec)`.
+- `WorkerToolDispatcher` (`worker_dispatch.rs`) — ponte
+  `Tool::execute` → `WorkerHandle::invoke` com **path safety
+  forte**. Valida `args[path_field]` contra `allowed_paths`
+  (canonicaliza + `starts_with`, com normalização lexical
+  de `..` no Windows e strip do prefixo verbatim) antes do
+  `invoke`. Função pura `validate_against_allowlist` é
+  testável sem `WorkerHandle`.
+- `DispatchError` — `PathNotAllowed`, `NotAString`, `Process`
+  (re-exportado). Estruturado pra caller mapear em
+  `ToolResult::err`.
+- **`Tool::execute` virou `async fn`** via `async_trait`. O
+  `RunExecutor` (Etapa 4 da Fase 3) já é async; ferramentas
+  worker-backed como `docs.generate` chamam
+  `WorkerHandle::invoke` direto, sem ponte sync→async.
+  `FilesReadTool::execute` ganhou `async` (file I/O
+  continua sync, wrap em `async fn`). Elimina a classe
+  "block_in_place + flavor multi_thread" — a única
+  armadilha que restava no caminho entre `Tool::execute`
+  e `WorkerHandle::invoke`.
 
 **Etapa 3 (permissões):**
 
