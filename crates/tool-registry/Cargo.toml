@@ -12,6 +12,9 @@ unsafe_code = "forbid"
 [dependencies]
 frederico-core = { workspace = true }
 frederico-agent-engine = { workspace = true }
+frederico-process-architecture = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -1,11 +1,31 @@
 //! Trait `Tool` e o tipo de retorno [`ToolResult`].
 //!
-//! Cada ferramenta concreta (Etapa 2: `files.read`; Etapas
-//! seguintes: `files.write`, `files.list`, `docs.inspect`, ...)
-/// implementa `Tool`. O executor da Etapa 4 consome o resultado e
-/// traduz em `message_events` / transições da máquina de estados.
+//! Cada ferramenta concreta (Etapa 2: `files.read`; Etapa 3 da
+//! Fase 3: `docs.generate`; Etapas seguintes: `files.write`,
+//! `files.list`, `docs.inspect`, ...) implementa `Tool`. O
+//! executor da Etapa 4 consome o resultado e traduz em
+//! `message_events` / transições da máquina de estados.
+//!
+//! ## `Tool::execute` é `async`
+//!
+//! A partir da Etapa 3 da Fase 5, `Tool::execute` é `async fn`.
+//! A decisão foi tomada para eliminar a ponte sync→async que a
+//! Etapa 3 da Fase 5 teria que construir entre o `Tool::execute`
+//! síncrono e o `WorkerHandle::invoke` assíncrono. O `RunExecutor`
+//! (Etapa 4 da Fase 3) já é async — a ponte só serviria para a
+//! ferramenta do kit de documentos, e ferramentas in-process
+//! como `files.read` não ganham nem perdem com a mudança (file
+//! I/O continua síncrono dentro do `async fn`). O `async_trait`
+//! mantém `Arc<dyn Tool>` dyn-compatible.
+//!
+//! Testes que chamam `tool.execute(...)` direto precisam ser
+//! `#[tokio::test]` (default `current_thread` runtime é
+//! suficiente — só o worker-backed tools precisam de
+//! `flavor = "multi_thread"`, e isso é documentado em
+//! `worker_dispatch.rs`).
 use std::path::PathBuf;
 
+use async_trait::async_trait;
 use frederico_core::ToolId;
 use serde::{Deserialize, Serialize};
 
@@ -55,10 +75,19 @@ impl ToolResult {
     }
 }
 
-/// Trait comum a todas as ferramentas. Etapa 4 vai
-/// estender isso com `validate_paths`, `prepare_approval_request`,
-/// etc. A Etapa 2 define o mínimo necessário para `files.read`
-/// funcionar.
+/// Trait comum a todas as ferramentas.
+///
+/// **`async fn execute`** (Etapa 3 da Fase 5): o `RunExecutor`
+/// (Etapa 4 da Fase 3) é async; tornar `Tool::execute` async
+/// elimina a ponte sync→async para ferramentas worker-backed
+/// (como `docs.generate` da Etapa 3 da Fase 5) sem custo para
+/// ferramentas in-process (file I/O do `files.read` continua
+/// síncrono dentro do `async fn`).
+///
+/// Etapas seguintes podem estender o trait com `validate_paths`,
+/// `prepare_approval_request`, etc. A Etapa 2 da Fase 3
+/// definiu o mínimo necessário para `files.read` funcionar.
+#[async_trait]
 pub trait Tool: Send + Sync {
     /// Manifesto da ferramenta. O `ToolRegistry` usa isso pra
     /// descobrir o que a ferramenta é, sem precisar instanciá-la.
@@ -67,7 +96,12 @@ pub trait Tool: Send + Sync {
     /// Executa a ferramenta. Os argumentos **já foram validados**
     /// pelo `validate_tool_call` (schema, jail, permissões). O
     /// executor só chama isso se a validação passou.
-    fn execute(&self, arguments: &serde_json::Value) -> ToolResult;
+    ///
+    /// `async` para que ferramentas worker-backed (Etapa 3 da
+    /// Fase 5+) possam chamar `WorkerHandle::invoke` direto,
+    /// sem ponte sync→async. `Arc<dyn Tool>` continua
+    /// funcionando (`async_trait` mantém a trait dyn-compatible).
+    async fn execute(&self, arguments: &serde_json::Value) -> ToolResult;
 }
 
 pub mod files_read;

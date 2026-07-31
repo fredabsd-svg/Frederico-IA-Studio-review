@@ -5,6 +5,7 @@
 //! **contrato** entre o registro, o validador, o executor e o modelo.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use frederico_core::ToolId;
@@ -233,6 +234,28 @@ pub struct ToolManifest {
     /// `None` = executa no app principal; `Some(worker_id)` =
     /// executa em sidecar. Etapa 2 não usa; Etapa 5+ popula.
     pub worker_id: Option<String>,
+    /// Allowlist de diretórios nos quais a ferramenta pode
+    /// ler/escrever (Etapa 3 da Fase 5).
+    ///
+    /// Ferramentas in-process (`files.read`, `files.write` etc.)
+    /// continuam validadas pelo `Jail` do workspace — mais
+    /// estrito. **Ferramentas worker-backed** (a partir do
+    /// `docs.generate` da Etapa 3) validam contra esta allowlist
+    /// no `WorkerToolDispatcher` antes de chamar
+    /// `WorkerHandle::invoke` (defesa em profundidade: o
+    /// `validate_path` do Python worker é a barreira mínima; esta
+    /// é a barreira forte — o worker é **externo** ao
+    /// `frederico-tool-registry` e não pode ser confiado pra
+    /// revalidar).
+    ///
+    /// Default: vazio = sem restrição explícita além da do
+    /// worker. Ferramentas que aceitam `path` arbitrário do
+    /// chamador **devem** popular este campo no manifesto.
+    /// Validação: cada path é canonicalizado em runtime (com
+    /// `canonicalize`) e comparado por `starts_with`; caminhos
+    /// que não existam são rejeitados (não vale a pena adiar
+    /// a checagem para "se o arquivo não existe, deixa").
+    pub allowed_paths: Vec<PathBuf>,
 }
 
 impl ToolManifest {
@@ -284,6 +307,7 @@ impl ToolManifestBuilder {
                 availability: Availability::Available,
                 health_message: None,
                 worker_id: None,
+                allowed_paths: Vec::new(),
             },
         }
     }
@@ -387,6 +411,26 @@ impl ToolManifestBuilder {
     #[must_use]
     pub fn disabled(mut self) -> Self {
         self.manifest.availability = Availability::Disabled;
+        self
+    }
+
+    /// Adiciona um diretório à allowlist de paths da ferramenta
+    /// (Etapa 3 da Fase 5). Validação: o path é canonicalizado
+    /// em runtime pelo `WorkerToolDispatcher` antes do invoke;
+    /// `starts_with` é o teste. Vazio = sem restrição além da
+    /// do worker. Use para ferramentas worker-backed que
+    /// recebem `path` do chamador (e.g. `docs.generate`).
+    #[must_use]
+    pub fn allowed_path(mut self, p: impl Into<PathBuf>) -> Self {
+        self.manifest.allowed_paths.push(p.into());
+        self
+    }
+
+    /// Substitui a allowlist de paths inteira. Útil para
+    /// carregar a config persistida.
+    #[must_use]
+    pub fn allowed_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.manifest.allowed_paths = paths;
         self
     }
 
