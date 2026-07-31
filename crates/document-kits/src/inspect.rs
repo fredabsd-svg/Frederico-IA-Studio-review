@@ -253,60 +253,54 @@ impl DocsInspectTool {
 
     /// Reconstrói um `DocumentSpec` parcial a partir
     /// do output do `docx.read`.
+    ///
+    /// **Etapa 4:** o `docx.read` agora devolve paragraphs
+    /// COM style (campo `style` no dict de cada
+    /// parágrafo). O inspect usa o style real pra
+    /// reconstruir headings — antes era heurística de
+    /// string match (que falhava 100% das vezes, porque
+    /// o `python-docx` nao prefixa "Heading 1 " no
+    /// texto). v0.1 do inspect reconstroi
+    /// heading/paragraph/table; resto vai pra
+    /// `coverage.lost`.
     fn build_docx_spec(
-        paragraphs: &[String],
+        paragraphs: &[(String, String)],
         tables: &[Vec<Vec<String>>],
     ) -> (DocumentSpec, Coverage) {
         let mut coverage = Coverage::default();
         let mut blocks = Vec::new();
-        // Walk pelos paragrafos. Headings (style.name
-        // `Heading 1/2/3` no python-docx) viram
-        // `Heading { level, text, number: None }`.
-        // O `docx.read` v0.3.0 nao expoe o style
-        // (devolve so `paragraphs: [str]`), entao a
-        // heuristica e: paragrafos que COMECAM
-        // com a keyword "Heading N" sao tratados
-        // como heading. Em v0.1 do inspect, isso e
-        // aproximacao — a Etapa 4.x pode estender o
-        // docx.read pra devolver paragraphs COM
-        // style.
-        for p in paragraphs {
-            let trimmed = p.trim_start();
-            // Detecta heading N (1, 2, ou 3).
-            let heading_level: Option<u8> = if trimmed.starts_with("Heading 1 ") {
+        for (text, style) in paragraphs {
+            // Mapeia o style do python-docx pra o
+            // level do `DocumentBlock::Heading`.
+            // python-docx usa "Heading 1/2/3" (com
+            // espaco). Case-insensitive pra tolerar
+            // templates que usem "heading 1"
+            // (lowercase).
+            let style_lc = style.to_lowercase();
+            let heading_level: Option<u8> = if style_lc == "heading 1" {
                 Some(1)
-            } else if trimmed.starts_with("Heading 2 ") {
+            } else if style_lc == "heading 2" {
                 Some(2)
-            } else if trimmed.starts_with("Heading 3 ") {
+            } else if style_lc == "heading 3" {
                 Some(3)
             } else {
                 None
             };
             if let Some(level) = heading_level {
-                // Extrai o texto apos o prefixo "Heading N ".
-                let prefix_len = "Heading 1 ".len()
-                    + if level == 2 {
-                        1
-                    } else if level == 3 {
-                        2
-                    } else {
-                        0
-                    };
-                let text = trimmed[prefix_len..].to_string();
                 coverage.preserved.push("heading");
                 blocks.push(DocumentBlock::Heading {
                     level,
-                    text,
+                    text: text.clone(),
                     number: None,
                 });
-                continue;
+            } else {
+                // Caso contrario, paragrafo normal.
+                coverage.preserved.push("paragraph");
+                blocks.push(DocumentBlock::Paragraph {
+                    text: text.clone(),
+                    style: None,
+                });
             }
-            // Caso contrario, paragrafo normal.
-            coverage.preserved.push("paragraph");
-            blocks.push(DocumentBlock::Paragraph {
-                text: p.clone(),
-                style: None,
-            });
         }
         for table in tables {
             if table.is_empty() {
@@ -619,12 +613,28 @@ impl Tool for DocsInspectTool {
         // 6. Monta a InspectOutput.
         let (spec, coverage) = match format {
             DocumentFormat::Docx => {
-                let paragraphs: Vec<String> = response
+                // Etapa 4: `docx.read` devolve paragraphs
+                // COM style (dict {text, style}). Tuples
+                // (text, style) — reconstrói heading
+                // quando o style bate.
+                let paragraphs: Vec<(String, String)> = response
                     .get("paragraphs")
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter()
-                            .map(|v| v.as_str().unwrap_or("").to_string())
+                            .map(|p| {
+                                let text = p
+                                    .get("text")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let style = p
+                                    .get("style")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Normal")
+                                    .to_string();
+                                (text, style)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -809,11 +819,18 @@ mod tests {
 
     #[test]
     fn build_docx_spec_extracts_headings_paragraphs_tables() {
-        // Smoke da logica pura (sem worker).
+        // Smoke da logica pura (sem worker). Etapa 4:
+        // paragraphs vem COM style (tuples (text, style))
+        // — antes era string match em "Heading 1 ", que
+        // nunca batia (python-docx nao prefixa o style
+        // no texto).
         let paragraphs = vec![
-            "Heading 1 Visao geral".to_string(),
-            "Heading 2 Detalhe".to_string(),
-            "Este paragrafo fica entre os dois.".to_string(),
+            ("Visao geral".to_string(), "Heading 1".to_string()),
+            ("Detalhe".to_string(), "Heading 2".to_string()),
+            (
+                "Este paragrafo fica entre os dois.".to_string(),
+                "Normal".to_string(),
+            ),
         ];
         let tables = vec![vec![
             vec!["Mes".to_string(), "Total".to_string()],

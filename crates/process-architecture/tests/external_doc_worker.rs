@@ -341,7 +341,9 @@ async fn e2e_docx_write_and_read() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| v.as_str().unwrap_or(""))
+            // Etapa 4: paragraphs e' `[{text, style}]`,
+            // nao `[str]`. Extrai o campo `text`.
+            .map(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or(""))
             .collect::<Vec<_>>()
             .join(" ");
         assert!(

@@ -691,11 +691,24 @@ def handle_docx_read(payload: dict) -> dict:
     """docx.read: extrai paragrafos e tabelas de um .docx.
 
     Input: `{"path": str}`
-    Output: `{"ok": true, "paragraphs": [str], "tables": [[str]], "n_paragraphs": int, "n_tables": int}`
+    Output (Etapa 4 da Fase 5): `{"ok": true, "path": str,
+    "paragraphs": [{"text": str, "style": str}], "tables":
+    [[str]], "n_paragraphs": int, "n_tables": int}`
+
+    `paragraphs[i].style` e o nome do estilo (ex:
+    "Heading 1", "Heading 2", "Heading 3", "Normal").
+    O `docs.inspect` usa isso pra reconstruir o
+    `DocumentSpec` parcial (heading vs paragraph). Sem
+    style (v0.3.0 do worker), o inspect perdia todos os
+    headings e so via `paragraph` — limitacao que
+    ficou registrada ate a Etapa 4.
     """
     path = validate_path(_payload_field(payload, "path", str), "read")
     document = docx.Document(str(path))
-    paragraphs = [p.text for p in document.paragraphs]
+    paragraphs = [
+        {"text": p.text, "style": p.style.name}
+        for p in document.paragraphs
+    ]
     tables = []
     for t in document.tables:
         rows = []
