@@ -1,7 +1,7 @@
 <!--
-Estado: implementado (v0.1)
+Estado: parcialmente implementado
 Verificado contra o código em: 2026-07-31
-Fase correspondente: 5 (Etapa 4)
+Fase correspondente: 5 (Etapa 4 — ExcelPro v0.1)
 -->
 
 > Última verificação: 2026-07-31. Reflete a Etapa 4 da Fase 5 —
@@ -10,12 +10,14 @@ Fase correspondente: 5 (Etapa 4)
 > round-trip). Renderização completa de `DocumentSpec`
 > (`DocumentType::Spreadsheet`) em `.xlsx` real, cobrindo
 > `Kpis` + `Table` + `Chart`, com formatos numéricos brasileiros
-> (moeda R$, percentual, milhar). Bump atômico do enum
-> `DocumentFormat::Xlsx` junto com o kit (REGRAS §1.9). Limitações
-> registradas: chart SEM aba `Charts_<n>` (registro no Painel + warning),
-> chart visual nativo (BarChart/LineChart/PieChart) na Etapa 5/6,
-> identidade visual Excel (cores/fills/borders/freeze panes)
-> na Etapa 5/6.
+> (moeda R$, percentual, milhar — coluna `BRL`/`PCT`/`THOUSANDS`/`INT`
+> via `column_formats` opcional, backward-compat). Bump atômico do
+> enum `DocumentFormat::Xlsx` junto com o kit (REGRAS §1.9). O estado
+> é **parcialmente implementado** porque a v0.1 entrega o esqueleto
+> funcional (dados tabulares, formatos numéricos, sanitização de
+> sheet name) mas **não** entrega o pacote visual/interativo que
+> o spec promete (§18.1, §18.2). As lacunas estão nomeadas em
+> "Lacunas do v0.1 (que impedem 'implementado')" abaixo.
 
 # Especificação do ExcelPro Kit
 
@@ -105,29 +107,56 @@ Tabelas estruturadas, fórmulas, referências, validação de dados, listas susp
   formato de moeda aplicado. **Round-trip pela mesma porta que o
   modelo usa** (não pelo handler direto).
 
-## Limitações registradas (v0.1)
+## Lacunas do v0.1 (que impedem "implementado")
+
+A Etapa 4 entrega o esqueleto funcional do ExcelPro: dados
+tabulares (Painel + 1 sheet por Table), sanitização de sheet
+name, formatos numéricos brasileiros via `column_formats`
+(BRL/PCT/THOUSANDS/INT), e mapeamento/blocos cobertos. **Não**
+entrega o pacote visual/interativo que o spec promete abaixo em
+"Decisão tomada" e "Recursos mínimos" (PROMPT MESTRE §18.1,
+§18.2, §18.6). Estas são as lacunas que mantêm o spec em
+**parcialmente implementado** (REGRAS §1.13 — vocabulário de
+3 valores, sync com o código):
 
 1. **Chart visual nativo** (`openpyxl.chart.BarChart` /
    `LineChart` / `PieChart`) — Etapa 5/6. v0.1 registra o chart
    no Painel e (quando possível) embute os dados na próxima
-   Table compatível.
+   Table compatível — **mas não há chart visual no `.xlsx`**.
+   Alguém abrindo o arquivo no Excel não vê a figura do chart,
+   só os dados. O spec promete "gráficos, dashboards, indicadores"
+   (§18.1); v0.1 entrega os dados por trás deles, não a figura.
 2. **Identidade visual Excel** (cores dos cards KPI, fill do
    header, borders, freeze panes na 1ª linha, largura automática
    de coluna) — Etapa 5/6. v0.1 é "funcional mas sem graça" —
    mesma lógica do WordPro v0.1 ser "feio em tipografia" (Etapa 3).
+   O spec promete "padrão visual com azul escuro, verde de sucesso,
+   cinza claro, branco, espaço em branco, cards de KPI, cabeçalhos
+   destacados" (§18.2); v0.1 não aplica nada disso.
 3. **Tabela visual estilizada** (zebrado, header com fill, bordas
    entre células) — Etapa 5/6. v0.1 gera tabela sem formatação
    visual no `openpyxl` (default = sem fill, sem border).
 4. **Fórmulas Excel** (campo `formula` no `Table`) — o `xlsx.write`
    Python v0.3.0 não aceita `formula` no payload (só `rows`).
    Caller que precisa de fórmulas calcula fora e bota o valor
-   numérico. Fórmulas como 1ª classe entram na Etapa 5/6.
+   numérico. Fórmulas como 1ª classe entram na Etapa 5/6. O spec
+   promete "fórmulas auditáveis: referências consistentes, sem
+   valores fixos escondidos, fonte única da verdade" (§18.4);
+   v0.1 não tem isso.
 5. **Memória de cálculo como aba oculta** (PROMPT MESTRE §18.6) —
    Etapa 5/6. v0.1 não embute memória de cálculo.
 6. **Filtros / tabelas estruturadas / validação de dados** (PROMPT
    MESTRE §18.1) — Etapa 5/6. v0.1 cobre os blocos do `DocumentSpec`
    (`Kpis`/`Table`/`Chart`); extensões Excel-only (filtros, listas
    suspensas, proteção) entram depois.
+
+A promoção pra `implementado` exige que **todos** os 6 itens
+acima estejam fechados. A Etapa 5 (PDFPro completo) **não** é
+pré-requisito para isso — o trabalho de identidade visual
+Excel e chart visual nativo pode ser puxado pra Etapa 5/6 em
+qualquer ordem, contanto que entrem juntos (chart sem identidade
+visual ainda é funcional mas feio; identidade visual sem chart
+também).
 
 ## Referências
 
