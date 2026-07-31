@@ -57,6 +57,7 @@
 pub mod excelpro;
 pub mod format;
 pub mod generate;
+pub mod inspect;
 pub mod kit;
 pub mod pdfpro;
 pub mod registry;
@@ -66,6 +67,7 @@ pub mod wordpro;
 pub use excelpro::ExcelProKit;
 pub use format::DocumentFormat;
 pub use generate::DocsGenerateTool;
+pub use inspect::{Coverage, DocsInspectTool, InspectArgs, InspectOutput, SheetSummary};
 pub use kit::{Kit, KitError, KitOutput, SheetMapping};
 pub use pdfpro::PdfProKit;
 pub use registry::KitRegistry;
