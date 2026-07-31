@@ -685,7 +685,7 @@ impl RunExecutor {
                     .clone();
 
                 let start = std::time::Instant::now();
-                let result = tool.execute(&args);
+                let result = tool.execute(&args).await;
                 let duration = start.elapsed();
 
                 // 3. Emite StreamEvent::ToolResult.

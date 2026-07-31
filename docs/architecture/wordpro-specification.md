@@ -1,16 +1,20 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-28
+Verificado contra o código em: 2026-07-31
 Fase correspondente: 5
 -->
 
-> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — o
-> catálogo de blocos do `DocumentSpec` (20 blocos) já está definido
-> e validado no `frederico-document-engine`; o WordPro **em si**
-> (renderização via `python-docx`, estilos "Tinta & Latão" e modo
-> "Sóbrio") entra na Etapa 3. Estilo centralizado (`PROMPT MESTRE`
-> §17.4) e modo Sóbrio (`§16.6`) já estão previstos no enum
-> `DocumentStyle`.
+> Última verificação: 2026-07-31. Reflete a Etapa 3 da Fase 5 —
+> `WordProKit` v0.1 implementado no crate
+> `frederico-document-kits` (35/35 testes verde: 34 unit + 1
+> E2E full vertical com `python-docx` round-trip). Tradução
+> completa de `DocumentSpec.blocks` → payload do handler
+> `docx.write` da v0.3.0 do `document-worker`. Cobertura: todos
+> os 20 blocos do spec (alguns com fallback textual — ver
+> limitações abaixo). Identidade visual "Tinta & Latão" (§17.4)
+> e modo Sóbrio (§16.6) **ainda não** aplicados no `.docx` —
+> o `docx.write` da v0.3.0 é deliberadamente feio, e a
+> tipografia fina entra na Etapa 6.
 
 # Especificação do WordPro Kit (stub)
 

@@ -9,10 +9,19 @@
 //! `security-threat-model.md` (ameaça I3). Esta implementação é a
 //! camada in-process; workers sidecar (Fase 5) vão trazer a versão
 //! "sandboxed" sem trocar o manifesto.
+//!
+//! ## `execute` é `async fn` (Etapa 3 da Fase 5)
+//!
+//! A mudança para `async fn` no trait `Tool` não muda nada no
+//! `files.read` em si (file I/O continua síncrono dentro do
+//! `async fn`). Serve para que ferramentas worker-backed como
+//! `docs.generate` possam chamar `WorkerHandle::invoke` direto,
+//! sem ponte sync→async.
 
 use std::fs;
 use std::path::PathBuf;
 
+use async_trait::async_trait;
 use frederico_core::ToolId;
 use serde_json::json;
 
@@ -99,12 +108,13 @@ impl FilesReadTool {
     }
 }
 
+#[async_trait]
 impl Tool for FilesReadTool {
     fn manifest(&self) -> &ToolManifest {
         &self.manifest
     }
 
-    fn execute(&self, arguments: &serde_json::Value) -> ToolResult {
+    async fn execute(&self, arguments: &serde_json::Value) -> ToolResult {
         // Re-valida o path (defesa em profundidade: o validador já
         // rodou, mas o `execute` pode ser chamado direto em testes).
         let path_str = arguments
@@ -236,10 +246,17 @@ mod tests {
         assert!(!m.requires_user_approval);
     }
 
-    #[test]
-    fn reads_relative_file() {
+    // Os 8 testes abaixo chamam `tool.execute(...)` (agora `async fn`).
+    // `current_thread` runtime é suficiente — o `files.read` não toca
+    // em I/O assíncrono (file system é bloqueante, e está bem dentro
+    // de um `async fn` curto). Ferramentas worker-backed (Etapa 3 da
+    // Fase 5) usam `flavor = "multi_thread"` (ver
+    // `crates/tool-registry/src/worker_dispatch.rs`).
+
+    #[tokio::test]
+    async fn reads_relative_file() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "hello.txt"}));
+        let r = tool.execute(&json!({"path": "hello.txt"})).await;
         assert!(r.ok, "erro: {:?}", r.error_message);
         let content = r.output.get("content").and_then(|v| v.as_str()).unwrap();
         assert_eq!(content, "Hello, world!");
@@ -247,10 +264,10 @@ mod tests {
         assert_eq!(r.accessed_paths.len(), 1);
     }
 
-    #[test]
-    fn reads_subdir_file() {
+    #[tokio::test]
+    async fn reads_subdir_file() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "sub/inner.txt"}));
+        let r = tool.execute(&json!({"path": "sub/inner.txt"})).await;
         assert!(r.ok);
         assert_eq!(
             r.output.get("content").and_then(|v| v.as_str()).unwrap(),
@@ -258,48 +275,54 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_path_traversal() {
+    #[tokio::test]
+    async fn rejects_path_traversal() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "../etc/passwd"}));
+        let r = tool.execute(&json!({"path": "../etc/passwd"})).await;
         assert!(!r.ok);
         assert!(r.error_message.unwrap().contains("JAIL"));
     }
 
-    #[test]
-    fn rejects_absolute_path() {
+    #[tokio::test]
+    async fn rejects_absolute_path() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "C:\\Windows\\System32\\drivers\\etc\\hosts"}));
+        let r = tool
+            .execute(&json!({"path": "C:\\Windows\\System32\\drivers\\etc\\hosts"}))
+            .await;
         assert!(!r.ok);
     }
 
-    #[test]
-    fn rejects_unc_path() {
+    #[tokio::test]
+    async fn rejects_unc_path() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "\\\\server\\share\\file.txt"}));
+        let r = tool
+            .execute(&json!({"path": "\\\\server\\share\\file.txt"}))
+            .await;
         assert!(!r.ok);
     }
 
-    #[test]
-    fn max_bytes_truncates() {
+    #[tokio::test]
+    async fn max_bytes_truncates() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "big.bin", "max_bytes": 10}));
+        let r = tool
+            .execute(&json!({"path": "big.bin", "max_bytes": 10}))
+            .await;
         assert!(r.ok);
         assert_eq!(r.output.get("truncated"), Some(&json!(true)));
         assert_eq!(r.output.get("bytes_read"), Some(&json!(10)));
     }
 
-    #[test]
-    fn missing_file_is_error() {
+    #[tokio::test]
+    async fn missing_file_is_error() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({"path": "nope.txt"}));
+        let r = tool.execute(&json!({"path": "nope.txt"})).await;
         assert!(!r.ok);
     }
 
-    #[test]
-    fn missing_path_argument_is_error() {
+    #[tokio::test]
+    async fn missing_path_argument_is_error() {
         let (_d, tool) = setup();
-        let r = tool.execute(&json!({}));
+        let r = tool.execute(&json!({})).await;
         assert!(!r.ok);
     }
 }

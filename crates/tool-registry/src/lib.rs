@@ -62,6 +62,7 @@ pub mod permission;
 pub mod registry;
 pub mod tools;
 pub mod validate;
+pub mod worker_dispatch;
 pub mod workspace;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalScope};
@@ -78,4 +79,5 @@ pub use permission::{
 pub use registry::ToolRegistry;
 pub use tools::{FilesReadTool, Tool, ToolResult};
 pub use validate::{validate_tool_call, ToolCall, ValidationContext, ValidationOutcome};
+pub use worker_dispatch::{validate_against_allowlist, DispatchError, WorkerToolDispatcher};
 pub use workspace::{Jail, Workspace};

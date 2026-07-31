@@ -1,10 +1,10 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-28
+Verificado contra o código em: 2026-07-31
 Fase correspondente: 5
 -->
 
-> Última verificação: 2026-07-28. Reflete a Etapa 1 da Fase 5 — crate
+> Última verificação: 2026-07-31. Reflete a Etapa 3 da Fase 5 — crate
 > `frederico-document-engine` (puro, `unsafe_code = "forbid"`) com
 > o `DocumentSpec` (20 blocos: Cover, Toc, Heading, Paragraph, List,
 > Table, KeyValue, Kpis, Callout, Quote, Steps, Chart, Image, Code,
@@ -15,8 +15,14 @@ Fase correspondente: 5
 > `document_mode_prompt()` que gera o prompt do modo documental a
 > partir do catálogo de blocos (REGRAS §1.9 — gerado vence manual).
 > 22/22 testes verde (2 unit + 20 integration). `cargo clippy
-> --workspace --all-targets -- -D warnings` limpo. Etapas 2 a 6
-> (worker Python + renderização) ainda abertas.
+> --workspace --all-targets -- -D warnings` limpo. **Etapa 3 fechada**:
+> o novo crate `frederico-document-kits` consome o `DocumentSpec`
+> e entrega o `WordProKit` v0.1 + o tool `docs.generate` único
+> exposto ao modelo (35/35 testes no kit, E2E full vertical
+> atravessando o `document-worker` real). ExcelPro e PDFPro
+> entram como skeletons (`is_implemented = false`) — não
+> aparecem no schema do `docs.generate`; substituição atômica
+> nas Etapas 4 e 5.
 
 # Arquitetura do Document Engine (stub)
 

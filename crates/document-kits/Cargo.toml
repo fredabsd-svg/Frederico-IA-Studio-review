@@ -1,23 +1,25 @@
 [package]
-name = "frederico-tool-registry"
+name = "frederico-document-kits"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Tool Registry, manifesto de ferramentas, validação, jail e files.read in-process (Fase 3, Etapa 2)."
+description = "Kits WordPro/ExcelPro/PdfPro + DocsGenerateTool (Fase 5, Etapa 3)."
 
 [lints.rust]
 unsafe_code = "forbid"
 
 [dependencies]
 frederico-core = { workspace = true }
-frederico-agent-engine = { workspace = true }
+frederico-document-engine = { workspace = true }
 frederico-process-architecture = { workspace = true }
+frederico-tool-registry = { workspace = true }
+frederico-test-support = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
+schemars = { workspace = true }
 thiserror = { workspace = true }
-jsonschema = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

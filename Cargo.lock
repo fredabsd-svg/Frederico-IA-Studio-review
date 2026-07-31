@@ -1132,6 +1132,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-document-kits"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "frederico-core",
+ "frederico-document-engine",
+ "frederico-process-architecture",
+ "frederico-test-support",
+ "frederico-tool-registry",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "frederico-execution-engine"
 version = "0.1.0"
 dependencies = [
@@ -1280,13 +1299,16 @@ dependencies = [
 name = "frederico-tool-registry"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "frederico-agent-engine",
  "frederico-core",
+ "frederico-process-architecture",
  "jsonschema",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 

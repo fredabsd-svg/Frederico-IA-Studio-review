@@ -49,6 +49,11 @@ desktop.ini
 # --- OneDrive (artefatos locais) ---
 *.tmp
 *.bak
+# Padrão tmp_* usado pelos E2E do document-kits (cria tmp_*/out.docx
+# em testes, Etapa 3 da Fase 5). O helper do teste usa tempdir com
+# nome tmp_* mas a árvore de fora não vaza.
+tmp_*
+*_tmp/
 
 # --- Variáveis de ambiente ---
 .env

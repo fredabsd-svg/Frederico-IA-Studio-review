@@ -66,9 +66,23 @@ Invoke-Step "document-worker bootstrap" {
 # Se o bootstrap nao foi feito antes, o helper `doc_worker_config`
 # no teste faz `panic!` com mensagem clara apontando pro bootstrap.
 Invoke-Step "E2E document-worker handlers" {
-    cargo test -p frederico-process-architecture --test external_doc_worker
+    # `--skip ocr --skip pdf_read_with_ocr` é no-op em CI
+    # (Tesseract instalado via bootstrap) e desliga os 2
+    # testes que exigem Tesseract em dev local non-elevated.
+    # Os 9 testes restantes (docx/xlsx/pdf write+read +
+    # adaptativos) rodam em todo PR.
+    cargo test -p frederico-process-architecture --test external_doc_worker -- --skip ocr --skip pdf_read_with_ocr
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
+# Step 3 - Teste E2E do `docs.generate` (Etapa 3 da Fase 5).
+# Valida o full vertical: DocumentSpec → kit → dispatcher →
+# worker → .docx → reopen via python-docx → hierarquia +
+# linhas da tabela.
+Invoke-Step "E2E docs.generate full vertical" {
+    cargo test -p frederico-document-kits --test e2e_docs_generate
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
 Write-Host ""
-Write-Host "E2E document-worker handlers - TODOS OS 6 TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate - TODOS OS TESTES PASSARAM" -ForegroundColor Green
