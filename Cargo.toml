@@ -12,6 +12,7 @@ members = [
     "crates/execution-engine",
     "crates/memory",
     "crates/document-engine",
+    "crates/document-kits",
     "crates/process-architecture",
     "crates/test-support",
     "packages/shared-contracts",
@@ -39,6 +40,7 @@ frederico-tool-registry = { path = "crates/tool-registry" }
 frederico-execution-engine = { path = "crates/execution-engine" }
 frederico-memory = { path = "crates/memory" }
 frederico-document-engine = { path = "crates/document-engine" }
+frederico-document-kits = { path = "crates/document-kits" }
 frederico-process-architecture = { path = "crates/process-architecture" }
 frederico-test-support = { path = "crates/test-support" }
 frederico-shared-contracts = { path = "packages/shared-contracts" }
