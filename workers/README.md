@@ -9,10 +9,17 @@ serializável via contrato IPC do `crates/process-architecture/`.
 ## Workers atuais
 
 - **`document-worker/`** — Python embutido (ADR-0004). Gera
-  DOCX/XLSX/PDF e roda OCR. Stub mínimo de protocolo + transporte
-  (Etapa 2B continuação, 2026-07-29) — handlers reais entram em
-  etapas seguintes. `bootstrap.ps1` instala Python 3.12 + `pywin32`
-  em `runtime/`. Ver [`document-worker/README.md`](document-worker/README.md).
+  DOCX/XLSX/PDF, le os tres formatos e faz OCR. **7 handlers
+  reais** (Etapa 2B+Y, 2026-07-30) consumindo python-docx +
+  openpyxl + reportlab + pdfplumber + pytesseract, com fontes
+  "Tinta e Latao" (Adobe Source Sans 3 + Source Serif 4)
+  embutidas no PDF. `ocr.run` re-adicionado (v0.3.0); `pdf.read`
+  tem fallback OCR transparente (procedência: `text` e
+  `ocr_text` sempre separados — ADR-0019). `bootstrap.ps1`
+  instala Python 3.12 + pywin32 + 5 libs + Tesseract 5.4.0
+  (`tessdata_fast` 4.1.0: por, eng, osd) + 4 TTFs em
+  `runtime/` (silent install NSIS com admin detection; SHA-256
+  fixo). Ver [`document-worker/README.md`](document-worker/README.md).
 
 ## Próximos workers (Fase 5+)
 

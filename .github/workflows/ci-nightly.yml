@@ -1,0 +1,99 @@
+name: CI Nightly (Tesseract OCR)
+
+# CI noturno isolado (Fase 5, Etapa 2B+Y, ADR-0019 §Decisao 4).
+# Por que separado do `ci.yml`:
+#   1. **Isolar flakiness do Tesseract.** O bootstrap instala
+#      Tesseract 5.4.0 do UB-Mannheim (instalador NSIS com silent
+#      install /S /D=path). Edge cases de PATH, locale, install
+#      podem produzir testes flaky. O gate principal (PR) nao
+#      depende disso - se o noturno quebrar, o main fica verde
+#      e o problema tem tempo de ser investigado com calma.
+#   2. **Stress test.** Roda o mesmo `verify-external.ps1` (todos
+#      os 11 testes do `external_doc_worker.rs`, incluindo os 2
+#      de OCR que dependem de Tesseract) mais vezes em
+#      backgrounds diferentes, detectando race conditions.
+#   3. **Bump de Tesseract ou tessdata.** Quando o mantenedor
+#      cortar nova versao, o noturno quebra primeiro (antes do
+#      gate) - tempo de revisar o bump sem bloquear PRs.
+#
+# O CI noturno NAO bloqueia merge. So roda o schedule + manual
+# (`workflow_dispatch`). O gate continua sendo `ci.yml`.
+
+on:
+  schedule:
+    # Cron em UTC. 04:00 UTC = 01:00 BRT (madrugada Brasil) =
+    # 21:00 PDT (noite EUA anterior) = pouco uso do GitHub.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verify-nightly:
+    name: verify-nightly (Windows)
+    # windows-latest roda como Admin - o `silent install` do
+    # instalador NSIS do Tesseract funciona sem UAC prompt.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # O guard de impacto documental diffa contra a base do PR.
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Cache do `runtime/` do `document-worker` (Fase 5, Etapa 2B+Y).
+      # Invalida quando `pyproject.toml` ou `bootstrap.ps1` mudam.
+      - name: Cache document-worker runtime
+        uses: actions/cache@v4
+        with:
+          path: workers/document-worker/runtime
+          key: document-worker-runtime-${{ hashFiles('workers/document-worker/pyproject.toml', 'workers/document-worker/bootstrap.ps1') }}
+
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock
+
+      # **O noturno roda a suíte COMPLETA de testes OCR** (gate
+      # principal tb roda, mas em PR; noturno roda em contexto
+      # cron + manual). Inclui os 2 testes que dependem de
+      # Tesseract instalado. Falha aqui NAO bloqueia merge
+      # (gate e separado).
+      - name: Tests
+        run: cargo test --workspace
+
+      # E2E do `document-worker` Python (Fase 5, Etapa 2B+Y). O
+      # `verify-external.ps1` faz bootstrap idempotente + roda
+      # 11 testes (9 sem Tesseract + 2 com Tesseract). Os 2
+      # com Tesseract passam aqui porque o runner e admin.
+      - name: E2E document-worker handlers (OCR)
+        shell: pwsh
+        run: ./scripts/verify-external.ps1
+
+      - name: Core purity guard (ADR-0003)
+        shell: pwsh
+        run: ./scripts/check-core-purity.ps1

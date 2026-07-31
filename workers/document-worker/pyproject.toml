@@ -1,15 +1,35 @@
 [project]
 name = "frederico-document-worker"
-version = "0.1.0"
-description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, OCR — Etapa 2B da Fase 5)"
+version = "0.3.0"
+description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, le os tres formatos e faz OCR - Fase 5, Etapa 2B+Y)"
 requires-python = ">=3.11"
-# Dependência central: `pywin32` é o que dá acesso ao
-# `CreateNamedPipe` / `ConnectNamedPipe` / `ReadFile` / `WriteFile`
-# do Windows via Python. ADR-0004 — comunicação por named pipes,
-# sem localhost. O `bootstrap.ps1` instala `pywin32` (e o
-# pip + Python embeddable) em `runtime/`.
+# Dependencias centradas (todas instaladas pelo `bootstrap.ps1` em
+# `runtime/`, nao via pip do sistema):
+#
+#   pywin32       - named pipes do Windows via Python
+#                   (CreateNamedPipe, ConnectNamedPipe, ReadFile, WriteFile)
+#   python-docx   - handler `docx.write` / `docx.read`
+#   openpyxl      - handler `xlsx.write` / `xlsx.read`
+#   reportlab     - handler `pdf.write` (com fontes Source Sans 3 / Source
+#                   Serif 4 embutidas - "Tinta e Latao" / ADR-0018)
+#   pdfplumber    - handler `pdf.read` (extracao de texto + deteccao de
+#                   paginas escaneadas, com fallback OCR se Tesseract
+#                   disponivel - Etapa 2B+Y / ADR-0019)
+#   pytesseract   - wrapper Python do Tesseract, handler `ocr.run` +
+#                   fallback automatico no `pdf.read` pra paginas
+#                   escaneadas (Etapa 2B+Y / ADR-0019)
+#
+# NOTA: `pymupdf` e `matplotlib` (charts, Kpis do DocumentSpec) NAO
+# estao nesta versao 0.3.0. Entram com a integracao do DocumentSpec
+# (Etapa 3 - os handlers da v0.3.0 sao primitivas de baixo nivel, o
+# kit WordPro/ExcelPro/PdfPro renderiza o spec, ver ADR-0018).
 dependencies = [
     "pywin32>=306",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "reportlab>=4.0",
+    "pdfplumber>=0.10",
+    "pytesseract>=0.3.10",
 ]
 
 [build-system]

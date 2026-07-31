@@ -108,8 +108,14 @@ fn make_events(n_deltas: usize) -> Vec<StreamEvent> {
 
 /// Espera o sink ver um evento de status específico. Polling
 /// pequeno — o `FakeProviderAdapter` emite tudo no mesmo tick.
+/// Polling de 20ms; 5s de janela total (250 iteracoes). Era 2s
+/// (100 iteracoes) mas flakeou no CI Windows Server 2022 em
+/// 2026-07-31 (provavelmente overhead maior do runner do que
+/// dev local - 3-5x em Windows). 5s e folgado o suficiente
+/// pra nao mascarar regressao real mas tolerar slowness de
+/// CI compartilhado.
 async fn wait_for_status(sink: &RecordingEventSink, target: RunStatus) {
-    for _ in 0..100 {
+    for _ in 0..250 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let events = sink.events.lock().unwrap();
         if events
@@ -119,7 +125,7 @@ async fn wait_for_status(sink: &RecordingEventSink, target: RunStatus) {
             return;
         }
     }
-    panic!("sink não viu status {target:?} em 2s");
+    panic!("sink não viu status {target:?} em 5s");
 }
 
 #[tokio::test(flavor = "current_thread")]

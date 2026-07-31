@@ -1,6 +1,8 @@
 # Módulo `frederico-process-architecture`
 
-> **Etapa 2B completa (2026-07-29, PRs #9 + #10 + #11):** transporte real sobre named pipes (Etapa 2B, ADR-0017), `WorkerManager::spawn_external` que abre processos sidecar via `tokio::process::Command` (Etapa 2B continuação), 3 integration tests E2E com stub PowerShell em `tests/external_worker.rs`. `WorkerManager` ganhou campo `child: Option<Child>` e `shutdown` faz `child.wait()` com timeout 5s + `kill` se o worker não respondeu ao `app.shutdown`. `IpcMessage::decode_line` agora tolera BOM UTF-8 e `\r\n` (defesa em profundidade — workers PowerShell/.NET enviam por default). `IpcOp` serializa com o **nome do contrato** (`worker.hello`, `app.ack`, etc) — a Etapa 2A tinha um bug sutil que serializava `Hello` como `"hello"` (sem prefixo), descoberto quando o stub PowerShell enviou o nome correto. `document-worker` Python stub (Etapa 2B continuação) — manifesto + protocolo + loop + handlers stub; `bootstrap.ps1` instala Python 3.12 embeddable + `pywin32` em `runtime/`. Ver [ADR-0015](../decisions/0015-process-architecture-actor-not-mutex.md) + [ADR-0016](../decisions/0016-process-architecture-ator-impl.md) + [ADR-0017](../decisions/0017-process-architecture-windows-pipes.md). Estado: parcial. Verificado contra o código em 2026-07-29.
+> **Etapa 2B+Y fechada (2026-07-30):** 7º handler (`ocr.run`) entra no `document-worker` Python v0.3.0 + Tesseract 5.4.0.20240606 (UB-Mannheim GitHub Releases, silent install com admin detection) + `por`+`eng`+`osd` traineddata (`tessdata_fast` 4.1.0, SHA-256 fixo) + `pytesseract` 0.3.10+ + `pdf.read` com fallback OCR transparente (`text` e `ocr_text` sempre separados, parâmetro `ocr: "auto"|"never"|"only"`, teto de 20 páginas com `ocr_truncated`, `tesseract_version` no retorno) + 5 testes E2E novos (2 com Tesseract + 3 sem) + CI noturno isolado (`.github/workflows/ci-nightly.yml`, cron `0 4 * * *` UTC) + ADR-0019 com 5 decisões (Tesseract source com admin detection, `tessdata_fast` 4.1.0, `por+eng` como default + `lang` parametrizável com validação regex, `text`/`ocr_text` separados com procedência, CI noturno isolado). **Mudança visível do `pdf.read`:** PDF 100% escaneado que antes retornava `ok: false, code: pdf_scanned_no_ocr` agora pode retornar `ok: true` com `text` do OCR + `extraction: "ocr"` (CHANGELOG registra breaking change). Ver [`docs/modules/document-worker.md`](document-worker.md) + [ADR-0019](../decisions/0019-document-worker-ocr-tesseract.md). Estado: produção. Verificado contra o código em 2026-07-30.
+
+> **Etapa 2B+X fechada (2026-07-30, PR #12):** 6 handlers reais do `document-worker` Python (docx.write/read, xlsx.write/read, pdf.write/read) + bootstrap estendido (python-docx, openpyxl, reportlab, pdfplumber, Adobe Source Sans 3 + Source Serif 4) + 6 testes E2E em `tests/external_doc_worker.rs` (rodam em CI, NAO `#[ignore]`) + `scripts/verify-external.ps1` + cache de `runtime/` no `.github/workflows/ci.yml` + novo ADR-0018 (handler = primitiva de baixo nível, OCR deferido pra Etapa 2B+Y). **Limitação conhecida do `pdf.read` (resolvida na 2B+Y):** PDFs 100% escaneados devolvem `code: pdf_scanned_no_ocr` no payload (sem OCR até 2B+Y).
 
 ## 1. O que este módulo faz
 
@@ -154,14 +156,16 @@ do teste em 5s.
   conhece o envelope IPC, não o sidecar específico. **Stub de
   PowerShell** (`tests/stubs/worker-stub.ps1`) prova o
   `spawn_external` E2E sem depender de Python no CI.
-- **Não instala Tesseract nem fontes.** O `bootstrap.ps1`
-  do `document-worker` (Etapa 2B continuação) instala só
-  Python embeddable + pip + `pywin32`. Tesseract + fontes
-  "Tinta & Latão" entram numa entrega de bootstrap estendido
-  (pendência 1).
+- **Não instala Tesseract via winget/choco.** O `bootstrap.ps1` da
+  Etapa 2B+Y instala Tesseract 5.4.0 do GitHub Releases do
+  UB-Mannheim via silent install (NSIS `/S /D=<path>`), em contexto
+  elevado. Em dev local non-elevated, o bloco é pulado com
+  warning + instruções. A instalação pro usuário final fica pro
+  instalador NSIS do Tauri (Fase 9). Detalhes no
+  [ADR-0019](../decisions/0019-document-worker-ocr-tesseract.md).
 - **Não tem revogação de token.** `WorkerAuth` é `String`
   opaco; revogação por lista negra entra em hardening futuro
-  (pendência 3 — precisa de ADR).
+  (pendência herdada — precisa de ADR).
 - **Não tem schema JSON do envelope versionado.** O envelope
   é validado por tipos Rust; o schema (via `schemars` 0.8,
   mesma estratégia do `document-engine`) entra quando a Etapa 3
@@ -173,23 +177,24 @@ do teste em 5s.
 
 ## Pendências para a próxima sessão
 
-1. **Tesseract + fontes "Tinta & Latão" no `bootstrap.ps1`** —
-   esta entrega instala só Python + pip + `pywin32`; a próxima
-   adiciona os binários pesados (Tesseract, pacote `por` de
-   lang data, fontes T&L).
-2. **Handlers reais do `document-worker`** — `docx.write`/
-   `docx.read`/`xlsx.write`/`xlsx.read`/`pdf.write`/`pdf.read`/
-   `ocr.run` (consumindo o `document-engine` Etapa 1).
-3. **Revogação de token por lista negra** (hardening) — o
+1. **Etapa 3 (ToolRegistry + kits DocumentSpec):**
+   `ToolManifest::allowed_paths` para path safety forte (a
+   barreira atual no Python é rejeitar `..`; a forte é
+   allowlist de diretórios por tool, validada no manager
+   Rust antes do `invoke`). Os 7 handlers da v0.3.0 do
+   `document-worker` sobrevivem à Etapa 3 sem reescrita
+   (handler = primitiva, kit = renderer do DocumentSpec,
+   conforme [ADR-0018](../decisions/0018-document-worker-handlers-primitive.md) §Decisão 1).
+2. **Revogação de token por lista negra** (hardening) — o
    `WorkerAuth` é `String` opaco; revogação por lista negra
    é a próxima peça. **Decisão de arquitetura:** o que a
    lista negra contém (hash do token? ID explícito?) precisa
    de ADR antes da implementação.
-4. **Tabela de capacidades dinâmica** — o `IpcOp` hoje é
+3. **Tabela de capacidades dinâmica** — o `IpcOp` hoje é
    lista fechada (8 opcodes hardcoded); a Etapa 3 vai precisar
    que tools dinâmicas (do `ToolRegistry`) sejam roteáveis.
    Pode entrar via `op = "tool.invoke"` com `capability` no
-   payload (como o `document-worker` stub já faz).
+   payload (como o `document-worker` já faz).
 
 > **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
 > integration tests com named pipes reais em

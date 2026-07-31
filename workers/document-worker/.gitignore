@@ -13,3 +13,9 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Logs temporarios de debug de sessao (vazaram 3x no repo - regra
+# hard: nunca commitar logs de sessoes locais). `*.log` em geral nao
+# entra pq sao uteis (rotacao etc); `tmp_*.log` e o que vaza.
+tmp_*.log
+*.tmp
