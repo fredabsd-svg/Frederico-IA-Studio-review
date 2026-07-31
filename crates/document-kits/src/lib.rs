@@ -60,12 +60,14 @@ pub mod generate;
 pub mod kit;
 pub mod pdfpro;
 pub mod registry;
+pub mod sheet_name;
 pub mod wordpro;
 
 pub use excelpro::ExcelProKit;
 pub use format::DocumentFormat;
 pub use generate::DocsGenerateTool;
-pub use kit::{Kit, KitError, KitOutput};
+pub use kit::{Kit, KitError, KitOutput, SheetMapping};
 pub use pdfpro::PdfProKit;
 pub use registry::KitRegistry;
+pub use sheet_name::sanitize_sheet_name;
 pub use wordpro::WordProKit;

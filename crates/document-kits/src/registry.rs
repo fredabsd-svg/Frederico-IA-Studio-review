@@ -176,6 +176,8 @@ mod tests {
                 size_bytes: 0,
                 format: self.format,
                 extra: serde_json::json!({}),
+                sheets: Vec::new(),
+                warnings: Vec::new(),
             })
         }
     }
