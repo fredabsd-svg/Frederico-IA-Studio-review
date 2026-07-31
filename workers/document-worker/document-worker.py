@@ -691,11 +691,24 @@ def handle_docx_read(payload: dict) -> dict:
     """docx.read: extrai paragrafos e tabelas de um .docx.
 
     Input: `{"path": str}`
-    Output: `{"ok": true, "paragraphs": [str], "tables": [[str]], "n_paragraphs": int, "n_tables": int}`
+    Output (Etapa 4 da Fase 5): `{"ok": true, "path": str,
+    "paragraphs": [{"text": str, "style": str}], "tables":
+    [[str]], "n_paragraphs": int, "n_tables": int}`
+
+    `paragraphs[i].style` e o nome do estilo (ex:
+    "Heading 1", "Heading 2", "Heading 3", "Normal").
+    O `docs.inspect` usa isso pra reconstruir o
+    `DocumentSpec` parcial (heading vs paragraph). Sem
+    style (v0.3.0 do worker), o inspect perdia todos os
+    headings e so via `paragraph` — limitacao que
+    ficou registrada ate a Etapa 4.
     """
     path = validate_path(_payload_field(payload, "path", str), "read")
     document = docx.Document(str(path))
-    paragraphs = [p.text for p in document.paragraphs]
+    paragraphs = [
+        {"text": p.text, "style": p.style.name}
+        for p in document.paragraphs
+    ]
     tables = []
     for t in document.tables:
         rows = []
@@ -715,11 +728,54 @@ def handle_docx_read(payload: dict) -> dict:
 # ---- xlsx.write -----------------------------------------------------------
 
 
+# Mapeamento de aliases semanticos (`"BRL"`, `"PCT"`, `"THOUSANDS"`)
+# pra Excel format strings. O kit manda o alias (mais
+# legivel que o format string cru do Excel) e o handler
+# resolve. Aliases nao reconhecidos sao tratados como
+# format string cru (passa direto pro openpyxl).
+# Adicionar constante aqui quando um novo alias for
+# necessario.
+XLSX_FORMAT_ALIASES = {
+    # Moeda brasileira (R$ 1.234,56)
+    "BRL": 'R$ #,##0.00',
+    # Percentual com 2 casas (12,34%)
+    "PCT": '0.00%',
+    # Separador de milhar com 2 casas (1.234,56)
+    "THOUSANDS": '#,##0.00',
+    # Inteiro com separador de milhar (1.234)
+    "INT": '#,##0',
+}
+
+
+def _resolve_xlsx_format(value):
+    """Resolve um alias de formato (ou retorna o valor cru
+    se nao for alias). Aceita string; se nao for string,
+    retorna None (sem formato aplicado — defensivo).
+    """
+    if not isinstance(value, str):
+        return None
+    return XLSX_FORMAT_ALIASES.get(value, value)
+
+
 def handle_xlsx_write(payload: dict) -> dict:
     """xlsx.write: escreve um arquivo .xlsx com 1+ sheets.
 
-    Input: `{"path": str, "sheets": [{"name": str, "headers": [str], "rows": [[]]}]}`
-    Output: `{"ok": true, "path": str, "size_bytes": int, "sheets_written": int, "total_rows": int}`
+    Input: `{"path": str, "sheets": [{"name": str, "headers": [str], "rows": [[]], "column_formats": {<col_idx>: <format>}?}]}`
+
+    `column_formats` (opcional, Etapa 4 da Fase 5): mapa
+    `{col_idx: format_alias_or_string}`. Aplica
+    `cell.number_format` em todas as celulas da coluna
+    (exceto o header). Aceita aliases semanticos (`"BRL"`,
+    `"PCT"`, `"THOUSANDS"`, `"INT"`) ou Excel format
+    strings crus. Backward-compat: sheets sem
+    `column_formats` continuam funcionando (Etapa 3 da
+    Fase 5 e anteriores).
+
+    Output: `{"ok": true, "path": str, "size_bytes": int, "sheets_written": int, "total_rows": int, "cells_formatted": int}`
+
+    `cells_formatted` conta quantas celulas receberam
+    `cell.number_format` (zero em sheets sem
+    `column_formats`).
     """
     path = validate_path(_payload_field(payload, "path", str), "write")
     sheets = _payload_field(payload, "sheets", list)
@@ -729,6 +785,7 @@ def handle_xlsx_write(payload: dict) -> dict:
     wb.remove(default)
     total_rows = 0
     sheets_written = 0
+    cells_formatted = 0
     for sh in sheets:
         if not isinstance(sh, dict):
             raise ValueError("sheet precisa ser um dict")
@@ -739,11 +796,33 @@ def handle_xlsx_write(payload: dict) -> dict:
         rows = sh.get("rows", [])
         if not isinstance(headers, list) or not isinstance(rows, list):
             raise ValueError("'headers' e 'rows' precisam ser listas")
+        column_formats = sh.get("column_formats")
+        if column_formats is not None and not isinstance(column_formats, dict):
+            raise ValueError("'column_formats' precisa ser um dict {col_idx: format}")
         ws = wb.create_sheet(title=name)
         if headers:
             ws.append(headers)
         for row in rows:
             ws.append(row)
+        # Aplica `column_formats` em todas as celulas
+        # de dados (rows, nao header). Itera por coluna
+        # pra evitar recriar o dicionario em cada celula.
+        # Roda DEPOIS do `ws.append` pra que `cell.value`
+        # e `cell.row` correspondam ao que o usuario
+        # mandou.
+        if column_formats:
+            for col_idx, fmt_value in column_formats.items():
+                excel_fmt = _resolve_xlsx_format(fmt_value)
+                if excel_fmt is None:
+                    continue
+                col = int(col_idx) + 1  # openpyxl e 1-indexed
+                # header (linha 1, se houver) NAO recebe
+                # format. Data rows comecam na linha 2.
+                for row_offset in range(2, 2 + len(rows)):
+                    cell = ws.cell(row=row_offset, column=col)
+                    if cell.value is not None:
+                        cell.number_format = excel_fmt
+                        cells_formatted += 1
         total_rows += len(rows)
         sheets_written += 1
     wb.save(str(path))
@@ -753,24 +832,98 @@ def handle_xlsx_write(payload: dict) -> dict:
         "size_bytes": path.stat().st_size,
         "sheets_written": sheets_written,
         "total_rows": total_rows,
+        "cells_formatted": cells_formatted,
     }
 
 
 # ---- xlsx.read ------------------------------------------------------------
 
+# Mapeamento reverso de Excel format string → alias
+# semantico (consistente com `XLSX_FORMAT_ALIASES` do
+# `xlsx.write`). Usado pelo `docs.inspect` (Etapa 4) pra
+# expor `currency_format: "BRL"` em vez do string cru
+# `R$ #,##0.00`. Normalizacao leve: o Excel as vezes
+# inclui espacos extras ou formato equivalente.
+XLSX_FORMAT_ALIAS_REVERSE = {
+    "R$ #,##0.00": "BRL",
+    "$ #,##0.00": "BRL",
+    "0.00%": "PCT",
+    "0%": "PCT",
+    "#,##0.00": "THOUSANDS",
+    "#,##0": "INT",
+}
+
+
+def _resolve_xlsx_format_alias(excel_fmt: str):
+    """Resolve Excel format string → alias semantico
+    (ou retorna o string cru se nao for alias conhecido).
+    """
+    return XLSX_FORMAT_ALIAS_REVERSE.get(excel_fmt, excel_fmt)
+
 
 def handle_xlsx_read(payload: dict) -> dict:
-    """xlsx.read: le um .xlsx e devolve sheets + dados.
+    """xlsx.read: le um .xlsx e devolve sheets + dados + metadados estruturais.
 
-    Input: `{"path": str, "sheet": str?}` - `sheet` filtra uma so sheet
-    (opcional; default = todas).
-    Output: `{"ok": true, "sheets": [{"name": str, "headers": [str], "rows": [[]]}], "n_sheets": int}`
+    Input: `{"path": str, "sheet": str?, "sample_rows": int?, "range": str?}`
+    - `sheet` filtra uma so sheet (opcional; default = todas).
+    - `sample_rows` (opcional, Etapa 4 do docs.inspect):
+      limita o numero de `first_rows` devolvidos por sheet
+      (default 5, max 20). Se a sheet tem mais linhas, so
+      as primeiras N sao incluidas. O numero total de
+      linhas (`n_rows`) continua sendo o completo.
+    - `range` (opcional, modo detalhe do docs.inspect):
+      por enquanto, so validado (formato "A1:D10" ou
+      similar). v0.3.0 do worker NAO aplica `range` ao
+      openpyxl — o caller (docs.inspect) faz o filtro
+      depois. A Etapa 4 do docs.inspect usa o range
+      apenas como flag de "modo detalhe"; a leitura
+      sempre vem completa.
+
+    Output: `{"ok": true, "sheets": [{"name": str, "headers": [str], "rows": [[]],
+    "used_range": str, "n_rows": int, "n_cols": int,
+    "first_rows": [[]], "column_formats": {<col>: <alias>}}], "n_sheets": int}`
+
+    `column_formats` (Etapa 4): mapa `{<col_idx>: <alias>}`
+    derivado do `cell.number_format` da primeira celula
+    NAO-vazia de cada coluna (header NAO conta — so
+    dados). Aliases: "BRL" / "PCT" / "THOUSANDS" / "INT"
+    (consistente com `XLSX_FORMAT_ALIASES` do write);
+    se o formato do Excel nao bate com alias, o valor
+    e o format string cru.
+
+    `used_range`: intervalo usado no openpyxl (ex:
+    "A1:C5") — usado pelo docs.inspect pra exibir
+    "intervalo: A1:C5" no modo resumo.
+
+    `first_rows`: amostra das primeiras `sample_rows`
+    linhas de dados (Etapa 4, default 5, max 20) —
+    evita despejar planilha de 5000 linhas no contexto
+    do modelo.
     """
     path = validate_path(_payload_field(payload, "path", str), "read")
     sheet_filter = payload.get("sheet")
     if sheet_filter is not None and not isinstance(sheet_filter, str):
         raise ValueError("'sheet' precisa ser string")
-    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    sample_rows = payload.get("sample_rows", 5)
+    if not isinstance(sample_rows, int) or not (1 <= sample_rows <= 20):
+        raise ValueError("'sample_rows' precisa ser int entre 1 e 20")
+    # `range` so validado em v0.3.0 (o handler nao
+    # aplica). Formato esperado: "A1:D10" (coluna
+    # letra + linha numero, ate 2 pares). Validacao
+    # leve — so confere que nao tem `..` e tem o
+    # formato basico.
+    range_arg = payload.get("range")
+    if range_arg is not None and not isinstance(range_arg, str):
+        raise ValueError("'range' precisa ser string")
+    if range_arg is not None and ".." in range_arg:
+        raise ValueError("'range' nao pode conter '..'")
+    # Modo normal (read_only=False) pra ter acesso a
+    # `cell.number_format`. O inspect e eventual (nao
+    # roda em hot path), entao o custo extra de memoria
+    # e aceitavel. data_only=True garante que celulas
+    # com formula devolvem o valor calculado, nao a
+    # formula.
+    wb = openpyxl.load_workbook(str(path), data_only=True)
     sheets_out = []
     for ws in wb.worksheets:
         if sheet_filter is not None and ws.title != sheet_filter:
@@ -784,10 +937,42 @@ def handle_xlsx_read(payload: dict) -> dict:
                 [str(c) if c is not None else "" for c in row]
                 for row in rows_list[1:]
             ]
+        n_cols = len(headers)
+        n_rows = len(data_rows)
+        # column_formats: `cell.number_format` da
+        # primeira celula nao-vazia de cada coluna
+        # (header e linha 1 contam como dados;
+        # o caller decide se ignora). Em modo
+        # normal, cell.number_format e acessivel.
+        column_formats = {}
+        for col_idx in range(n_cols):
+            # Itera todas as linhas (incluindo
+            # header) — o caller (docs.inspect)
+            # sabe que row 0 e header e ignora.
+            # Mas documentamos aqui: row 0
+            # (header) e incluido se tiver
+            # number_format explicito.
+            for row_offset, _ in enumerate(rows_list, start=1):
+                cell = ws.cell(row=row_offset, column=col_idx + 1)
+                if cell.value is not None and cell.value != "":
+                    column_formats[str(col_idx)] = _resolve_xlsx_format_alias(
+                        cell.number_format
+                    )
+                    break
+        # used_range: openpyxl expoe via
+        # `ws.dimensions` (string tipo "A1:C5").
+        used_range = ws.dimensions
+        # first_rows: amostra (sample_rows).
+        first_rows = data_rows[:sample_rows]
         sheets_out.append({
             "name": ws.title,
             "headers": headers,
             "rows": data_rows,
+            "used_range": used_range,
+            "n_rows": n_rows,
+            "n_cols": n_cols,
+            "first_rows": first_rows,
+            "column_formats": column_formats,
         })
     wb.close()
     return {

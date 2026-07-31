@@ -71,6 +71,22 @@ pub enum KitError {
     PathNotAllowed(String),
 }
 
+/// Mapeamento de um bloco do `DocumentSpec` pra uma sheet
+/// do workbook gerado (Etapa 4 da Fase 5, ExcelPro).
+///
+/// Devolvido no `KitOutput::sheets` pra que o `docs.inspect`
+/// (e o modelo, via `output` do `docs.generate`) saiba em
+/// que sheet cada bloco caiu — sem isso, o round-trip
+/// precisa adivinhar em que aba caiu cada Table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetMapping {
+    /// Índice do bloco no `DocumentSpec.blocks` (0-based).
+    pub block_index: usize,
+    /// Nome da sheet criada (sanitizado — sem caracteres
+    /// proibidos pelo Excel, max 31 chars, único).
+    pub sheet_name: String,
+}
+
 /// Saída de um `Kit::render`. Traduzida em `ToolResult.output`
 /// pelo `DocsGenerateTool::execute`.
 #[derive(Debug, Clone)]
@@ -86,6 +102,35 @@ pub struct KitOutput {
     /// Metadados extras do worker (ex: `sections_written` do
     /// `docx.write`). Merged no `ToolResult.output`.
     pub extra: Value,
+    /// Mapeamento `bloco → sheet` (Etapa 4, ExcelPro). Vazio
+    /// pra WordPro/PdfPro (que não produzem sheets no
+    /// sentido de workbook).
+    pub sheets: Vec<SheetMapping>,
+    /// Avisos do kit (ex: chart reduzido a dados tabulares
+    /// porque o `xlsx.write` v0.3.0 não renderiza chart real).
+    /// **Sempre declaram degradações** — o modelo precisa
+    /// poder dizer a verdade ao usuário (Etapa 4 deltas).
+    /// Default: vazio. O `DocsGenerateTool` propaga no
+    /// `output.warnings` do ToolResult.
+    pub warnings: Vec<String>,
+}
+
+impl KitOutput {
+    /// Helper de conveniência: cria um `KitOutput` com os
+    /// campos minimos (sem sheets, sem warnings) — usado
+    /// por kits que não produzem sheets (WordPro v0.1) ou
+    /// em testes.
+    #[must_use]
+    pub fn simple(path: PathBuf, size_bytes: u64, format: DocumentFormat, extra: Value) -> Self {
+        Self {
+            path,
+            size_bytes,
+            format,
+            extra,
+            sheets: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// Trait de um kit.

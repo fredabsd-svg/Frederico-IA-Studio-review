@@ -38,6 +38,17 @@ pub enum DocumentFormat {
     /// v0.1 do kit).
     #[serde(alias = "docx")]
     Docx,
+
+    /// Microsoft Excel (`.xlsx`).
+    ///
+    /// Implementado na Etapa 4 da Fase 5 (ExcelPro v0.1:
+    /// Spreadsheet com Kpis/Table/Chart em .xlsx, com
+    /// formatos numéricos brasileiros — BRL, PCT, milhar).
+    /// Chart real (bar/line/pie com cores) fica pra
+    /// Etapa 5/6 com extensão do `xlsx.write` ou handler
+    /// novo; Etapa 4 v0.1 ancorada no primitivo.
+    #[serde(alias = "xlsx")]
+    Xlsx,
 }
 
 impl DocumentFormat {
@@ -47,6 +58,7 @@ impl DocumentFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Docx => "docx",
+            Self::Xlsx => "xlsx",
         }
     }
 
@@ -55,6 +67,7 @@ impl DocumentFormat {
     pub const fn extension(self) -> &'static str {
         match self {
             Self::Docx => ".docx",
+            Self::Xlsx => ".xlsx",
         }
     }
 
@@ -63,6 +76,7 @@ impl DocumentFormat {
     pub const fn mime_type(self) -> &'static str {
         match self {
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }
     }
 }
@@ -82,14 +96,16 @@ mod tests {
         // O que sai no schema (snake_case) tem que bater com
         // o que a serde produz. Se um dia alguém mudar o
         // rename, este teste pega.
-        let fmt = DocumentFormat::Docx;
-        let json = serde_json::to_string(&fmt).unwrap();
-        let expected = format!("\"{}\"", fmt.as_str());
-        assert_eq!(json, expected, "DocumentFormat::{fmt:?} divergente");
+        for fmt in [DocumentFormat::Docx, DocumentFormat::Xlsx] {
+            let json = serde_json::to_string(&fmt).unwrap();
+            let expected = format!("\"{}\"", fmt.as_str());
+            assert_eq!(json, expected, "DocumentFormat::{fmt:?} divergente");
+        }
     }
 
     #[test]
     fn extension_includes_dot() {
         assert_eq!(DocumentFormat::Docx.extension(), ".docx");
+        assert_eq!(DocumentFormat::Xlsx.extension(), ".xlsx");
     }
 }

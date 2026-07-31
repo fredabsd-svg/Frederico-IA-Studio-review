@@ -341,7 +341,9 @@ async fn e2e_docx_write_and_read() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| v.as_str().unwrap_or(""))
+            // Etapa 4: paragraphs e' `[{text, style}]`,
+            // nao `[str]`. Extrai o campo `text`.
+            .map(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or(""))
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
@@ -408,6 +410,70 @@ async fn e2e_xlsx_write_and_read() {
     })
     .await
     .expect("e2e_xlsx_write_and_read nao deve travar");
+}
+
+/// xlsx.write + column_formats: gera workbook com formato
+/// de moeda brasileira (BRL) e percentual (PCT) em colunas
+/// especificas, valida `cells_formatted` no output. A
+/// verificacao de que `cell.number_format` foi efetivamente
+/// aplicado fica pra Etapa 4 (com `openpyxl` em subprocess
+/// re-lendo o arquivo).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_xlsx_write_with_column_formats() {
+    with_test_timeout_at("e2e_xlsx_write_with_column_formats", E2E_TIMEOUT, async {
+        let cfg = doc_worker_config(|c| c);
+        let (manager, handle) = frederico_process_architecture::WorkerManager::spawn_external(cfg)
+            .await
+            .expect("spawn_external");
+
+        let out = temp_out_dir();
+        std::fs::create_dir_all(&out).unwrap();
+
+        let xlsx_path = out.join("formatted.xlsx");
+        let write_result = handle
+            .invoke(json!({
+                "capability": "xlsx.write",
+                "path": xlsx_path.to_string_lossy(),
+                "sheets": [{
+                    "name": "Receitas",
+                    "headers": ["Mes", "Valor (R$)", "Crescimento (%)"],
+                    "rows": [
+                        ["Jan", 1000, 0.05],
+                        ["Fev", 2000, 0.10],
+                        ["Mar", 3000, 0.15]
+                    ],
+                    "column_formats": {
+                        "1": "BRL",
+                        "2": "PCT"
+                    }
+                }]
+            }))
+            .await
+            .expect("invoke xlsx.write");
+        assert_eq!(write_result["ok"], json!(true));
+        // cells_formatted = 2 colunas * 3 linhas = 6
+        assert_eq!(write_result["cells_formatted"], json!(6));
+        assert_eq!(write_result["sheets_written"], json!(1));
+        assert!(xlsx_path.is_file());
+
+        // Re-le via xlsx.read pra confirmar que os valores
+        // estao la (a Etapa 4 do ExcelPro faz o resto da
+        // verificacao estrutural com openpyxl em
+        // subprocess; aqui so validamos o handler do
+        // worker).
+        let read_result = handle
+            .invoke(json!({"capability": "xlsx.read", "path": xlsx_path.to_string_lossy()}))
+            .await
+            .expect("invoke xlsx.read");
+        assert_eq!(read_result["ok"], json!(true));
+        let sheet = &read_result["sheets"][0];
+        assert_eq!(sheet["headers"][1], json!("Valor (R$)"));
+        assert_eq!(sheet["rows"][0][1], json!("1000"));
+
+        manager.shutdown().await.expect("shutdown");
+    })
+    .await
+    .expect("e2e_xlsx_write_with_column_formats nao deve travar");
 }
 
 /// pdf.write + pdf.read: gera PDF (com fontes Tinta e Latao embutidas),

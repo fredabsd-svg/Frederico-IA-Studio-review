@@ -194,7 +194,8 @@ impl DocsGenerateTool {
     fn parse_format(s: &str) -> Result<DocumentFormat, String> {
         match s {
             "docx" => Ok(DocumentFormat::Docx),
-            // Quando Etapa 4/5 adicionarem, este match cresce.
+            "xlsx" => Ok(DocumentFormat::Xlsx),
+            // Quando Etapa 5 adicionar `pdf`, este match cresce.
             other => Err(format!(
                 "formato '{other}' não é um DocumentFormat conhecido"
             )),
@@ -327,12 +328,44 @@ impl Tool for DocsGenerateTool {
         };
 
         // 7. Monta o `output` do ToolResult.
-        let output = json!({
+        //
+        // Inclui `sheets` (mapeamento bloco → sheet, Etapa 4)
+        // e `warnings` (degradações declaradas, Etapa 4 deltas:
+        // "se algo for puxado para dentro do handler antes da
+        // hora, que sejam os formatos numéricos, não o chart"
+        // — a degradação tem que ser declarada, nunca
+        // silenciosa, pro modelo poder dizer a verdade ao
+        // usuário).
+        let sheets_json: Vec<Value> = kit_output
+            .sheets
+            .iter()
+            .map(|s| {
+                json!({
+                    "block_index": s.block_index,
+                    "sheet_name": s.sheet_name,
+                })
+            })
+            .collect();
+        let mut output = json!({
             "path": kit_output.path.to_string_lossy(),
             "size_bytes": kit_output.size_bytes,
             "format": kit_output.format.as_str(),
             "sections_written": kit_output.extra.get("sections_written").cloned().unwrap_or(json!(0)),
+            "sheets": sheets_json,
+            "warnings": kit_output.warnings,
         });
+        // Merge `extra` por último para que campos
+        // específicos do kit (ex: `cells_formatted` do
+        // `xlsx.write`) apareçam no topo do output. `sheets`
+        // e `warnings` continuam presentes (kit não pode
+        // sobrescrever).
+        if let Value::Object(extra_map) = kit_output.extra {
+            if let Value::Object(out_map) = &mut output {
+                for (k, v) in extra_map {
+                    out_map.insert(k, v);
+                }
+            }
+        }
 
         ToolResult::ok(self.tool_id.clone(), output, vec![kit_output.path])
     }
@@ -371,11 +404,43 @@ mod tests {
         (tool, manager)
     }
 
+    /// Helper (Etapa 4): constroi o tool com WordPro E
+    /// ExcelPro registrados — para testar o inventario
+    /// `["docx", "xlsx"]` do `format` no schema.
+    async fn build_tool_with_all_kits() -> (
+        DocsGenerateTool,
+        frederico_process_architecture::WorkerManager,
+    ) {
+        let (manager, handle) = frederico_process_architecture::WorkerManager::spawn_in_process(
+            FakeWorkerConfig::default(),
+            frederico_process_architecture::WorkerSpawnConfig::default(),
+        )
+        .await
+        .expect("spawn fake worker");
+
+        let handle = Arc::new(handle);
+        let wordpro = Arc::new(crate::wordpro::WordProKit::new(handle.clone()));
+        let excelpro = Arc::new(crate::excelpro::ExcelProKit::new(handle.clone()));
+        let mut registry = KitRegistry::new();
+        registry.register(wordpro);
+        registry.register(excelpro);
+        let registry = Arc::new(registry);
+
+        let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+        let tool = DocsGenerateTool::new(registry, dispatcher);
+
+        (tool, manager)
+    }
+
     #[tokio::test]
     async fn format_schema_contains_only_implemented() {
-        // O registry v0.1 só tem WordPro (Docx).
-        // O schema do `format` deve ser exatamente `["docx"]`.
-        let (tool, _manager) = build_tool_with_wordpro().await;
+        // Registry v0.1 (Etapa 3) so tinha WordPro
+        // (Docx). A Etapa 4 adiciona ExcelPro (Xlsx) —
+        // o schema do `format` agora tem `["docx", "xlsx"]`
+        // (em ordem alfabetica por as_str). Inventario
+        // nao mente (REGRAS §1.9): so aparece o que esta
+        // implementado.
+        let (tool, _manager) = build_tool_with_all_kits().await;
         let schema = tool.manifest().input_schema.0.clone();
         let format_enum = schema
             .get("properties")
@@ -387,7 +452,7 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        assert_eq!(formats, vec!["docx"]);
+        assert_eq!(formats, vec!["docx", "xlsx"]);
     }
 
     #[tokio::test]

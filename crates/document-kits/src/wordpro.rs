@@ -443,6 +443,14 @@ impl Kit for WordProKit {
             size_bytes,
             format: DocumentFormat::Docx,
             extra: json!({ "sections_written": sections_written }),
+            // WordPro v0.1 nao produz sheets (modelo
+            // de workbook) nem tem warnings. v0.1
+            // cobre todos os 20 blocos com fallback
+            // textual onde o `docx.write` v0.3.0 nao tem
+            // cobertura direta (Tabela vira texto
+            // tab-separado, etc.).
+            sheets: Vec::new(),
+            warnings: Vec::new(),
         })
     }
 }
