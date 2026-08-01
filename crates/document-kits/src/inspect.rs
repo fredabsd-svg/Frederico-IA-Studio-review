@@ -226,14 +226,6 @@ impl DocsInspectTool {
 
     /// Dispatch para `docx.read` ou `xlsx.read` no
     /// worker. Retorna a response crua.
-    ///
-    /// **Etapa 5 (ADR-0021, §D-INSPECT-1):** `pdf.read` é o
-    /// handler de leitura de PDF que **já existe** no worker, mas
-    /// o round-trip de `.pdf` para `DocumentSpec` é não-trivial
-    /// (handler devolve `text` + `ocr_text` + `page_count`, não
-    /// reconstrói blocos) e está registrado como pendência 5.x.
-    /// O `infer_format` rejeita `.pdf` e o schema do `format`
-    /// não inclui `"pdf"`, então este match é só defensivo.
     async fn invoke_read(
         &self,
         path: &str,
@@ -242,25 +234,11 @@ impl DocsInspectTool {
         sample_rows: usize,
         range: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let capability = match format {
-            DocumentFormat::Docx => "docx.read",
-            DocumentFormat::Xlsx => "xlsx.read",
-            // `pdf.read` existe no worker mas `docs.inspect` para
-            // `.pdf` é pendência 5.x (D-INSPECT-1) — não chega
-            // aqui porque o schema e o `infer_format` rejeitam
-            // antes. Defesa em profundidade: devolve
-            // `ProcessError::Protocol` (semanticamente "essa
-            // capability não está exposta via este caminho").
-            DocumentFormat::Pdf => {
-                return Err(DispatchError::Process(
-                    frederico_process_architecture::ProcessError::Protocol {
-                        message: "docs.inspect para .pdf registrado como pendência 5.x (ADR-0021 §D-INSPECT-1)".to_string(),
-                    },
-                ));
-            }
-        };
         let mut args = json!({
-            "capability": capability,
+            "capability": match format {
+                DocumentFormat::Docx => "docx.read",
+                DocumentFormat::Xlsx => "xlsx.read",
+            },
             "path": path,
             "sample_rows": sample_rows,
         });
@@ -633,19 +611,7 @@ impl Tool for DocsInspectTool {
         }
 
         // 6. Monta a InspectOutput.
-        //
-        // **Etapa 5 (ADR-0021, §D-INSPECT-1):** `DocumentFormat::Pdf`
-        // é tratado explicitamente como `coverage.lost` total — o
-        // round-trip de `.pdf` para `DocumentSpec` é pendência 5.x.
-        // O schema e o `infer_format` rejeitam antes, então o
-        // caminho normal nunca chega aqui; defesa em profundidade.
         let (spec, coverage) = match format {
-            DocumentFormat::Pdf => {
-                return ToolResult::err(
-                    self.tool_id.clone(),
-                    "docs.inspect para .pdf registrado como pendência 5.x (ADR-0021 §D-INSPECT-1). O handler pdf.read existe no worker mas não reconstrói DocumentSpec — use-o direto via tools que precisam do texto, ou aguarde a Etapa 5.x.",
-                );
-            }
             DocumentFormat::Docx => {
                 // Etapa 4: `docx.read` devolve paragraphs
                 // COM style (dict {text, style}). Tuples
@@ -751,11 +717,7 @@ impl Tool for DocsInspectTool {
                     .unwrap_or_default();
                 Self::build_sheet_summaries(&sheets_json)
             }
-            // Etapa 5 (ADR-0021): `Pdf` é defesa em profundidade —
-            // o caminho normal retorna erro antes deste match.
-            // Se chegasse aqui, devolve sheets vazio (não tem
-            // sheets no sentido de workbook).
-            DocumentFormat::Docx | DocumentFormat::Pdf => Vec::new(),
+            DocumentFormat::Docx => Vec::new(),
         };
 
         // 7. Serializa o output.

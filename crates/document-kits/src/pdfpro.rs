@@ -14,6 +14,24 @@
 //!    `render` — sem ela, não é PDFPro. Sem a auditoria,
 //!    é "um `pdf.write` sem conferências", que é o
 //!    precedente ruim que a Etapa 3 evita explicitamente.
+//!
+//! ## Estado na Etapa 5 PR 1 (ADR-0021)
+//!
+//! A Etapa 5 PR 1 é **fundação** — escreve o ADR, adiciona
+//! `pikepdf` + `pypdfium2` + `fonttools` ao `bootstrap.ps1`
+//! (D-FAIL-1: hard-fail se faltar), cria o campo
+//! `DocumentMetadata.watermark` (D-PDF2) com a regra
+//! `validate_semantic` 8 (Sobrio + watermark rejeitados), e
+//! bumpa `SpecVersion` 0.1.0 → 0.2.0 (MINOR: novo campo
+//! opcional, backward-compat).
+//!
+//! O `is_implemented() == false` e o `DocumentFormat::Pdf`
+//! continuam fora do enum **até a PR 2**, que entrega o
+//! `render` real (fontes Tinta & Latão embutidas, identidade
+//! visual "Tinta & Latão" + modo Sóbrio, 20 blocos, glifo-check
+//! via `fontTools` antes de renderizar). Bump atômico do enum
+//! `DocumentFormat::Pdf` junto com o flip do `is_implemented`
+//! é o precedente do ADR-0020 §3 (D3) — manter a regra.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -51,28 +69,23 @@ impl PdfProKit {
 
     fn build_manifest() -> ToolManifest {
         ToolManifestBuilder::new("docs.pdfpro.skeleton", "docs")
-            .version("0.1.0-skeleton")
-            .display_name("PDFPro (skeleton v0.1)")
+            .version("0.0.0")
+            .display_name("PDFPro (skeleton)")
             .description(
-                "PR 1 (Etapa 5, ADR-0021): bump atômico do enum `DocumentFormat::Pdf` \
-                 + `is_implemented = true` no `KitRegistry`. A v0.1 do `render` \
-                 (fontes Tinta & Latão embutidas, identidade visual, modo Sóbrio, \
-                 20 blocos) entra no PR 2. A auditoria bloqueante do §19.6 (visual \
-                 + estrutural) entra nos PRs 3 e 4. Até lá, o `render` retorna \
-                 `KitError::NotImplemented { etapa: \"5.v0.1\" }` — o enum do schema \
-                 do `docs.generate` já mostra `pdf` como opção, mas chamar retorna \
-                 erro honesto. Sem \"plano B\" silencioso.",
+                "Skeleton do kit PDFPro. Será implementado na Etapa 5 da Fase 5, COM \
+                 auditoria bloqueante do PROMPT MESTRE §19.6 (sem interruptor). \
+                 Até lá, não aparece no schema do `docs.generate`.",
             )
             .category(ToolCategory::Docs)
             .risk_level(RiskLevel::Moderate)
             .disabled()
             .input_schema(JsonSchema(serde_json::json!({
                 "type": "object",
-                "description": "PR 1 (Etapa 5, ADR-0021): schema detalhado entra no PR 2 (render real)."
+                "description": "Skeleton — schema não exposto ao modelo."
             })))
             .output_schema(JsonSchema(serde_json::json!({
                 "type": "object",
-                "description": "PR 1 (Etapa 5, ADR-0021): schema detalhado entra no PR 2."
+                "description": "Skeleton — schema não exposto ao modelo."
             })))
             .build()
             .expect("manifesto skeleton bem-formado")
@@ -86,27 +99,16 @@ impl Kit for PdfProKit {
     }
 
     fn target_format(&self) -> DocumentFormat {
-        // PR 1 (Etapa 5, ADR-0021): bump atômico do enum
-        // `DocumentFormat::Pdf`. O `KitRegistry::implemented_formats()`
-        // volta de `["docx", "xlsx"]` para `["docx", "xlsx", "pdf"]`
-        // no mesmo commit (REGRAS §1.9 — inventário não mente).
-        // O `is_implemented() == true` reflete que o **kit existe
-        // e está registrado**; a v0.1 do `render` entra no PR 2.
-        // Até lá, chamar `render` retorna `NotImplemented` com
-        // `etapa: "5.v0.1"` — honesto, sem mentir.
-        DocumentFormat::Pdf
+        // Etapa 5: trocar para `DocumentFormat::Pdf` (junto
+        // com a variante no enum) E flipar `is_implemented` para
+        // `true` — bump atômico (precedente do ADR-0020 §3, D3).
+        // Sem o `render` real (PR 2) + auditoria bloqueante do
+        // §19.6 (PRs 3-4), **não** é PDFPro — não entregar.
+        DocumentFormat::Docx
     }
 
     fn is_implemented(&self) -> bool {
-        // PR 1 (Etapa 5, ADR-0021): `true`. O `PdfProKit` está
-        // implementado e registrado no `KitRegistry`; o que falta é
-        // a v0.1 do `render` em si, que retorna `NotImplemented`
-        // com `etapa: "5.v0.1"`. O `KitRegistry::implemented()`
-        // filtra por este flag antes de gerar o enum do schema.
-        // Se ficasse `false`, o modelo não veria `pdf` como
-        // opção de `format` no `docs.generate` — e isso seria
-        // o "inventário que mente" que REGRAS §1.9 proíbe.
-        true
+        false
     }
 
     fn manifest(&self) -> &ToolManifest {
@@ -118,21 +120,10 @@ impl Kit for PdfProKit {
         _spec: &DocumentSpec,
         _output_path: &Path,
     ) -> Result<KitOutput, KitError> {
-        // PR 1 (Etapa 5, ADR-0021): `render` ainda não implementado
-        // — entra no PR 2 (fontes Tinta & Latão embutidas,
-        // identidade visual "Tinta & Latão" + modo Sóbrio, 20 blocos
-        // cobertos, glifo-check via `fontTools`).
-        //
-        // A auditoria bloqueante do §19.6 (visual §19.3 + estrutural
-        // §19.4) entra nos PRs 3 e 4. A `etapa: "5.v0.1"` sinaliza
-        // ao caller que a v0.1 do PDFPro está em construção e que
-        // ele deve tentar de novo na próxima release. O caller
-        // (modelo via `docs.generate`) traduz em mensagem amigável
-        // pro usuário final.
         Err(KitError::NotImplemented {
             id: self.id().to_string(),
             format: self.target_format(),
-            etapa: "5.v0.1",
+            etapa: "5",
         })
     }
 }

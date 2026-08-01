@@ -6,14 +6,22 @@
 //! enumeração que aparece no `input_schema` do `docs.generate`
 //! (campo `format`) é **gerada** a partir de
 //! `KitRegistry::implemented_formats()` — **nunca** mantida à
-//! mão. Adicionar `DocumentFormat::Xlsx` exige que o
-//! `ExcelProKit` esteja implementado e registrado; até lá, o
-//! modelo não sabe que `.xlsx` é uma opção.
+//! mão. Adicionar uma variante exige que o `Kit`
+//! correspondente esteja **implementado** (não skeleton) **e**
+//! registrado no `KitRegistry`; até lá, o modelo não sabe que
+//! o formato é uma opção (precedente do ADR-0020 D3 — o Xlsx
+//! só entrou no enum junto com o `ExcelProKit` real).
 //!
 //! Inventário que mente é o defeito que derrubou o app
 //! anterior — a disciplina é: o que o modelo enxerga
 //! corresponde ao que existe. Esta enum é a
 //! materialização Rust dessa regra.
+//!
+//! **Estado atual (Etapa 5 PR 1):** apenas `Docx` e `Xlsx`.
+//! `Pdf` entra no PR 2 junto com o `PdfProKit` real
+//! (render + auditoria bloqueante do §19.6) — manter a regra
+//! "bump atômico do enum junto com a implementação do kit"
+//! do ADR-0020 §3 (D3).
 
 use std::fmt;
 
@@ -28,7 +36,9 @@ use serde::{Deserialize, Serialize};
 /// 2. O kit registrado no `KitRegistry`.
 ///
 /// Sem os dois, a variante **não** aparece no schema do
-/// `docs.generate` — o modelo não pode pedir.
+/// `docs.generate` — o modelo não pode pedir. Precedente:
+/// ADR-0020 §3 (D3) — `DocumentFormat::Xlsx` só entrou no
+/// enum junto com o `ExcelProKit` real (Etapa 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentFormat {
@@ -49,29 +59,16 @@ pub enum DocumentFormat {
     /// novo; Etapa 4 v0.1 ancorada no primitivo.
     #[serde(alias = "xlsx")]
     Xlsx,
-
-    /// PDF (`.pdf`).
-    ///
-    /// Implementado na Etapa 5 da Fase 5 (ADR-0021): `PdfProKit`
-    /// real substitui o skeleton. Renderiza `DocumentSpec` em
-    /// `.pdf` com fontes Tinta & Latão embutidas, identidade
-    /// visual "Tinta & Latão" + modo Sóbrio, e passa pela
-    /// auditoria bloqueante do `PROMPT MESTRE` §19.6
-    /// (visual §19.3 + estrutural §19.4) **dentro do salvamento**
-    /// — reprovação = artefato não é entregue. Sem interruptor.
-    #[serde(alias = "pdf")]
-    Pdf,
 }
 
 impl DocumentFormat {
     /// Serializa como string no formato aceito pelo schema
-    /// (`"docx"`, `"xlsx"`, `"pdf"` — snake_case).
+    /// (`"docx"`, `"xlsx"` — snake_case).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
-            Self::Pdf => "pdf",
         }
     }
 
@@ -81,7 +78,6 @@ impl DocumentFormat {
         match self {
             Self::Docx => ".docx",
             Self::Xlsx => ".xlsx",
-            Self::Pdf => ".pdf",
         }
     }
 
@@ -91,7 +87,6 @@ impl DocumentFormat {
         match self {
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            Self::Pdf => "application/pdf",
         }
     }
 }
@@ -111,11 +106,7 @@ mod tests {
         // O que sai no schema (snake_case) tem que bater com
         // o que a serde produz. Se um dia alguém mudar o
         // rename, este teste pega.
-        for fmt in [
-            DocumentFormat::Docx,
-            DocumentFormat::Xlsx,
-            DocumentFormat::Pdf,
-        ] {
+        for fmt in [DocumentFormat::Docx, DocumentFormat::Xlsx] {
             let json = serde_json::to_string(&fmt).unwrap();
             let expected = format!("\"{}\"", fmt.as_str());
             assert_eq!(json, expected, "DocumentFormat::{fmt:?} divergente");
@@ -126,6 +117,5 @@ mod tests {
     fn extension_includes_dot() {
         assert_eq!(DocumentFormat::Docx.extension(), ".docx");
         assert_eq!(DocumentFormat::Xlsx.extension(), ".xlsx");
-        assert_eq!(DocumentFormat::Pdf.extension(), ".pdf");
     }
 }

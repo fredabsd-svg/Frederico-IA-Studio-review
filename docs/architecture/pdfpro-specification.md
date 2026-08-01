@@ -7,28 +7,33 @@ Fase correspondente: 5 (Etapa 5 — PR 1 do PDFPro)
 > Última verificação: 2026-07-31. Reflete a Etapa 5 da Fase 5 — o
 > PR 1 do PDFPro fecha a **fundação**:
 >
-> - ADR-0021 escrito (D-PDF1 engine, D-PDF2 marca d'água, D-PDF3
+> - **ADR-0021 escrito** (D-PDF1 engine, D-PDF2 marca d'água, D-PDF3
 >   compressão, D-PDF4 proteção, D-PDF5 PDF/A-2B, D-CONF-1
 >   correção §7.1, D-CHART-1 chart nativo, D-AUDIT-1 cache key,
 >   D-GLYPH-1 glifo, D-FAIL-1 hard-fail, D-INSPECT-1 inspect PDF).
-> - Bump atômico do `DocumentFormat::Pdf` no enum + `PdfProKit`
->   com `is_implemented() == true` (REGRAS §1.9). O `render`
->   continua `NotImplemented` — v0.1 do render entra no PR 2.
-> - `SpecVersion` bump 0.1.0 → 0.2.0 (MINOR: novo campo
+> - **`DocumentFormat::Pdf` no enum e `PdfProKit::is_implemented() == true`
+>   ficaram explicitamente fora desta PR** (precedente do ADR-0020
+>   §3, D3: "bump atômico do enum junto com a implementação do
+>   kit"). Ambos entram no PR 2 junto com o `render` real — bump
+>   atômico, sem ferramenta decorativa (REGRAS §1.9 — inventário
+>   não mente).
+> - **`SpecVersion` bump 0.1.0 → 0.2.0** (MINOR: novo campo
 >   `DocumentMetadata.watermark: Option<WatermarkSpec>`, backward-
 >   compat).
-> - `validate_semantic` regra 8: `style == Sobrio` rejeita
+> - **`validate_semantic` regra 8**: `style == Sobrio` rejeita
 >   `watermark.is_some()` (modo Sóbrio é para registráveis;
 >   tarja visual atravessando instrumento da Junta é erro).
-> - `bootstrap.ps1` + `pyproject.toml` + `manifest.json` ganham
->   `pikepdf`, `pypdfium2`, `fonttools` com hard-fail se faltar
+> - **`bootstrap.ps1` + `pyproject.toml` + `manifest.json` ganham
+>   `pikepdf`, `pypdfium2`, `fonttools`** com hard-fail se faltar
 >   (D-FAIL-1).
 >
 > **Estado continua `parcialmente implementado`**: a v0.1 do
 > `render` (fontes Tinta & Latão embutidas, identidade visual,
-> modo Sóbrio, 20 blocos) entra no PR 2. A auditoria bloqueante
-> do §19.6 (visual + estrutural) entra nos PRs 3 e 4. **Tagged
-> PDF** continua como lacuna registrada (PDF/A-2B exige Tagged;
+> modo Sóbrio, 20 blocos) entra no PR 2, junto com o bump
+> atômico do enum `DocumentFormat::Pdf` e o flip do
+> `is_implemented() == true`. A auditoria bloqueante do §19.6
+> (visual + estrutural) entra nos PRs 3 e 4. **Tagged PDF**
+> continua como lacuna registrada (PDF/A-2B exige Tagged;
 > v0.1 do PDFPro entrega PDF 1.7 com fontes embutidas e grade
 > auditada, com Tagged marcado como pendência 5.x).
 
