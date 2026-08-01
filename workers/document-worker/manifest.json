@@ -80,6 +80,17 @@
       "version": ">=4.50",
       "source": "pip show fonttools",
       "purpose": "Etapa 5 Fase 5 (ADR-0021): checagem de glifo via cmap ANTES de renderizar (D-GLYPH-1). Determinístico, rapido, aponta caractere + bloco culpado. MIT. Hard-fail se faltar (D-FAIL-1)."
+    },
+    {
+      "name": "srgb-icc",
+      "version": "IEC-61966-2.1-compatible-v1",
+      "source": "runtime/icc/sRGB.icc (gerado por tools/generate_srgb_icc.py)",
+      "sha256": "C4188E5C06585DDAD4F8781B8F8791BB4563874AC462C934D1420EA133D74B64",
+      "size_bytes": 526,
+      "format": "ICC v2 (ISO 15076-1)",
+      "color_space": "RGB",
+      "license": "public-domain (IEC 61966-2-1 standard, espaco sRGB e padrao internacional publico)",
+      "purpose": "Etapa 5 Fase 5 (ADR-0021) PR 3, D-PDF6: OutputIntent do PDF/A-2B (D-PDF5, opt-in via DocumentSpec.metadata.pdfa). Hard-fail do bootstrap se faltar ou SHA-256 divergir (D-FAIL-1). Gerado localmente - URL externa do color.org mudou em 2026 e raw/main do tessdata ja ensinou a licao."
     }
   ],
   "health": "unhealthy",
