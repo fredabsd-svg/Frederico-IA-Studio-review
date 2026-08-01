@@ -62,6 +62,24 @@
         "eng.traineddata": "7D4322BD2A7749724879683FC3912CB542F19906C83BCC1A52132556427170B2",
         "osd.traineddata": "9CF5D576FCC47564F11265841E5CA839001E7E6F38FF7F7AACF46D15A96B00FF"
       }
+    },
+    {
+      "name": "pikepdf",
+      "version": ">=9.0",
+      "source": "pip show pikepdf",
+      "purpose": "Etapa 5 Fase 5 (ADR-0021): auditoria estrutural do PDFPro (§19.4), checagem de fontes embutidas, PDF/A-2B (D-PDF5, opt-in). MPL-2.0. Hard-fail se faltar (D-FAIL-1)."
+    },
+    {
+      "name": "pypdfium2",
+      "version": ">=4.0",
+      "source": "pip show pypdfium2",
+      "purpose": "Etapa 5 Fase 5 (ADR-0021): rasterizacao para auditoria visual do PDFPro (§19.3) - grade, sobreposicao, pagina vazia, alinhamento. Apache-2.0 / BSD-3-Clause (PDFium do Chromium). Hard-fail se faltar (D-FAIL-1)."
+    },
+    {
+      "name": "fonttools",
+      "version": ">=4.50",
+      "source": "pip show fonttools",
+      "purpose": "Etapa 5 Fase 5 (ADR-0021): checagem de glifo via cmap ANTES de renderizar (D-GLYPH-1). Determinístico, rapido, aponta caractere + bloco culpado. MIT. Hard-fail se faltar (D-FAIL-1)."
     }
   ],
   "health": "unhealthy",

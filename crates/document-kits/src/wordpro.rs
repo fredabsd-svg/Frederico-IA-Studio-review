@@ -509,7 +509,11 @@ mod tests {
         let spec = empty_spec();
         let p = translate_spec_to_docx_payload(&spec, &out_path()).unwrap();
         assert_eq!(p["capability"], json!("docx.write"));
-        assert_eq!(p["title"], json!("Documento 0.1.0"));
+        // Bump 0.1.0 -> 0.2.0 na Etapa 5 (ADR-0021): o teste
+        // verifica o default de `SpecVersion` (0.2.0 desde o
+        // PR 1). Se voltar pra 0.1.0 por algum motivo, este
+        // teste pega.
+        assert_eq!(p["title"], json!("Documento 0.2.0"));
         assert!(sections(&p).is_empty());
     }
 

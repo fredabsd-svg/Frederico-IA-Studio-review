@@ -14,6 +14,24 @@
 //!    `render` — sem ela, não é PDFPro. Sem a auditoria,
 //!    é "um `pdf.write` sem conferências", que é o
 //!    precedente ruim que a Etapa 3 evita explicitamente.
+//!
+//! ## Estado na Etapa 5 PR 1 (ADR-0021)
+//!
+//! A Etapa 5 PR 1 é **fundação** — escreve o ADR, adiciona
+//! `pikepdf` + `pypdfium2` + `fonttools` ao `bootstrap.ps1`
+//! (D-FAIL-1: hard-fail se faltar), cria o campo
+//! `DocumentMetadata.watermark` (D-PDF2) com a regra
+//! `validate_semantic` 8 (Sobrio + watermark rejeitados), e
+//! bumpa `SpecVersion` 0.1.0 → 0.2.0 (MINOR: novo campo
+//! opcional, backward-compat).
+//!
+//! O `is_implemented() == false` e o `DocumentFormat::Pdf`
+//! continuam fora do enum **até a PR 2**, que entrega o
+//! `render` real (fontes Tinta & Latão embutidas, identidade
+//! visual "Tinta & Latão" + modo Sóbrio, 20 blocos, glifo-check
+//! via `fontTools` antes de renderizar). Bump atômico do enum
+//! `DocumentFormat::Pdf` junto com o flip do `is_implemented`
+//! é o precedente do ADR-0020 §3 (D3) — manter a regra.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -82,8 +100,10 @@ impl Kit for PdfProKit {
 
     fn target_format(&self) -> DocumentFormat {
         // Etapa 5: trocar para `DocumentFormat::Pdf` (junto
-        // com a variante no enum). Sem a auditoria
-        // bloqueante, não é PDFPro — não entregar.
+        // com a variante no enum) E flipar `is_implemented` para
+        // `true` — bump atômico (precedente do ADR-0020 §3, D3).
+        // Sem o `render` real (PR 2) + auditoria bloqueante do
+        // §19.6 (PRs 3-4), **não** é PDFPro — não entregar.
         DocumentFormat::Docx
     }
 

@@ -198,7 +198,14 @@ if ($libsOk) {
     Write-Host '[bootstrap] bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber) ja instaladas - pulando.' -ForegroundColor Yellow
 } else {
     Write-Host '[bootstrap] instalando bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber)'
-    & $PythonExe -m pip install python-docx openpyxl 'reportlab>=4.0' 'pdfplumber>=0.10' --no-warn-script-location
+    # Etapa 5 da Fase 5 (ADR-0021): auditoria bloqueante do PDFPro
+    # (§19.6) precisa de pikepdf (estrutural + PDF/A-2B), pypdfium2
+    # (visual, rasterizacao PDFium) e fontTools (checagem de glifo
+    # via cmap). Hard-fail do bootstrap se qualquer uma faltar
+    # (D-FAIL-1) - §19.6 nao tem interruptor, e auditoria
+    # silenciosamente reduzida devolvendo verde seria o mesmo
+    # problema do interruptor com outro nome.
+    & $PythonExe -m pip install python-docx openpyxl 'reportlab>=4.0' 'pdfplumber>=0.10' 'pikepdf>=9.0' 'pypdfium2>=4.0' 'fonttools>=4.50' --no-warn-script-location
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[bootstrap] ERRO: pip install das bibliotecas falhou' -ForegroundColor Red
         exit 1
@@ -538,7 +545,10 @@ $LibCheckPath = Join-Path $env:TEMP 'frederico_lib_check.py'
 @'
 import sys
 errors = []
-for lib in ['docx', 'openpyxl', 'reportlab', 'pdfplumber', 'pytesseract']:
+# Etapa 5 da Fase 5 (ADR-0021): auditoria bloqueante do PDFPro
+# exige pikepdf + pypdfium2 + fonttools. Hard-fail se faltar
+# (D-FAIL-1) - sem "plano B" silencioso.
+for lib in ['docx', 'openpyxl', 'reportlab', 'pdfplumber', 'pytesseract', 'pikepdf', 'pypdfium2', 'fontTools']:
     try:
         __import__(lib)
     except Exception as e:

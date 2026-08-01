@@ -30,6 +30,14 @@ dependencies = [
     "reportlab>=4.0",
     "pdfplumber>=0.10",
     "pytesseract>=0.3.10",
+    # Etapa 5 da Fase 5 (ADR-0021): auditoria bloqueante do PDFPro
+    # precisa de pikepdf (estrutural + PDF/A-2B), pypdfium2 (visual,
+    # rasterizacao PDFium) e fontTools (checagem de glifo via cmap).
+    # Hard-fail do bootstrap se qualquer uma faltar (D-FAIL-1) -
+    # sem "plano B" silencioso (§19.6 nao tem interruptor).
+    "pikepdf>=9.0",
+    "pypdfium2>=4.0",
+    "fonttools>=4.50",
 ]
 
 [build-system]

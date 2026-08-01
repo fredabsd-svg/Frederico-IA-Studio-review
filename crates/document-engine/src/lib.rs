@@ -56,7 +56,10 @@ pub use blocks::{
     TotalSpec,
 };
 pub use error::DocumentError;
-pub use spec::{DocumentMetadata, DocumentSpec, DocumentStyle, DocumentType, SpecVersion};
+pub use spec::{
+    DocumentMetadata, DocumentSpec, DocumentStyle, DocumentType, SpecVersion, WatermarkPosition,
+    WatermarkSpec,
+};
 pub use validate::{validate_against_schema, validate_semantic, SchemaError};
 
 /// Re-exporta `serde_json::Value` por conveniência — `docs.generate`
