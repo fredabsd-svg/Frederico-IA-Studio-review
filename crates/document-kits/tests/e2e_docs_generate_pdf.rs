@@ -169,6 +169,7 @@ fn spec_do_etapa_5_pdf() -> DocumentSpec {
             keywords: Some("etapa 5, pdf, tinta e latao".to_string()),
             description: Some("Smoke E2E do PDFPro v0.1".to_string()),
             watermark: None,
+            pdfa: None,
         },
         confidentiality: None,
         blocks: vec![

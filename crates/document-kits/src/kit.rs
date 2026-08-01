@@ -69,6 +69,24 @@ pub enum KitError {
     /// defesa em profundidade).
     #[error("output_path fora da allowlist: {0}")]
     PathNotAllowed(String),
+
+    /// A auditoria bloqueante do §19.6 (PROMPT MESTRE) falhou.
+    /// Etapa 5 PR 3 (D-PDF5 do ADR-0021) introduz o
+    /// `pdf.audit` no document-worker e mapeia qualquer falha
+    /// da auditoria estrutural pra este erro. **§19.6 nao tem
+    /// interruptor**: o kit NAO entrega o artefato quando a
+    /// auditoria falha. O `code` (ex: `"pdf_audit_structural_failed"`)
+    /// e a `message` vem do handler; `failed` e a lista de
+    /// checks que nao passaram.
+    #[error("auditoria bloqueante falhou: {code} - {message}")]
+    AuditFailed {
+        /// Codigo estruturado do handler (ex: `"pdf_audit_structural_failed"`).
+        code: String,
+        /// Mensagem legivel com o motivo da falha.
+        message: String,
+        /// Checks que falharam (lista de `{check, expected, got}`).
+        failed: serde_json::Value,
+    },
 }
 
 /// Mapeamento de um bloco do `DocumentSpec` pra uma sheet
