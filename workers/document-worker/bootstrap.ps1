@@ -807,7 +807,7 @@ $totalSize = (Get-ChildItem $RuntimeDir -Recurse -File | Measure-Object -Propert
 $totalSizeMB = [math]::Round($totalSize / 1MB, 1)
 
 Write-Host ''
-Write-Host "[bootstrap] OK - runtime completo do document-worker v0.3.0 em $RuntimeDir" -ForegroundColor Green
+Write-Host "[bootstrap] OK - runtime completo do document-worker v0.4.0 em $RuntimeDir" -ForegroundColor Green
 Write-Host "[bootstrap] Tamanho total: $totalSizeMB MB" -ForegroundColor Green
 Write-Host '[bootstrap] Pra rodar o worker:' -ForegroundColor Green
 Write-Host "    & '$PythonExe' '$ScriptDir\document-worker.py'"

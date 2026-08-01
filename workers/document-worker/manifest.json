@@ -1,6 +1,6 @@
 {
   "worker_id": "document-worker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "capabilities": [
     "docx.write",
     "docx.read",
@@ -8,7 +8,8 @@
     "xlsx.read",
     "pdf.write",
     "pdf.read",
-    "ocr.run"
+    "ocr.run",
+    "pdf.audit"
   ],
   "dependencies": [
     {
