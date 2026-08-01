@@ -190,6 +190,48 @@ enum `["docx"]` na Etapa 3, gerado a partir de
   no `.docx` via `python-docx` estendido) + tabela
   real no `.docx` (com grade e células formatadas).
 
+**Etapa 5 (parcialmente fechada em 2026-08-01, branch
+`fase-5/etapa-5-pdfpro-excelpro-pr3-auditoria-estrutural`):**
+
+- **`PdfProKit` v0.1 real** (PR 2): substitui o
+  skeleton. Renderiza `DocumentSpec` em `.pdf` real
+  via `pdf.write` estendido do document-worker (Tinta &
+  Latão + modo Sóbrio, 20 blocos cobertos, glifo-check
+  via `fontTools` antes de renderizar, marca d'água
+  opt-in). Bump atômico do `DocumentFormat::Pdf` no
+  mesmo commit (precedente do ADR-0020 §3 D3).
+- **`pdf.audit` integration** (PR 3): auditoria
+  estrutural bloqueante do §19.4 (D-PDF5 + D-PDF6 do
+  ADR-0021). O `PdfProKit::render` chama o handler
+  `pdf.audit` (kind="structural") do document-worker
+  após `pdf.write`. Falha = `KitError::AuditFailed` com
+  code + message + lista legivel de checks que
+  falharam. Sucesso popula `KitOutput.extra.audit`
+  com `rules_version`, `coverage`, `cache_key` (D-AUDIT-1:
+  `sha256(pdf_bytes) + ":" + AUDIT_RULES_VERSION`,
+  v0.1.0), `checks` passados. 5 checks baseline
+  (abertura, n_pages, DocInfo, fontes embutidas, sem
+  cifragem) + 5 checks A-2B opt-in (OutputIntent com
+  ICC sRGB, XMP pdfaid batendo com DocInfo, sem
+  JavaScript). 19 testes Python em
+  `workers/document-worker/tests/test_pdf_audit.py`
+  (5+ negativos injetando falha). **Tagged PDF NÃO é
+  verificado** — A-2B (básico) não exige; v1 declara
+  apenas nível B.
+- **`KitError::AuditFailed` novo variant** (PR 3): a
+  auditoria bloqueante do §19.6 mapeia falhas do
+  `pdf.audit` pra este erro. O artefato NÃO é
+  entregue quando a auditoria falha (sem interruptor,
+  §19.6). `DocsGenerateTool` (generate.rs) formata a
+  mensagem pro modelo com a lista de checks que
+  falharam (code, expected, got).
+- **Schema bump `SpecVersion` 0.2.0 → 0.3.0** (PR 3):
+  `DocumentMetadata` ganha `pdfa: Option<PdfaSpec>`
+  (opt-in PDF/A-2B). `PdfaFlavor` enum (`PdfA2b` na v1).
+  Backward-compat: spec 0.1.0 e 0.2.0 desserializam
+  com `pdfa = None`. `prompt.rs` e `validate.rs`
+  atualizados.
+
 ## 4. Decisões não óbvias e armadilhas conhecidas
 
 - **Inventário gerado, não mantido à mão.** O enum
