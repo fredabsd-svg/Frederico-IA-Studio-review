@@ -1,41 +1,71 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-31
-Fase correspondente: 5 (Etapa 5 — PR 1 do PDFPro)
+Verificado contra o código em: 2026-08-01
+Fase correspondente: 5 (Etapa 5 — PR 2 do PDFPro)
 -->
 
-> Última verificação: 2026-07-31. Reflete a Etapa 5 da Fase 5 — o
-> PR 1 do PDFPro fecha a **fundação**:
+> Última verificação: 2026-08-01. Reflete a Etapa 5 da Fase 5
+> até o **PR 2** (PDFPro v0.1 entregue):
 >
-> - **ADR-0021 escrito** (D-PDF1 engine, D-PDF2 marca d'água, D-PDF3
+> - **PR 1 (commit `d518226`) — fundação:** ADR-0021
+>   (D-PDF1 engine, D-PDF2 marca d'água, D-PDF3
 >   compressão, D-PDF4 proteção, D-PDF5 PDF/A-2B, D-CONF-1
->   correção §7.1, D-CHART-1 chart nativo, D-AUDIT-1 cache key,
->   D-GLYPH-1 glifo, D-FAIL-1 hard-fail, D-INSPECT-1 inspect PDF).
-> - **`DocumentFormat::Pdf` no enum e `PdfProKit::is_implemented() == true`
->   ficaram explicitamente fora desta PR** (precedente do ADR-0020
->   §3, D3: "bump atômico do enum junto com a implementação do
->   kit"). Ambos entram no PR 2 junto com o `render` real — bump
->   atômico, sem ferramenta decorativa (REGRAS §1.9 — inventário
->   não mente).
-> - **`SpecVersion` bump 0.1.0 → 0.2.0** (MINOR: novo campo
->   `DocumentMetadata.watermark: Option<WatermarkSpec>`, backward-
->   compat).
-> - **`validate_semantic` regra 8**: `style == Sobrio` rejeita
->   `watermark.is_some()` (modo Sóbrio é para registráveis;
->   tarja visual atravessando instrumento da Junta é erro).
-> - **`bootstrap.ps1` + `pyproject.toml` + `manifest.json` ganham
->   `pikepdf`, `pypdfium2`, `fonttools`** com hard-fail se faltar
->   (D-FAIL-1).
+>   correção §7.1, D-CHART-1 chart nativo, D-AUDIT-1 cache
+>   key, D-GLYPH-1 glifo, D-FAIL-1 hard-fail, D-INSPECT-1
+>   inspect PDF); `DocumentMetadata.watermark` (D-PDF2) +
+>   `SpecVersion` 0.1.0 → 0.2.0 (MINOR: novo campo
+>   opcional, backward-compat); `validate_semantic` regra 8
+>   (Sobrio + watermark rejeitados); `bootstrap.ps1` +
+>   `pyproject.toml` + `manifest.json` ganham `pikepdf`,
+>   `pypdfium2`, `fonttools` com hard-fail (D-FAIL-1). A
+>   tentativa original de flipar `is_implemented` + bump do
+>   enum sem o `render` real foi pega em review e revertida
+>   no commit `5c39bac` — precedente do ADR-0020 §3 D3.
+> - **PR 2 (esta entrega) — `render` real + bump atômico:**
+>   `DocumentFormat::Pdf` no enum + `PdfProKit` real
+>   (`is_implemented() == true`, `target_format() == Pdf`)
+>   no **mesmo commit**; `render` via `reportlab` Platypus
+>   com fontes Tinta & Latão embutidas (sem fallback,
+>   D-FAIL-1), identidade visual "Tinta & Latão" + modo
+>   Sóbrio (registráveis, monocromático, margens maiores),
+>   20 blocos cobertos (Cover, Toc, Heading, Paragraph,
+>   List, Table, KeyValue, Kpis, Callout, Quote, Steps,
+>   Chart-placeholder, Image, Code, Divider, Spacer,
+>   PageBreak, Footer, Signatures, BackCover); glifo-check
+>   via `fontTools` ANTES do `doc.build()` (D-GLYPH-1) —
+>   falha estruturada com `code: "missing_glyph"`; marca
+>   d'água opt-in (D-PDF2) via `onPage` callback; **bug
+>   fix do `bootstrap.ps1`**: a `LibSentinels` original
+>   só checava 4 libs e pulava o `pip install` de
+>   pikepdf/pypdfium2/fonttools se elas já estivessem
+>   presentes — **violava D-FAIL-1**. Corrigido: sentinels
+>   cobrem as 7 libs, hard-fail real.
+> - **PR 3 — auditoria estrutural (§19.4):** `pikepdf`
+>   valida n_pages, metadados, fontes embutidas, Tagged PDF,
+>   PDF/A-2B só se opt-in. 5+ testes negativos.
+> - **PR 4 — auditoria visual (§19.3):** `pypdfium2`
+>   rasteriza → checagem de grade, sobreposição, página
+>   vazia, alinhamento. 10+ testes negativos. Cache key
+>   = hash + versão (D-AUDIT-1).
+> - **PR 5 — chart nativo Excel + identidade visual Excel +
+>   tabela estilizada + warning sai:** fecha lacunas 1, 2 e
+>   3 do `excelpro-specification.md`. Spec ExcelPro
+>   atualizado.
+> - **PR 6 — fechamento:** E2E completo (audit visual +
+>   estrutural ambos passando), bump `status.md` Etapa 5 →
+>   concluída, specs `pdfpro` e `excelpro` → `implementado`
+>   (3 lacunas do ExcelPro fechadas), CHANGELOG v0.5.0,
+>   `verify-external.ps1` cobre os E2E novos, ADR-0021
+>   mergeado.
 >
-> **Estado continua `parcialmente implementado`**: a v0.1 do
-> `render` (fontes Tinta & Latão embutidas, identidade visual,
-> modo Sóbrio, 20 blocos) entra no PR 2, junto com o bump
-> atômico do enum `DocumentFormat::Pdf` e o flip do
-> `is_implemented() == true`. A auditoria bloqueante do §19.6
+> **Estado continua `parcialmente implementado`** após o
+> PR 2: a v0.1 do `render` (fontes, identidade, modo
+> Sóbrio, 20 blocos, glifo-check, marca d'água) está
+> entregue, mas a **auditoria bloqueante do §19.6**
 > (visual + estrutural) entra nos PRs 3 e 4. **Tagged PDF**
 > continua como lacuna registrada (PDF/A-2B exige Tagged;
-> v0.1 do PDFPro entrega PDF 1.7 com fontes embutidas e grade
-> auditada, com Tagged marcado como pendência 5.x).
+> v0.1 do PDFPro entrega PDF 1.7 com fontes embutidas e
+> grade auditada, com Tagged marcado como pendência 5.x).
 
 # Especificação do PDFPro Kit
 

@@ -111,5 +111,19 @@ Invoke-Step "E2E docs.inspect" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
+# Step 6 - Teste E2E do `docs.generate` para PDF (Etapa 5 PR 2).
+# Cobre o bump atomico do enum `DocumentFormat::Pdf` + o
+# `PdfProKit` real: render com fontes Tinta & Latao
+# embutidas + glifo-check via fontTools (D-GLYPH-1) +
+# watermark opt-in (D-PDF2). Reabre o .pdf via `pdfplumber`
+# em subprocess do Python do worker e valida n_pages,
+# titulo, heading, paragrafo, tabela, chart placeholder e
+# callout. 3 testes: full vertical, missing_glyph (D-GLYPH-1),
+# watermark (D-PDF2).
+Invoke-Step "E2E docs.generate pdf" {
+    cargo test -p frederico-document-kits --test e2e_docs_generate_pdf
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
 Write-Host ""
-Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
