@@ -1073,6 +1073,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-app"
+version = "0.1.0"
+
+[[package]]
 name = "frederico-core"
 version = "0.1.0"
 dependencies = [

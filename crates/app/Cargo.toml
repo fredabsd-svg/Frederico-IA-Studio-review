@@ -1,0 +1,10 @@
+[package]
+name = "frederico-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Camada de composicao do Frederico IA Studio: cataloga ferramentas, resolve jail por conversa e monta o ChatOrchestrator. Pura por construcao (passa no check-core-purity) para reuso da casca desktop e do modo servidor (PROMPT MESTRE 5.5). Ver ADR-0022."
+
+[lints.rust]
+unsafe_code = "forbid"
