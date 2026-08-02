@@ -1,15 +1,10 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-07-31
-Fase correspondente: 5 (Etapa 3 + Etapa 4 + Etapa 5 PR 1)
+Verificado contra o código em: 2026-08-01
+Fase correspondente: 5 (Etapa 3 + Etapa 4 + Etapa 5 PR 1 + Etapa 5 PR 2 + Etapa 5 PR 3)
 -->
 
-> Última verificação: 2026-07-31. Reflete a Etapa 3 + Etapa 4 +
-> **Etapa 5 PR 1 (fundação)** da Fase 5 — crate
-> `frederico-document-kits` com `Kit` trait, `KitRegistry`,
-> `DocumentFormat` (enum gerado a partir dos kits implementados,
-> **continua `["docx", "xlsx"]`** na PR 1; `Pdf` entra no PR 2
-> junto com o `PdfProKit` real, bump atômico do enum —
+> Última verificação: 2026-08-01. Reflete a Etapa 3 + Etapa 4 + **Etapa 5 PR 1 (fundação) + Etapa 5 PR 2 (PDFPro v0.1 real) + Etapa 5 PR 3 (auditoria estrutural §19.4)** da Fase 5 — crate `frederico-document-kits` com `Kit` trait, `KitRegistry`, `DocumentFormat` (enum gerado a partir dos kits implementados, agora **`["docx", "xlsx", "pdf"]`** com bump atômico do `Pdf` no PR 2, precedente do ADR-0020 §3 D3), `WordProKit` v0.1, `ExcelProKit` v0.1, `PdfProKit` v0.1 (PR 2, `is_implemented() == true` + `target_format() == DocumentFormat::Pdf`), `DocsGenerateTool` e `DocsInspectTool`. **Etapa 5 PR 2 (PR 17, `7fedf19`):** `PdfProKit::render` real com `reportlab` Platypus + fontes Tinta & Latão embutidas (D-FAIL-1, sem fallback) + identidade visual "Tinta & Latão" (paleta `#1A2B4A` Tinta / `#B8924A` Latão / `#2D7A4F` Success / `#1F2937` Text / `#6B7280` Muted / `#F3F4F6` Light) + modo Sóbrio (monocromático, margens 3cm, sem ornamento, registráveis) + 20 blocos cobertos. Glifo-check via `fontTools` ANTES do `doc.build()` (D-GLYPH-1) — falha estruturado com `code: "missing_glyph"` + lista `{block_index, char, codepoint, font_name, block_type}`. Marca d’água opt-in (D-PDF2) via `onPage` callback. Bump atômico do enum `DocumentFormat::Pdf` no mesmo commit do `render` real (precedente do ADR-0020 §3 D3). **Etapa 5 PR 3 (PR 19, `0e3471f`):** auditoria estrutural bloqueante do §19.4 — `KitError::AuditFailed` novo variant no `kit.rs`; `PdfProKit::render` chama `pdf.audit` após o `pdf.write`; `DocsGenerateTool` (generate.rs) formata a mensagem pro modelo com a lista de checks. `document-worker` v0.4.0 (8 handlers: `docx.write`/`docx.read`, `xlsx.write`/`xlsx.read`, `pdf.write`/`pdf.read`/`pdf.audit`, `ocr.run`); `pikepdf` virou dep obrigatória (D-FAIL-1). `pdf.audit` valida 5 checks baseline (abertura, n_pages ≥ 1, DocInfo populado, todas as fontes embutidas, sem cifragem/referências externas) + 4 A-2B opt-in (OutputIntent com sRGB ICC v2 embedded D-PDF6, XMP `pdfaid:part=2` + `pdfaid:conformance=B`, sem JavaScript). **Tagged PDF NÃO é verificado** — A-2B (básico) não exige; v1 declara apenas nível B. Schema bump `SpecVersion` 0.2.0 → 0.3.0 com `DocumentMetadata.pdfa: Option<PdfaSpec>`. sRGB ICC v2 (D-PDF6) gerado pelo `tools/generate_srgb_icc.py` (526 bytes, SHA-256 pinado em `bootstrap.ps1`). ADR-0018 §Decisão 1 mantida: handler = primitiva, kit = renderer.
 > precedente do ADR-0020 §3, D3), `WordProKit` v0.1, `ExcelProKit`
 > v0.1, `PdfProKit` skeleton (continua `is_implemented() == false`),
 > `DocsGenerateTool` e `DocsInspectTool`. Suíte do crate:
