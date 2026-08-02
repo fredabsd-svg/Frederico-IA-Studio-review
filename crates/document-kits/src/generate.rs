@@ -195,7 +195,11 @@ impl DocsGenerateTool {
         match s {
             "docx" => Ok(DocumentFormat::Docx),
             "xlsx" => Ok(DocumentFormat::Xlsx),
-            // Quando Etapa 5 adicionar `pdf`, este match cresce.
+            // Etapa 5 PR 2 (ADR-0021): `pdf` entrou no
+            // mesmo commit do `PdfProKit` real + bump
+            // atômico do enum (precedente do ADR-0020 §3
+            // D3).
+            "pdf" => Ok(DocumentFormat::Pdf),
             other => Err(format!(
                 "formato '{other}' não é um DocumentFormat conhecido"
             )),
@@ -486,6 +490,16 @@ mod tests {
         assert!(matches!(
             DocsGenerateTool::parse_format("docx").unwrap(),
             DocumentFormat::Docx
+        ));
+        assert!(matches!(
+            DocsGenerateTool::parse_format("xlsx").unwrap(),
+            DocumentFormat::Xlsx
+        ));
+        // Etapa 5 PR 2: pdf entra no parse junto com o
+        // bump atômico do enum.
+        assert!(matches!(
+            DocsGenerateTool::parse_format("pdf").unwrap(),
+            DocumentFormat::Pdf
         ));
         assert!(DocsGenerateTool::parse_format("xyz").is_err());
     }

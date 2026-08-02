@@ -10,18 +10,20 @@
 //! correspondente esteja **implementado** (não skeleton) **e**
 //! registrado no `KitRegistry`; até lá, o modelo não sabe que
 //! o formato é uma opção (precedente do ADR-0020 D3 — o Xlsx
-//! só entrou no enum junto com o `ExcelProKit` real).
+//! só entrou no enum junto com o `ExcelProKit` real;
+//! idem para o `Pdf` no Etapa 5 PR 2 com o `PdfProKit` real).
 //!
 //! Inventário que mente é o defeito que derrubou o app
 //! anterior — a disciplina é: o que o modelo enxerga
 //! corresponde ao que existe. Esta enum é a
 //! materialização Rust dessa regra.
 //!
-//! **Estado atual (Etapa 5 PR 1):** apenas `Docx` e `Xlsx`.
-//! `Pdf` entra no PR 2 junto com o `PdfProKit` real
-//! (render + auditoria bloqueante do §19.6) — manter a regra
-//! "bump atômico do enum junto com a implementação do kit"
-//! do ADR-0020 §3 (D3).
+//! **Estado atual (Etapa 5 PR 2):** `Docx`, `Xlsx` e `Pdf`.
+//! `Pdf` entrou no mesmo commit do `PdfProKit` real
+//! (render + glifo-check pre-render, Etapa 5 PR 2) — a
+//! auditoria bloqueante do §19.6 (visual + estrutural) entra
+//! nos PRs 3 e 4. Bump atômico mantido (precedente do
+//! ADR-0020 §3 D3).
 
 use std::fmt;
 
@@ -38,7 +40,9 @@ use serde::{Deserialize, Serialize};
 /// Sem os dois, a variante **não** aparece no schema do
 /// `docs.generate` — o modelo não pode pedir. Precedente:
 /// ADR-0020 §3 (D3) — `DocumentFormat::Xlsx` só entrou no
-/// enum junto com o `ExcelProKit` real (Etapa 4).
+/// enum junto com o `ExcelProKit` real (Etapa 4);
+/// `DocumentFormat::Pdf` entrou no PR 2 da Etapa 5 junto
+/// com o `PdfProKit` real (mesma disciplina).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentFormat {
@@ -59,16 +63,41 @@ pub enum DocumentFormat {
     /// novo; Etapa 4 v0.1 ancorada no primitivo.
     #[serde(alias = "xlsx")]
     Xlsx,
+
+    /// PDF (`.pdf`).
+    ///
+    /// Implementado na Etapa 5 PR 2 da Fase 5 (`PdfProKit`
+    /// v0.1): `render` real com `reportlab` Platypus +
+    /// fontes Tinta & Latão embutidas (sem fallback) +
+    /// identidade visual "Tinta & Latão" + modo Sóbrio +
+    /// 20 blocos cobertos + glifo-check via `fontTools`
+    /// antes de renderizar (D-GLYPH-1).
+    ///
+    /// **Limitações v0.1 (registradas como lacunas, NÃO
+    /// silenciadas):**
+    /// - Auditoria bloqueante do §19.6 (visual pypdfium2 +
+    ///   estrutural pikepdf) entra nos PRs 3 e 4.
+    /// - Tagged PDF automático: fraco no `reportlab` —
+    ///   registrado como pendência 5.x.
+    /// - Chart visual nativo no PDF: placeholder textual
+    ///   em v0.1, real em Etapa 5.x.
+    /// - Sumário automático em duas passadas: placeholder
+    ///   em v0.1.
+    /// - `docs.inspect` cobrindo `.pdf` (round-trip
+    ///   spec→pdf→spec): pendência 5.x.
+    #[serde(alias = "pdf")]
+    Pdf,
 }
 
 impl DocumentFormat {
     /// Serializa como string no formato aceito pelo schema
-    /// (`"docx"`, `"xlsx"` — snake_case).
+    /// (`"docx"`, `"xlsx"`, `"pdf"` — snake_case).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
+            Self::Pdf => "pdf",
         }
     }
 
@@ -78,6 +107,7 @@ impl DocumentFormat {
         match self {
             Self::Docx => ".docx",
             Self::Xlsx => ".xlsx",
+            Self::Pdf => ".pdf",
         }
     }
 
@@ -87,6 +117,7 @@ impl DocumentFormat {
         match self {
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Self::Pdf => "application/pdf",
         }
     }
 }
@@ -106,7 +137,11 @@ mod tests {
         // O que sai no schema (snake_case) tem que bater com
         // o que a serde produz. Se um dia alguém mudar o
         // rename, este teste pega.
-        for fmt in [DocumentFormat::Docx, DocumentFormat::Xlsx] {
+        for fmt in [
+            DocumentFormat::Docx,
+            DocumentFormat::Xlsx,
+            DocumentFormat::Pdf,
+        ] {
             let json = serde_json::to_string(&fmt).unwrap();
             let expected = format!("\"{}\"", fmt.as_str());
             assert_eq!(json, expected, "DocumentFormat::{fmt:?} divergente");
@@ -117,5 +152,18 @@ mod tests {
     fn extension_includes_dot() {
         assert_eq!(DocumentFormat::Docx.extension(), ".docx");
         assert_eq!(DocumentFormat::Xlsx.extension(), ".xlsx");
+        assert_eq!(DocumentFormat::Pdf.extension(), ".pdf");
+    }
+
+    #[test]
+    fn pdf_format_basics() {
+        // Guardas do bump atômico (Etapa 5 PR 2): o enum
+        // entrou com `Pdf` no mesmo commit do `PdfProKit`
+        // real. Se alguém remover a variante sem remover
+        // o kit, esse teste pega (a outra metade da guarda
+        // está em `pdfpro.rs` testando `target_format`).
+        assert_eq!(DocumentFormat::Pdf.as_str(), "pdf");
+        assert_eq!(DocumentFormat::Pdf.extension(), ".pdf");
+        assert_eq!(DocumentFormat::Pdf.mime_type(), "application/pdf");
     }
 }

@@ -152,9 +152,24 @@ impl InspectArgs {
         let format = match value.get("format").and_then(|v| v.as_str()) {
             Some("docx") => Some(DocumentFormat::Docx),
             Some("xlsx") => Some(DocumentFormat::Xlsx),
+            Some("pdf") => {
+                // D-INSPECT-1 do ADR-0021: round-trip .pdf
+                // → DocumentSpec é pendência 5.x. O
+                // `pdf.read` da v0.3.0 devolve texto +
+                // OCR, mas **não** reconstrói o
+                // DocumentSpec. Honesto: recusar com
+                // mensagem clara em vez de devolver
+                // spec mentiroso.
+                return Err(
+                    "docs.inspect para .pdf nao implementado (pendencia 5.x; D-INSPECT-1 do \
+                     ADR-0021). O render do PDFPro v0.1 funciona; o round-trip pdf→spec \
+                     chega em etapa futura."
+                        .to_string(),
+                );
+            }
             Some(other) => {
                 return Err(format!(
-                    "format '{other}' não é um DocumentFormat conhecido"
+                    "format '{other}' não é um DocumentFormat conhecido (use 'docx', 'xlsx' ou 'pdf')"
                 ));
             }
             None => None,
@@ -217,8 +232,14 @@ impl DocsInspectTool {
         match p.extension().and_then(|e| e.to_str()) {
             Some("docx") => Ok(DocumentFormat::Docx),
             Some("xlsx") => Ok(DocumentFormat::Xlsx),
+            Some("pdf") => Err(
+                "docs.inspect para .pdf nao implementado (pendencia 5.x; D-INSPECT-1 do \
+                 ADR-0021). O render do PDFPro v0.1 funciona; o round-trip pdf->spec \
+                 chega em etapa futura."
+                    .to_string(),
+            ),
             Some(other) => Err(format!(
-                "extensão '{other}' não é suportada pelo docs.inspect (use .docx ou .xlsx)"
+                "extensão '{other}' não é suportada pelo docs.inspect (use .docx, .xlsx ou .pdf)"
             )),
             None => Err("path sem extensão — não dá pra inferir o formato".to_string()),
         }
@@ -238,6 +259,15 @@ impl DocsInspectTool {
             "capability": match format {
                 DocumentFormat::Docx => "docx.read",
                 DocumentFormat::Xlsx => "xlsx.read",
+                // `infer_format` e `InspectArgs::from_value`
+                // ja recusam `pdf` antes de chegar aqui —
+                // unreachable em runtime. O compilador
+                // exige o arm porque `DocumentFormat::Pdf`
+                // existe no enum (bump atomico do PR 2).
+                DocumentFormat::Pdf => unreachable!(
+                    "docs.inspect para .pdf e pendencia 5.x; D-INSPECT-1 do ADR-0021 \
+                     impede chegar aqui (ver `from_value` e `infer_format`)"
+                ),
             },
             "path": path,
             "sample_rows": sample_rows,
@@ -706,6 +736,10 @@ impl Tool for DocsInspectTool {
                 };
                 (spec, coverage)
             }
+            DocumentFormat::Pdf => unreachable!(
+                "docs.inspect para .pdf e pendencia 5.x; D-INSPECT-1 do ADR-0021 \
+                 impede chegar aqui (ver `from_value` e `infer_format`)"
+            ),
         };
 
         let sheets = match format {
@@ -718,6 +752,10 @@ impl Tool for DocsInspectTool {
                 Self::build_sheet_summaries(&sheets_json)
             }
             DocumentFormat::Docx => Vec::new(),
+            DocumentFormat::Pdf => unreachable!(
+                "docs.inspect para .pdf e pendencia 5.x; D-INSPECT-1 do ADR-0021 \
+                 impede chegar aqui (ver `from_value` e `infer_format`)"
+            ),
         };
 
         // 7. Serializa o output.

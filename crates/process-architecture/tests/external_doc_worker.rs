@@ -478,6 +478,13 @@ async fn e2e_xlsx_write_with_column_formats() {
 
 /// pdf.write + pdf.read: gera PDF (com fontes Tinta e Latao embutidas),
 /// le de volta, valida texto.
+///
+/// **v0.4.0 (Etapa 5 PR 2)**: payload mudou de `sections: [{heading, body}]`
+/// (formato antigo) para `blocks: [{type, ...}]` discriminado por
+/// `type: "heading" | "paragraph" | ...`. Mesma decisao que a Etapa 3
+/// promoveu no `DocumentSpec`: 1 tipo discriminado em vez de N formatos
+/// ad-hoc. Ver `handle_pdf_write` em `workers/document-worker/document-worker.py:2011`
+/// e `_build_story` na mesma linha 1448.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_pdf_write_and_read() {
     with_test_timeout_at("e2e_pdf_write_and_read", E2E_TIMEOUT, async {
@@ -495,14 +502,17 @@ async fn e2e_pdf_write_and_read() {
                 "capability": "pdf.write",
                 "path": pdf_path.to_string_lossy(),
                 "title": "E2E PDF Test",
-                "sections": [
-                    {"heading": "Secao Unica", "body": ["Paragrafo de teste.", "Mais um."]}
+                "blocks": [
+                    {"type": "heading", "text": "Secao Unica"},
+                    {"type": "paragraph", "text": "Paragrafo de teste."},
+                    {"type": "paragraph", "text": "Mais um."}
                 ]
             }))
             .await
             .expect("invoke pdf.write");
         assert_eq!(write_result["ok"], json!(true));
-        assert_eq!(write_result["sections_written"], json!(1));
+        // 3 blocos: 1 heading + 2 paragraphs
+        assert_eq!(write_result["blocks_written"], json!(3));
         assert!(pdf_path.is_file());
 
         // PDF magic: %PDF-
@@ -621,7 +631,10 @@ async fn e2e_pdf_read_reports_ocr_unavailable() {
                 "capability": "pdf.write",
                 "path": pdf_path.to_string_lossy(),
                 "title": "Com Texto",
-                "sections": [{"heading": "Saudacao", "body": ["Ola mundo."]}]
+                "blocks": [
+                    {"type": "heading", "text": "Saudacao"},
+                    {"type": "paragraph", "text": "Ola mundo."}
+                ]
             }))
             .await
             .expect("invoke pdf.write");
@@ -908,7 +921,10 @@ async fn e2e_pdf_read_with_ocr_param_never() {
                 "capability": "pdf.write",
                 "path": pdf_path.to_string_lossy(),
                 "title": "OCR Never Test",
-                "sections": [{"heading": "Saudacao", "body": ["Ola mundo."]}]
+                "blocks": [
+                    {"type": "heading", "text": "Saudacao"},
+                    {"type": "paragraph", "text": "Ola mundo."}
+                ]
             }))
             .await
             .expect("invoke pdf.write");

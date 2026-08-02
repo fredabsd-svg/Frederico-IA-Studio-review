@@ -181,6 +181,20 @@ $LibSentinels = @{
     'openpyxl'     = 'openpyxl'
     'reportlab'    = 'reportlab'
     'pdfplumber'   = 'pdfplumber'
+    # Etapa 5 da Fase 5 (ADR-0021): pikepdf, pypdfium2
+    # e fonttools sao deps da Etapa 5 (PR 2/3/4). O
+    # sentinel de baixo nao basta para garantir que
+    # TODAS as 7 deps estao instaladas - se 4 das 7
+    # ja estiverem la (comum em runtime reaproveitado),
+    # o `pip install` das 7 e PULADO e as 3 novas
+    # podem ficar faltando. **Bug fix v0.3.1**: a
+    # auditoria bloqueante do PDFPro (PRs 3-4) precisa
+    # de pikepdf+pypdfium2, e o glifo-check pre-render
+    # (PR 2, D-GLYPH-1) precisa de fontTools. D-FAIL-1
+    # exige hard-fail se qualquer uma faltar.
+    'pikepdf'      = 'pikepdf'
+    'pypdfium2'    = 'pypdfium2'
+    'fonttools'    = 'fontTools'
 }
 
 $libsOk = $true
@@ -195,9 +209,9 @@ foreach ($sentinel in $LibSentinels.Values) {
 }
 
 if ($libsOk) {
-    Write-Host '[bootstrap] bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber) ja instaladas - pulando.' -ForegroundColor Yellow
+    Write-Host '[bootstrap] bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber, pikepdf, pypdfium2, fonttools) ja instaladas - pulando.' -ForegroundColor Yellow
 } else {
-    Write-Host '[bootstrap] instalando bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber)'
+    Write-Host '[bootstrap] instalando bibliotecas Python (python-docx, openpyxl, reportlab, pdfplumber, pikepdf, pypdfium2, fonttools)'
     # Etapa 5 da Fase 5 (ADR-0021): auditoria bloqueante do PDFPro
     # (§19.6) precisa de pikepdf (estrutural + PDF/A-2B), pypdfium2
     # (visual, rasterizacao PDFium) e fontTools (checagem de glifo

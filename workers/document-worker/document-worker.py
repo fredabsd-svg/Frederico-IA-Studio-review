@@ -118,15 +118,22 @@ except ImportError as exc:
 try:
     import docx  # python-docx
     import openpyxl
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import cm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.platypus import (
+        Image as RLImage,
+        KeepTogether,
+        PageBreak,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
+        Table,
+        TableStyle,
     )
     import pdfplumber
 except ImportError as exc:
@@ -138,6 +145,19 @@ except ImportError as exc:
         flush=True,
     )
     raise SystemExit(3)
+
+# `fontTools` (glifo-check pre-render, D-GLYPH-1 do ADR-0021,
+# Etapa 5 PR 2 da Fase 5). D-FAIL-1: hard-fail no bootstrap
+# se faltar. Em runtime, se faltar, o `pdf.write` falha
+# estruturado (`code: "fonttools_unavailable"`) em vez de
+# renderizar PDF com glifo faltando. Mesma disciplina do
+# `pytesseract` (pode faltar, mas o handler sinaliza).
+try:
+    from fontTools.ttLib import TTFont as FTFont  # type: ignore[import-untyped]
+    FONTTOOLS_AVAILABLE = True
+except ImportError:
+    FTFont = None  # type: ignore[assignment]
+    FONTTOOLS_AVAILABLE = False
 
 # `pytesseract` (wrapper Python do Tesseract) e instalado pelo
 # `bootstrap.ps1` (ADR-0019). Diferente das outras libs: a falta dele
@@ -984,89 +1004,1174 @@ def handle_xlsx_read(payload: dict) -> dict:
 
 
 # ---- pdf.write ------------------------------------------------------------
+#
+# PDFPro v0.1 (Etapa 5 PR 2 da Fase 5, ADR-0021):
+# - Payload estendido (style, page, identity, watermark, metadata, blocks).
+# - 20 blocos do `DocumentBlock` viram flowables do reportlab.
+# - Glifo-check via `fontTools` ANTES do `doc.build()` (D-GLYPH-1):
+#   falha estruturada com lista de blocos+caracteres faltantes.
+# - Modo Sobrio (registraveis) com paleta monocromatica e margens
+#   maiores; modo Tinta & Latao com paleta da marca.
+# - Marca d'agua opt-in (D-PDF2) desenhada via `onPage` callback.
+# - Fontes Tinta & Latao embutidas via `ensure_fonts_registered()`
+#   (sem fallback para fonte do sistema - D-FAIL-1).
 
 
-def _build_pdf_styles() -> dict[str, ParagraphStyle]:
-    """Constroi os ParagraphStyle usados pelo pdf.write.
+def _hex(c: str) -> HexColor:
+    """Constrói `HexColor` aceitando string com ou sem `#`."""
+    return HexColor(c if c.startswith("#") else f"#{c}")
 
-    Titulos em Serif, corpo em Sans (ADR-0018 Decisao 1 - Tinta e
-    Latao). Tamanhos e cores sao deliberadamente simples - a
-    tipografia fina e trabalho do kit (Etapa 3).
+
+def _build_pdf_styles(identity: dict, style_name: str) -> dict[str, ParagraphStyle]:
+    """Constrói os ParagraphStyle usados pelo `pdf.write` estendido.
+
+    Cores vêm do `identity` (paleta Tinta & Latão ou
+    monocromática Sobrio). Fontes: `FONT_TITLE_NAME`
+    (Source Serif 4) para títulos, `FONT_BODY_NAME`
+    (Source Sans 3) para corpo. O `Courier` built-in é
+    usado para bloco de código (monospace).
     """
+    tinta = _hex(identity.get("tinta", "#000000"))
+    text = _hex(identity.get("text", "#000000"))
+    muted = _hex(identity.get("muted", "#000000"))
+    success = _hex(identity.get("success", "#000000"))
+    latao = _hex(identity.get("latao", "#000000"))
+    light = _hex(identity.get("light", "#FFFFFF"))
+    is_sobrio = style_name == "sobrio"
     return {
-        "title": ParagraphStyle(
-            "TintaTitle",
+        # Cover
+        "cover_title": ParagraphStyle(
+            "TintaCoverTitle",
             fontName=FONT_TITLE_NAME,
-            fontSize=24,
-            leading=28,
+            fontSize=28,
+            leading=34,
+            alignment=TA_CENTER,
+            textColor=tinta,
+            spaceAfter=18,
+        ),
+        "cover_subtitle": ParagraphStyle(
+            "TintaCoverSubtitle",
+            fontName=FONT_BODY_NAME,
+            fontSize=14,
+            leading=18,
+            alignment=TA_CENTER,
+            textColor=muted,
             spaceAfter=12,
         ),
-        "heading": ParagraphStyle(
-            "TintaHeading",
+        "cover_meta": ParagraphStyle(
+            "TintaCoverMeta",
+            fontName=FONT_BODY_NAME,
+            fontSize=11,
+            leading=15,
+            alignment=TA_CENTER,
+            textColor=muted,
+        ),
+        # Headings
+        "h1": ParagraphStyle(
+            "TintaH1",
             fontName=FONT_TITLE_NAME,
-            fontSize=16,
-            leading=20,
+            fontSize=18,
+            leading=22,
+            spaceBefore=14,
+            spaceAfter=8,
+            textColor=tinta,
+        ),
+        "h2": ParagraphStyle(
+            "TintaH2",
+            fontName=FONT_TITLE_NAME,
+            fontSize=14,
+            leading=18,
             spaceBefore=10,
             spaceAfter=6,
+            textColor=tinta,
         ),
+        "h3": ParagraphStyle(
+            "TintaH3",
+            fontName=FONT_TITLE_NAME,
+            fontSize=12,
+            leading=16,
+            spaceBefore=8,
+            spaceAfter=4,
+            textColor=tinta,
+        ),
+        # Body
         "body": ParagraphStyle(
             "TintaBody",
             fontName=FONT_BODY_NAME,
             fontSize=11,
             leading=15,
             spaceAfter=4,
+            textColor=text,
+            alignment=TA_JUSTIFY,
         ),
+        "lead": ParagraphStyle(
+            "TintaLead",
+            fontName=FONT_BODY_NAME,
+            fontSize=12,
+            leading=18,
+            spaceAfter=8,
+            textColor=text,
+        ),
+        "caption": ParagraphStyle(
+            "TintaCaption",
+            fontName=FONT_BODY_NAME,
+            fontSize=9,
+            leading=12,
+            textColor=muted,
+            spaceAfter=8,
+        ),
+        # Code (monospace)
+        "code": ParagraphStyle(
+            "TintaCode",
+            fontName="Courier",
+            fontSize=9,
+            leading=12,
+            leftIndent=12,
+            rightIndent=12,
+            backColor=light,
+            textColor=text,
+            spaceBefore=4,
+            spaceAfter=4,
+        ),
+        # Quote
+        "quote": ParagraphStyle(
+            "TintaQuote",
+            fontName=FONT_TITLE_NAME,
+            fontSize=12,
+            leading=18,
+            leftIndent=24,
+            rightIndent=24,
+            textColor=muted,
+            spaceBefore=8,
+            spaceAfter=4,
+        ),
+        "quote_attr": ParagraphStyle(
+            "TintaQuoteAttr",
+            fontName=FONT_BODY_NAME,
+            fontSize=10,
+            leading=14,
+            leftIndent=24,
+            rightIndent=24,
+            textColor=muted,
+            alignment=TA_LEFT,
+            spaceAfter=12,
+        ),
+        # Callout — textColor por kind
+        "callout_info": ParagraphStyle(
+            "TintaCalloutInfo",
+            fontName=FONT_BODY_NAME,
+            fontSize=10,
+            leading=14,
+            leftIndent=12,
+            rightIndent=12,
+            backColor=light,
+            textColor=text,
+            borderColor=latao,
+            borderWidth=0,
+            borderPadding=8,
+            spaceBefore=6,
+            spaceAfter=6,
+        ),
+        # KPI
+        "kpi_label": ParagraphStyle(
+            "TintaKpiLabel",
+            fontName=FONT_BODY_NAME,
+            fontSize=9,
+            leading=12,
+            textColor=muted,
+            alignment=TA_CENTER,
+        ),
+        "kpi_value": ParagraphStyle(
+            "TintaKpiValue",
+            fontName=FONT_TITLE_NAME,
+            fontSize=18,
+            leading=22,
+            textColor=tinta,
+            alignment=TA_CENTER,
+        ),
+        "kpi_delta": ParagraphStyle(
+            "TintaKpiDelta",
+            fontName=FONT_BODY_NAME,
+            fontSize=9,
+            leading=12,
+            textColor=success,
+            alignment=TA_CENTER,
+        ),
+        # TOC + chart placeholder
+        "placeholder": ParagraphStyle(
+            "TintaPlaceholder",
+            fontName=FONT_BODY_NAME,
+            fontSize=10,
+            leading=14,
+            textColor=muted,
+            leftIndent=12,
+            rightIndent=12,
+            backColor=light,
+            spaceBefore=6,
+            spaceAfter=6,
+        ),
+        # Signature line
+        "signature_line": ParagraphStyle(
+            "TintaSignatureLine",
+            fontName=FONT_BODY_NAME,
+            fontSize=10,
+            leading=14,
+            textColor=muted,
+            spaceBefore=4,
+            spaceAfter=2,
+        ),
+        "signature_name": ParagraphStyle(
+            "TintaSignatureName",
+            fontName=FONT_BODY_NAME,
+            fontSize=10,
+            leading=14,
+            textColor=text,
+        ),
+        # Sobrio marker (modo registraveis)
+        "sobrio": is_sobrio,
     }
 
 
-def handle_pdf_write(payload: dict) -> dict:
-    """pdf.write: escreve um arquivo .pdf com `title` + `sections`.
+def _block_texts_with_font(block: dict, styles: dict) -> list[tuple[str, str]]:
+    """Extrai (texto, font_name) de um bloco para o glifo-check.
 
-    Input: `{"path": str, "title": str, "sections": [{"heading": str, "body": [str]}]}`
-    Output: `{"ok": true, "path": str, "size_bytes": int, "pages_rendered": int, "sections_written": int}`
+    Retorna lista vazia se o bloco não tem texto (ex: page_break,
+    divider, spacer, image). A font_name é a que o renderer
+    vai usar (Serif para títulos, Sans para corpo, Courier
+    para code).
     """
-    path = validate_path(_payload_field(payload, "path", str), "write")
-    title = _payload_field(payload, "title", str)
-    sections = _payload_field(payload, "sections", list)
-    ensure_fonts_registered()  # idempotente
+    btype = block.get("type", "")
+    if btype in ("page_break", "divider", "spacer", "image"):
+        return []
+    out: list[tuple[str, str]] = []
+    if btype == "cover":
+        for k in ("title", "subtitle"):
+            v = block.get(k)
+            if v:
+                out.append((v, FONT_TITLE_NAME if k == "title" else FONT_BODY_NAME))
+        for k in ("author", "date"):
+            v = block.get(k)
+            if v:
+                out.append((v, FONT_BODY_NAME))
+    elif btype == "heading":
+        v = block.get("text", "")
+        if v:
+            out.append((v, FONT_TITLE_NAME))
+    elif btype == "paragraph":
+        v = block.get("text", "")
+        if v:
+            out.append((v, FONT_BODY_NAME))
+    elif btype == "list":
+        for item in block.get("items", []):
+            t = item.get("text", "") if isinstance(item, dict) else str(item)
+            if t:
+                out.append((t, FONT_BODY_NAME))
+            for child in (item.get("children", []) if isinstance(item, dict) else []):
+                ct = child.get("text", "") if isinstance(child, dict) else str(child)
+                if ct:
+                    out.append((ct, FONT_BODY_NAME))
+    elif btype == "table":
+        for h in block.get("headers", []):
+            if h:
+                out.append((h, FONT_BODY_NAME))
+        for row in block.get("rows", []):
+            for cell in row:
+                if cell:
+                    out.append((cell, FONT_BODY_NAME))
+    elif btype == "key_value":
+        for entry in block.get("entries", []):
+            if isinstance(entry, dict):
+                k = entry.get("key", "")
+                v = entry.get("value", "")
+                if k:
+                    out.append((k, FONT_BODY_NAME))
+                if v:
+                    out.append((v, FONT_BODY_NAME))
+    elif btype == "kpis":
+        for item in block.get("items", []):
+            for k in ("label", "value", "delta", "delta_label"):
+                v = item.get(k)
+                if v:
+                    out.append(
+                        (v, FONT_TITLE_NAME if k == "value" else FONT_BODY_NAME)
+                    )
+    elif btype == "callout":
+        v = block.get("text", "")
+        if v:
+            out.append((v, FONT_BODY_NAME))
+    elif btype == "quote":
+        t = block.get("text", "")
+        a = block.get("attribution", "")
+        if t:
+            out.append((t, FONT_TITLE_NAME))
+        if a:
+            out.append((a, FONT_BODY_NAME))
+    elif btype == "steps":
+        for s in block.get("items", []):
+            t = s.get("title", "")
+            d = s.get("description", "")
+            if t:
+                out.append((t, FONT_TITLE_NAME))
+            if d:
+                out.append((d, FONT_BODY_NAME))
+    elif btype == "chart_placeholder":
+        v = block.get("title", "")
+        if v:
+            out.append((v, FONT_BODY_NAME))
+    elif btype == "code":
+        c = block.get("content", "")
+        if c:
+            out.append((c, "Courier"))
+    elif btype == "footer":
+        v = block.get("text", "")
+        if v:
+            out.append((v, FONT_BODY_NAME))
+    elif btype == "signatures":
+        for p in block.get("pairs", []):
+            for k in ("name", "role", "location"):
+                v = p.get(k)
+                if v:
+                    out.append((v, FONT_BODY_NAME))
+    elif btype == "back_cover":
+        for k in ("name", "email", "phone", "address"):
+            v = block.get(k)
+            if v:
+                out.append((v, FONT_BODY_NAME))
+    elif btype == "toc":
+        # Placeholder text — não passa pelo cmap real.
+        pass
+    return out
 
-    styles = _build_pdf_styles()
+
+def _glyph_check(blocks: list) -> list[dict]:
+    """Verifica todos os textos do spec contra o cmap das
+    fontes Tinta & Latão via `fontTools` (D-GLYPH-1).
+
+    Retorna lista vazia se OK. Em falta, lista de
+    `{block_index, char, codepoint, font_name, block_type}`.
+    """
+    if not FONTTOOLS_AVAILABLE:
+        # D-FAIL-1: o bootstrap hard-fail se fonttools faltar.
+        # Se chegou aqui, alguém mexeu no runtime. Falha
+        # estruturada em vez de render mudo.
+        return [
+            {
+                "code": "fonttools_unavailable",
+                "message": (
+                    "fontTools nao instalado. Rode o bootstrap.ps1 (D-FAIL-1 do ADR-0021). "
+                    "Glifo-check pre-render (D-GLYPH-1) nao pode executar sem ele."
+                ),
+            }
+        ]
+    # Cache de cmap por font name.
+    cmap_cache: dict[str, dict] = {}
+    missing: list[dict] = []
+    for block_index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        for text, font_name in _block_texts_with_font(block, {}):
+            if not text:
+                continue
+            # Resolve o path real (mesmo algoritmo do
+            # `_try_register_font`: pega o primeiro candidato
+            # que existe e tem > 50KB).
+            if font_name not in cmap_cache:
+                font_path = None
+                for cand in FONT_FILES.get(font_name, []):
+                    if cand.is_file() and cand.stat().st_size > 50_000:
+                        font_path = cand
+                        break
+                if font_path is None:
+                    # Fonte nao encontrada (fallback built-in
+                    # do reportlab). Cmap check nao se aplica
+                    # — o reportlab usa glifos do Type 1
+                    # built-in (Adobe Standard Encoding) e a
+                    # renderizacao fica feia. Registramos
+                    # como warning mas nao falhamos o
+                    # render — a decisao de "fail hard" e do
+                    # bootstrap (D-FAIL-1), nao do handler.
+                    cmap_cache[font_name] = None
+                    continue
+                try:
+                    tt = FTFont(str(font_path))
+                    cmap_cache[font_name] = tt.getBestCmap()
+                except Exception as exc:
+                    # Fonte corrompida — falha estruturada.
+                    missing.append(
+                        {
+                            "block_index": block_index,
+                            "char": "",
+                            "codepoint": None,
+                            "font_name": font_name,
+                            "block_type": block.get("type"),
+                            "error": f"falha abrindo {font_name}: {exc}",
+                        }
+                    )
+                    cmap_cache[font_name] = None
+                    continue
+            cmap = cmap_cache[font_name]
+            if cmap is None:
+                continue
+            for ch in text:
+                cp = ord(ch)
+                if cp not in cmap:
+                    missing.append(
+                        {
+                            "block_index": block_index,
+                            "char": ch,
+                            "codepoint": cp,
+                            "font_name": font_name,
+                            "block_type": block.get("type"),
+                        }
+                    )
+    return missing
+
+
+def _build_story(
+    blocks: list,
+    styles: dict,
+    identity: dict,
+    font_status: dict,
+) -> tuple[list, int]:
+    """Constrói a `story` (lista de flowables) do reportlab
+    a partir dos 20 blocos. Retorna `(story, blocks_written)`.
+
+    Cada bloco vira 1+ flowables. Cobertura total:
+    cover, toc, heading, paragraph, list, table, key_value,
+    kpis, callout, quote, steps, chart_placeholder, image,
+    code, divider, spacer, page_break, footer, signatures,
+    back_cover. Chart e Toc viram placeholder com warning
+    inline (a degradacao aparece no PDF — o usuario sabe).
+    """
+    story: list = []
+    blocks_written = 0
+    # v0.1: o último `Footer` bloco define o footer de página
+    # inteira. Suporte a múltiplos footers no meio do doc é
+    # Etapa 5.x. Mesmo padrão WordPro v0.1 (footer é
+    # placeholder textual).
+    last_footer = None
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        btype = b.get("type", "")
+        if btype == "footer":
+            last_footer = b
+            blocks_written += 1
+            continue  # footer é page-level, não flowable
+        if btype == "cover":
+            story.extend(_render_cover(b, styles))
+        elif btype == "toc":
+            story.extend(_render_toc(b, styles))
+        elif btype == "heading":
+            story.extend(_render_heading(b, styles))
+        elif btype == "paragraph":
+            story.extend(_render_paragraph(b, styles))
+        elif btype == "list":
+            story.extend(_render_list(b, styles))
+        elif btype == "table":
+            story.extend(_render_table(b, styles, identity))
+        elif btype == "key_value":
+            story.extend(_render_key_value(b, styles))
+        elif btype == "kpis":
+            story.extend(_render_kpis(b, styles, identity))
+        elif btype == "callout":
+            story.extend(_render_callout(b, styles))
+        elif btype == "quote":
+            story.extend(_render_quote(b, styles))
+        elif btype == "steps":
+            story.extend(_render_steps(b, styles))
+        elif btype == "chart_placeholder":
+            story.extend(_render_chart_placeholder(b, styles))
+        elif btype == "image":
+            story.extend(_render_image(b, styles))
+        elif btype == "code":
+            story.extend(_render_code(b, styles))
+        elif btype == "divider":
+            story.extend(_render_divider(b, styles, identity))
+        elif btype == "spacer":
+            story.extend(_render_spacer(b, styles))
+        elif btype == "page_break":
+            story.append(PageBreak())
+        elif btype == "signatures":
+            story.extend(_render_signatures(b, styles))
+        elif btype == "back_cover":
+            story.extend(_render_back_cover(b, styles, identity))
+        else:
+            # Bloco desconhecido — vira placeholder legível.
+            story.append(
+                Paragraph(f"[bloco desconhecido: {btype}]", styles["body"])
+            )
+        blocks_written += 1
+    # Footer (se houve) vira o onPage do doc; guardado no
+    # closure pelo `handle_pdf_write` (que monta o
+    # `SimpleDocTemplate`).
+    _last_footer_capture["footer"] = last_footer
+    _last_footer_capture["font_status"] = font_status
+    return story, blocks_written
+
+
+# Captura do último footer visto — passada pro closure
+# `_draw_watermark` via `_last_footer_capture` (mesma
+# técnica do `_FONT_STATUS` global em `ensure_fonts_registered`).
+_last_footer_capture: dict = {"footer": None, "font_status": {}}
+
+
+def _draw_page_chrome(canvas, doc) -> None:
+    """Callback de `SimpleDocTemplate.onPage` — desenha
+    o footer (page-level) e a marca d'água (opt-in).
+    """
+    footer = _last_footer_capture.get("footer")
+    if footer is not None:
+        _draw_footer(canvas, doc, footer)
+    watermark = _last_footer_capture.get("watermark")
+    identity = _last_footer_capture.get("identity", {})
+    if watermark is not None:
+        _draw_watermark(canvas, doc, watermark, identity)
+
+
+def _draw_footer(canvas, doc, footer: dict) -> None:
+    """Desenha o rodapé no `canvas`. `page_numbers: true`
+    adiciona 'N / total' à direita."""
+    from reportlab.lib.pagesizes import A4 as _A4  # noqa: F401  (largura)
+    from reportlab.lib.units import cm as _cm  # noqa: F401
+    width, _ = _A4
+    text = footer.get("text", "")
+    page_numbers = bool(footer.get("page_numbers", False))
+    canvas.saveState()
+    canvas.setFont(FONT_BODY_NAME, 8)
+    canvas.setFillColorRGB(0.5, 0.5, 0.5)  # muted
+    # Texto à esquerda
+    if text:
+        canvas.drawString(2 * _cm, 1.0 * _cm, text[:120])
+    # Numeração à direita
+    if page_numbers:
+        try:
+            page_no = canvas.getPageNumber()
+            label = f"Pág. {page_no}"
+            canvas.drawRightString(width - 2 * _cm, 1.0 * _cm, label)
+        except Exception:
+            pass
+    canvas.restoreState()
+
+
+def _draw_watermark(canvas, doc, watermark: dict, identity: dict) -> None:
+    """Desenha a marca d'água opt-in (D-PDF2 do ADR-0021).
+
+    Posições suportadas: center, diagonal, bottom_right,
+    top_right. Cor: do `identity.latao` (Tinta & Latão).
+    **Não** renderiza em modo Sobrio (rejeitado pelo
+    `validate_semantic` antes de chegar aqui).
+    """
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib.units import cm as _cm
+    from reportlab.pdfbase import pdfmetrics as _pdfmetrics
+
+    width, height = _A4
+    text = watermark.get("text", "")
+    if not text:
+        return
+    position = watermark.get("position", "center")
+    opacity = watermark.get("opacity", 0.15)
+    if opacity is None:
+        opacity = 0.15
+    font_size = watermark.get("font_size")
+    if font_size is None:
+        font_size = 72 if position in ("center", "diagonal") else 14
+    color_hex = identity.get("latao", "#B8924A")
+    canvas.saveState()
+    try:
+        canvas.setFillColor(_hex(color_hex))
+        canvas.setFillAlpha(float(opacity))
+    except Exception:
+        canvas.setFillColorRGB(0.72, 0.57, 0.29)
+        canvas.setFillAlpha(float(opacity))
+    canvas.setFont(FONT_TITLE_NAME, float(font_size))
+    if position == "center":
+        # reportlab drawCentredString: posiciona pelo baseline.
+        # Ajuste empírico pra centralizar visualmente.
+        canvas.drawCentredString(
+            width / 2, height / 2 - float(font_size) / 3, text
+        )
+    elif position == "diagonal":
+        canvas.translate(width / 2, height / 2)
+        canvas.rotate(45)
+        canvas.drawCentredString(0, 0, text)
+    elif position == "bottom_right":
+        canvas.drawRightString(width - 2 * _cm, 2 * _cm, text)
+    elif position == "top_right":
+        canvas.drawRightString(width - 2 * _cm, height - 2 * _cm, text)
+    canvas.restoreState()
+
+
+# ---- renderers por bloco -----------------------------------------------
+
+
+def _render_cover(b: dict, styles: dict) -> list:
+    """Capa — vai na primeira página. Empilha título, subtítulo,
+    autor, data, centralizados. Termina com `PageBreak` pra
+    que o próximo bloco comece em página nova.
+    """
+    out: list = []
+    out.append(Spacer(1, 4 * cm))
+    title = b.get("title", "")
+    if title:
+        out.append(Paragraph(title, styles["cover_title"]))
+    subtitle = b.get("subtitle", "")
+    if subtitle:
+        out.append(Paragraph(subtitle, styles["cover_subtitle"]))
+    author = b.get("author", "")
+    date = b.get("date", "")
+    if author or date:
+        meta = "  •  ".join(x for x in (author, date) if x)
+        out.append(Spacer(1, 1 * cm))
+        out.append(Paragraph(meta, styles["cover_meta"]))
+    out.append(PageBreak())
+    return out
+
+
+def _render_toc(b: dict, styles: dict) -> list:
+    """Toc — placeholder na v0.1. Sumário automático em duas
+    passadas (`multiBuild` do reportlab) é Etapa 5.x."""
+    return [
+        Paragraph(
+            "[Sumário: disponível em versão futura — Etapa 5.x]", styles["placeholder"]
+        ),
+        Spacer(1, 0.5 * cm),
+    ]
+
+
+def _render_heading(b: dict, styles: dict) -> list:
+    """Heading com `level` 1-3. Level 4+ cai em h3 (mesma regra
+    do `document-engine`)."""
+    level = int(b.get("level", 1))
+    text = b.get("text", "")
+    number = b.get("number")
+    if number:
+        text = f"{number}  {text}"
+    style_name = "h1" if level == 1 else "h2" if level == 2 else "h3"
+    return [Paragraph(text, styles[style_name])]
+
+
+def _render_paragraph(b: dict, styles: dict) -> list:
+    """Parágrafo. Se o `style` for "lead", usa o estilo
+    lead (maior, sem justify)."""
+    text = b.get("text", "")
+    style_name = b.get("style")
+    if style_name == "lead":
+        sn = "lead"
+    else:
+        sn = "body"
+    return [Paragraph(text, styles[sn])]
+
+
+def _render_list(b: dict, styles: dict) -> list:
+    """Lista numerada ou com marcadores. Cada item vira
+    um parágrafo com prefixo ('- ' ou 'N. ')."""
+    ordered = bool(b.get("ordered", False))
+    items = b.get("items", [])
+    out: list = []
+    for i, item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            text = item.get("text", "")
+            children = item.get("children", [])
+        else:
+            text = str(item)
+            children = []
+        prefix = f"{i}. " if ordered else "•  "
+        out.append(Paragraph(f"{prefix}{text}", styles["body"]))
+        for child in children:
+            if isinstance(child, dict):
+                ct = child.get("text", "")
+            else:
+                ct = str(child)
+            if ct:
+                out.append(Paragraph(f"     {ct}", styles["body"]))
+    return out
+
+
+def _render_table(b: dict, styles: dict, identity: dict) -> list:
+    """Tabela. Capa com `title` em cima, `source` embaixo."""
+    headers = b.get("headers", [])
+    rows = b.get("rows", [])
+    title = b.get("title")
+    source = b.get("source")
+    out: list = []
+    if title:
+        out.append(Paragraph(title, styles["h3"]))
+    if not headers and not rows:
+        return out
+    # Monta a Table. Headers em negrito (cor tinta),
+    # linhas com grade fina (cor muted).
+    data = [list(headers)] + [list(r) for r in rows]
+    n_cols = max(len(headers), max((len(r) for r in rows), default=0))
+    if n_cols == 0:
+        return out
+    # Pad cells
+    for row in data:
+        while len(row) < n_cols:
+            row.append("")
+    # Dimensões: largura disponível na area util.
+    from reportlab.lib.units import cm as _cm
+    from reportlab.lib.pagesizes import A4 as _A4
+    _, _ = _A4, None
+    avail = _A4[0] - 4 * _cm  # margens laterais 2cm
+    col_width = avail / n_cols
+    grid_color = _hex(identity.get("muted", "#6B7280"))
+    header_bg = _hex(identity.get("light", "#F3F4F6"))
+    ts = TableStyle(
+        [
+            ("FONTNAME", (0, 0), (-1, 0), FONT_TITLE_NAME),
+            ("FONTSIZE", (0, 0), (-1, 0), 10),
+            ("FONTNAME", (0, 1), (-1, -1), FONT_BODY_NAME),
+            ("FONTSIZE", (0, 1), (-1, -1), 10),
+            ("BACKGROUND", (0, 0), (-1, 0), header_bg),
+            ("TEXTCOLOR", (0, 0), (-1, 0), _hex(identity.get("tinta", "#1A2B4A"))),
+            ("GRID", (0, 0), (-1, -1), 0.5, grid_color),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]
+    )
+    t = Table(data, colWidths=[col_width] * n_cols)
+    t.setStyle(ts)
+    out.append(t)
+    if source:
+        out.append(Paragraph(f"Fonte: {source}", styles["caption"]))
+    out.append(Spacer(1, 0.3 * cm))
+    return out
+
+
+def _render_key_value(b: dict, styles: dict) -> list:
+    """Tabela de chave-valor (2 colunas)."""
+    entries = b.get("entries", [])
+    if not entries:
+        return []
+    data = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            k = entry.get("key", "")
+            v = entry.get("value", "")
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            k, v = entry[0], entry[1]
+        else:
+            continue
+        data.append([str(k), str(v)])
+    if not data:
+        return []
+    from reportlab.lib.units import cm as _cm
+    from reportlab.lib.pagesizes import A4 as _A4
+    avail = _A4[0] - 4 * _cm
+    col_w = [avail * 0.35, avail * 0.65]
+    ts = TableStyle(
+        [
+            ("FONTNAME", (0, 0), (0, -1), FONT_TITLE_NAME),
+            ("FONTNAME", (1, 0), (1, -1), FONT_BODY_NAME),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, _hex("#6B7280")),
+        ]
+    )
+    t = Table(data, colWidths=col_w)
+    t.setStyle(ts)
+    return [t, Spacer(1, 0.3 * cm)]
+
+
+def _render_kpis(b: dict, styles: dict, identity: dict) -> list:
+    """Painel de KPIs (2-4 itens). Cada KPI vira label + value +
+    delta, dispostos em colunas iguais.
+    """
+    items = b.get("items", [])
+    if not items:
+        return []
+    # Render cada KPI como 3 parágrafos (label, value, delta)
+    # dentro de uma Table de N colunas (N = len(items)).
+    from reportlab.lib.units import cm as _cm
+    from reportlab.lib.pagesizes import A4 as _A4
+    avail = _A4[0] - 4 * _cm
+    n = len(items)
+    col_w = avail / n
+    # Cada coluna tem 3 linhas: label, value, delta.
+    grid = []
+    for kpi in items:
+        label = kpi.get("label", "")
+        value = kpi.get("value", "")
+        delta = kpi.get("delta", "")
+        grid.append(
+            [
+                Paragraph(label, styles["kpi_label"]),
+                Paragraph(value, styles["kpi_value"]),
+                Paragraph(delta if delta else "", styles["kpi_delta"]),
+            ]
+        )
+    # Transpõe: grid[col][row] -> data[row][col]
+    data = [[grid[c][r] for c in range(n)] for r in range(3)]
+    ts = TableStyle(
+        [
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]
+    )
+    t = Table(data, colWidths=[col_w] * n)
+    t.setStyle(ts)
+    return [t, Spacer(1, 0.3 * cm)]
+
+
+def _render_callout(b: dict, styles: dict) -> list:
+    """Callout — caixa de destaque. `kind` decide o prefixo
+    e (em v0.1) só o prefixo varia; a cor de fundo é
+    `identity.light` (mesma para todos os kinds — Etapa 6
+    refina as cores por kind).
+    """
+    kind = b.get("kind", "info")
+    text = b.get("text", "")
+    prefix = {
+        "info": "[INFO]",
+        "alert": "[ALERTA]",
+        "critical": "[CRÍTICO]",
+        "success": "[OK]",
+    }.get(kind, f"[{kind.upper()}]")
+    return [Paragraph(f"{prefix}  {text}", styles["callout_info"])]
+
+
+def _render_quote(b: dict, styles: dict) -> list:
+    """Citação com atribuição opcional."""
+    text = b.get("text", "")
+    attr = b.get("attribution")
+    out = [Paragraph(f'"{text}"', styles["quote"])]
+    if attr:
+        out.append(Paragraph(f"— {attr}", styles["quote_attr"]))
+    return out
+
+
+def _render_steps(b: dict, styles: dict) -> list:
+    """Passos numerados."""
+    items = b.get("items", [])
+    out: list = []
+    for i, s in enumerate(items, start=1):
+        title = s.get("title", "")
+        desc = s.get("description")
+        out.append(Paragraph(f"{i}. {title}", styles["h3"]))
+        if desc:
+            out.append(Paragraph(desc, styles["body"]))
+    return out
+
+
+def _render_chart_placeholder(b: dict, styles: dict) -> list:
+    """Chart — placeholder textual em v0.1. Render real
+    (bar/line/pie com cores) é Etapa 5.x.
+    """
+    kind = b.get("kind", "?")
+    title = b.get("title", "")
+    label = f"[Gráfico de {kind}"
+    if title:
+        label += f" — {title}"
+    label += " — visualização nativa prevista para Etapa 5.x]"
+    return [Paragraph(label, styles["placeholder"])]
+
+
+def _render_image(b: dict, styles: dict) -> list:
+    """Imagem. Path validado pelo `validate_path("read")`
+    antes (defesa em profundidade — o caller Rust já
+    checa a allowlist). Width opcional.
+    """
+    path = b.get("path", "")
+    if not path:
+        return [Paragraph("[Imagem: path ausente]", styles["body"])]
+    try:
+        from reportlab.lib.units import cm as _cm
+        if b.get("width_cm"):
+            img = RLImage(path, width=float(b["width_cm"]) * _cm)
+        else:
+            img = RLImage(path, width=10 * _cm)
+        out: list = [img]
+    except Exception as exc:
+        out = [Paragraph(f"[Imagem não carregada: {exc}]", styles["body"])]
+    cap = b.get("caption")
+    alt = b.get("alt", "")
+    if cap:
+        out.append(Paragraph(cap, styles["caption"]))
+    elif alt:
+        out.append(Paragraph(f"[{alt}]", styles["caption"]))
+    return out
+
+
+def _render_code(b: dict, styles: dict) -> list:
+    """Bloco de código. Preserva indentação e quebra
+    por linha. `language` é decorativo (sem highlight
+    no v0.1 — `RCodeParser` é Etapa 5.x).
+    """
+    content = b.get("content", "")
+    out: list = []
+    if b.get("language"):
+        out.append(Paragraph(f"<font color='#6B7280'>{b['language']}</font>", styles["caption"]))
+    for line in content.splitlines():
+        out.append(Paragraph(line if line else "&#160;", styles["code"]))
+    if b.get("caption"):
+        out.append(Paragraph(b["caption"], styles["caption"]))
+    return out
+
+
+def _render_divider(b: dict, styles: dict, identity: dict) -> list:
+    """Linha horizontal. Implementada como Table 1x1 sem
+    conteúdo, só border bottom."""
+    from reportlab.lib.units import cm as _cm
+    from reportlab.lib.pagesizes import A4 as _A4
+    width = _A4[0] - 4 * _cm
+    t = Table([[""]], colWidths=[width], rowHeights=[0.1 * _cm])
+    t.setStyle(
+        TableStyle(
+            [
+                (
+                    "LINEBELOW",
+                    (0, 0),
+                    (-1, -1),
+                    0.75,
+                    _hex(identity.get("latao", "#B8924A")),
+                ),
+            ]
+        )
+    )
+    return [t, Spacer(1, 0.3 * cm)]
+
+
+def _render_spacer(b: dict, styles: dict) -> list:
+    """Espaço vertical."""
+    from reportlab.lib.units import cm as _cm
+    h = float(b.get("height_cm", 0.5))
+    return [Spacer(1, h * _cm)]
+
+
+def _render_signatures(b: dict, styles: dict) -> list:
+    """Bloco de assinaturas. Cada par vira linha + nome + role + local."""
+    pairs = b.get("pairs", [])
+    out: list = []
+    if not pairs:
+        return out
+    out.append(Spacer(1, 2 * cm))
+    for p in pairs:
+        name = p.get("name", "")
+        role = p.get("role")
+        loc = p.get("location")
+        out.append(Paragraph("___________________________", styles["signature_line"]))
+        out.append(Paragraph(name, styles["signature_name"]))
+        if role:
+            out.append(Paragraph(role, styles["signature_line"]))
+        if loc:
+            out.append(Paragraph(loc, styles["signature_line"]))
+        out.append(Spacer(1, 1 * cm))
+    return out
+
+
+def _render_back_cover(b: dict, styles: dict, identity: dict) -> list:
+    """Contracapa. Empilha nome + contatos centralizados,
+    termina com PageBreak."""
+    out: list = []
+    out.append(PageBreak())
+    out.append(Spacer(1, 4 * cm))
+    name = b.get("name", "")
+    if name:
+        out.append(Paragraph(name, styles["cover_title"]))
+    for k in ("email", "phone", "address"):
+        v = b.get(k)
+        if v:
+            out.append(Paragraph(v, styles["cover_meta"]))
+    return out
+
+
+# ---- entrypoint --------------------------------------------------------
+
+
+def handle_pdf_write(payload: dict) -> dict:
+    """`pdf.write` v0.4.0 (Etapa 5 PR 2): payload estendido.
+
+    Input (campos obrigatórios marcados com *):
+      - `path`* (str): destino do .pdf.
+      - `title`* (str): título do documento.
+      - `style` (str): `"tinta_e_latao"` (default) ou `"sobrio"`.
+      - `page` (dict): `{size, margin_cm: {top, bottom, left, right}}`.
+      - `identity` (dict): paleta de cor (Tinta/Latão ou Sobrio).
+      - `watermark` (dict | null): opt-in (D-PDF2 do ADR-0021).
+      - `metadata` (dict): author, organization, keywords, description,
+        confidentiality.
+      - `blocks`* (list): 1+ blocos do `DocumentBlock`, cada um
+        com `type` discriminado.
+
+    Output (sucesso):
+      `{ok, path, size_bytes, pages_rendered, blocks_written,
+        glifo_check: {checked, missing}}`.
+
+    Erros (em `tool.result {ok: false, code, message, ...}`):
+      - `invalid_payload`: campo obrigatório faltando.
+      - `fonttools_unavailable`: `fontTools` não instalado
+        (D-FAIL-1 violado).
+      - `missing_glyph`: glifo faltando no cmap de uma fonte
+        Tinta & Latão (D-GLYPH-1). Inclui lista em `missing`:
+        `[{block_index, char, codepoint, font_name, block_type}, ...]`.
+    """
+    # 1. Validação do path (defesa em profundidade; o
+    # `WorkerToolDispatcher` no Rust já fez antes do invoke).
+    if "path" not in payload:
+        return {
+            "ok": False,
+            "code": "invalid_payload",
+            "message": "campo 'path' ausente",
+        }
+    path = validate_path(_payload_field(payload, "path", str), "write")
+    if "title" not in payload:
+        return {
+            "ok": False,
+            "code": "invalid_payload",
+            "message": "campo 'title' ausente",
+        }
+    title = _payload_field(payload, "title", str)
+    if "blocks" not in payload:
+        return {
+            "ok": False,
+            "code": "invalid_payload",
+            "message": "campo 'blocks' ausente",
+        }
+    blocks = _payload_field(payload, "blocks", list)
+    if not blocks:
+        return {
+            "ok": False,
+            "code": "invalid_payload",
+            "message": "'blocks' nao pode ser vazio",
+        }
+
+    # 2. Defaults.
+    style_name = payload.get("style", "tinta_e_latao")
+    if style_name not in ("tinta_e_latao", "sobrio"):
+        style_name = "tinta_e_latao"
+    page = payload.get("page") or {}
+    page_margin = page.get("margin_cm") or {}
+    identity = payload.get("identity") or {}
+    watermark = payload.get("watermark")
+    metadata = payload.get("metadata") or {}
+
+    # 3. Garante que as fontes Tinta & Latão estão
+    # registradas no `pdfmetrics`. Idempotente. Se as TTFs
+    # não existirem, o fallback built-in do reportlab é
+    # usado (mesma disciplina da v0.3.0; o hard-fail é
+    # do bootstrap, não do handler).
+    font_status = ensure_fonts_registered()
+
+    # 4. Glifo-check pre-render (D-GLYPH-1 do ADR-0021).
+    # varre todos os blocos, intersecta com cmap das
+    # fontes Tinta & Latão via `fontTools`, falha
+    # estruturado se algum glifo faltar. **Antes** do
+    # `doc.build()` — render mudo é pior que erro claro.
+    missing = _glyph_check(blocks)
+    if missing:
+        # Se o primeiro item for um "error code" (fonttools
+        # missing), retorna aquele code direto.
+        if len(missing) == 1 and missing[0].get("code"):
+            return {
+                "ok": False,
+                "code": missing[0]["code"],
+                "message": missing[0]["message"],
+                "path": str(path),
+            }
+        return {
+            "ok": False,
+            "code": "missing_glyph",
+            "message": (
+                f"{len(missing)} glifo(s) faltando em fontes Tinta & Latao. "
+                "Veja 'missing' para bloco + caractere + fonte."
+            ),
+            "missing": missing,
+            "path": str(path),
+        }
+
+    # 5. Constrói os styles (cores do `identity`, fontes
+    # Tinta & Latão ou fallback built-in do reportlab).
+    styles = _build_pdf_styles(identity, style_name)
+
+    # 6. Constrói a `story` (lista de flowables). O
+    # `_last_footer_capture` é populado se houver bloco
+    # `Footer` — o `_draw_page_chrome` (callback de
+    # `onPage`) usa depois.
+    _last_footer_capture["watermark"] = watermark
+    _last_footer_capture["identity"] = identity
+    story, blocks_written = _build_story(blocks, styles, identity, font_status)
+    if not story:
+        return {
+            "ok": False,
+            "code": "invalid_payload",
+            "message": "story vazia depois do translate (nenhum bloco produziu flowable)",
+        }
+
+    # 7. Monta o `SimpleDocTemplate` com margens do
+    # `page.margin_cm` e `onPage=_draw_page_chrome` (footer
+    # + watermark).
+    try:
+        left = float(page_margin.get("left", 2.0)) * cm
+        right = float(page_margin.get("right", 2.0)) * cm
+        top = float(page_margin.get("top", 2.5)) * cm
+        bottom = float(page_margin.get("bottom", 2.5)) * cm
+    except (TypeError, ValueError):
+        left, right, top, bottom = 2 * cm, 2 * cm, 2.5 * cm, 2.5 * cm
+
+    # Metadados do PDF (vão pro /Info do PDF).
+    pdf_title = title
+    pdf_author = metadata.get("author") or ""
+    pdf_subject = metadata.get("description") or ""
+    pdf_keywords = metadata.get("keywords") or ""
+    pdf_creator = "Frederico IA Studio - PDFPro v0.1 (Etapa 5 PR 2)"
+
     doc = SimpleDocTemplate(
         str(path),
         pagesize=A4,
-        leftMargin=2 * cm,
-        rightMargin=2 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
-        title=title,
+        leftMargin=left,
+        rightMargin=right,
+        topMargin=top,
+        bottomMargin=bottom,
+        title=pdf_title,
+        author=pdf_author,
+        subject=pdf_subject,
+        keywords=pdf_keywords,
+        creator=pdf_creator,
+        onPage=_draw_page_chrome,
     )
-    story = [Paragraph(title, styles["title"]), Spacer(1, 0.5 * cm)]
-    sections_written = 0
-    for sec in sections:
-        if not isinstance(sec, dict):
-            raise ValueError("secao precisa ser um dict")
-        heading = sec.get("heading", "")
-        body = sec.get("body", [])
-        if not isinstance(body, list):
-            raise ValueError("'body' precisa ser uma lista de strings")
-        if heading:
-            story.append(Paragraph(heading, styles["heading"]))
-        for p in body:
-            if not isinstance(p, str):
-                raise ValueError("paragrafo precisa ser string")
-            story.append(Paragraph(p, styles["body"]))
-        story.append(Spacer(1, 0.3 * cm))
-        sections_written += 1
-    doc.build(story)
-    # Reportlab nao expoe contagem de paginas depois de build. Como
-    # heuristica simples, o numero de paginas e pelo menos 1.
-    pages_rendered = 1
+
+    # 8. Build.
+    try:
+        doc.build(story)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "code": "build_failed",
+            "message": f"reportlab falhou no build: {exc}",
+            "path": str(path),
+        }
+
+    # 9. Response. `pages_rendered` é um chute mínimo (1)
+    # — reportlab não expõe `n_pages` pós-build. A
+    # auditoria bloqueante do §19.6 (PRs 3-4) vai
+    # calcular o real via `pypdfium2` e falhar se
+    # discrepante. Por enquanto, 1 é honesto: "pelo
+    # menos 1 página".
+    size = path.stat().st_size
     return {
         "ok": True,
         "path": str(path),
-        "size_bytes": path.stat().st_size,
-        "pages_rendered": pages_rendered,
-        "sections_written": sections_written,
+        "size_bytes": size,
+        "pages_rendered": 1,
+        "blocks_written": blocks_written,
+        "glifo_check": {
+            "checked": sum(
+                len(t) for b in blocks if isinstance(b, dict) for t, _ in _block_texts_with_font(b, {})
+            ),
+            "missing": [],
+        },
     }
 
 
