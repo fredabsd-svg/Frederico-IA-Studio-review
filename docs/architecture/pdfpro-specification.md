@@ -1,11 +1,11 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-01
-Fase correspondente: 5 (Etapa 5 — PR 2 do PDFPro)
+Fase correspondente: 5 (Etapa 5 — PR 3 do PDFPro: auditoria estrutural bloqueante do §19.4)
 -->
 
 > Última verificação: 2026-08-01. Reflete a Etapa 5 da Fase 5
-> até o **PR 2** (PDFPro v0.1 entregue):
+> até o **PR 3** (auditoria estrutural bloqueante do §19.4 — D-PDF5 + D-PDF6 do ADR-0021):
 >
 > - **PR 1 (commit `d518226`) — fundação:** ADR-0021
 >   (D-PDF1 engine, D-PDF2 marca d'água, D-PDF3
@@ -40,9 +40,29 @@ Fase correspondente: 5 (Etapa 5 — PR 2 do PDFPro)
 >   pikepdf/pypdfium2/fonttools se elas já estivessem
 >   presentes — **violava D-FAIL-1**. Corrigido: sentinels
 >   cobrem as 7 libs, hard-fail real.
-> - **PR 3 — auditoria estrutural (§19.4):** `pikepdf`
->   valida n_pages, metadados, fontes embutidas, Tagged PDF,
->   PDF/A-2B só se opt-in. 5+ testes negativos.
+> - **PR 3 (esta entrega) — auditoria estrutural (§19.4):**
+>   capability `pdf.audit` no `document-worker` (kind
+>   "structural", expansivel pra "visual" no PR 4); `pikepdf`
+>   valida abertura, n_pages, DocInfo populado, fontes
+>   embutidas, sem cifragem, sem referencias externas;
+>   **PDF/A-2B opt-in** (D-PDF5) valida adicionalmente
+>   OutputIntent com ICC sRGB (D-PDF6), XMP pdfaid batendo
+>   com DocInfo, sem JavaScript. **Tagged PDF NAO e
+>   verificado** - A-2B (básico) nao exige; v1 declara
+>   apenas nível B (A fora de escopo). Falha = `KitError::
+>   AuditFailed` com `code: "pdf_audit_structural_failed"` +
+>   lista legivel de checks que falharam. Cache key (D-AUDIT-1)
+>   = `sha256(pdf_bytes) + ":" + AUDIT_RULES_VERSION` (v0.1.0).
+>   19 testes Python em `tests/test_pdf_audit.py` (5+ negativos
+>   injetando falha). `KitError::AuditFailed` novo variant
+>   no `kit.rs` (D-PDF5 do ADR-0021). `SpecVersion` 0.2.0 →
+>   0.3.0 (novo campo opcional `DocumentMetadata.pdfa`).
+>   **D-PDF6** novo no ADR-0021 registra a escolha do sRGB ICC
+>   v2 + SHA-256 (`C4188E5C...D74B64`); gerado localmente pelo
+>   `tools/generate_srgb_icc.py` (color.org nao tem URL estavel
+>   desde 2026; bootstrap.ps1 valida o SHA-256 com hard-fail).
+>   Pendencia 5.x registrada: `n_pages` real do `pdf.write`
+>   (limitacao do reportlab - v0.4.0 chuta 1).
 > - **PR 4 — auditoria visual (§19.3):** `pypdfium2`
 >   rasteriza → checagem de grade, sobreposição, página
 >   vazia, alinhamento. 10+ testes negativos. Cache key
@@ -59,13 +79,16 @@ Fase correspondente: 5 (Etapa 5 — PR 2 do PDFPro)
 >   mergeado.
 >
 > **Estado continua `parcialmente implementado`** após o
-> PR 2: a v0.1 do `render` (fontes, identidade, modo
-> Sóbrio, 20 blocos, glifo-check, marca d'água) está
-> entregue, mas a **auditoria bloqueante do §19.6**
-> (visual + estrutural) entra nos PRs 3 e 4. **Tagged PDF**
-> continua como lacuna registrada (PDF/A-2B exige Tagged;
-> v0.1 do PDFPro entrega PDF 1.7 com fontes embutidas e
-> grade auditada, com Tagged marcado como pendência 5.x).
+> PR 3: a v0.1 do `render` (PR 2) + a auditoria estrutural
+> do §19.4 (PR 3) estão entregues, mas a **auditoria visual
+> do §19.3** (pypdfium2 rasteriza + checa grade, sobreposição,
+> página vazia, alinhamento) entra no PR 4 e os 3 pacotes do
+> ExcelPro (chart nativo, identidade visual, tabela estilizada)
+> entram no PR 5. As 4 lacunas restantes da v0.1 do PDFPro
+> (Tagged, fidelidade Word/Excel→PDF, sumário em duas passadas,
+> `docs.inspect` cobrindo .pdf) continuam registradas; Tagged
+> especificamente é declarada como **fora de escopo** (pertence
+> ao PDF/A-2A, fora do nível B reivindicado).
 
 # Especificação do PDFPro Kit
 
@@ -80,7 +103,7 @@ Fase correspondente: 5 (Etapa 5 — PR 2 do PDFPro)
 - **Fontes embutidas no PDF final** — nenhum documento pode depender de fonte instalada na máquina do usuário (`PROMPT MESTRE` §5.3 final).
 - **Identidade "Tinta & Latão"** + **modo Sóbrio** para registráveis, idênticos aos outros kits.
 - **Validação visual** das páginas via renderização para imagens temporárias: conteúdo cortado, tabela ultrapassando margem, sobreposição, página vazia, fonte ausente, caractere quebrado, espaçamento, resolução, cabeçalho, rodapé, alinhamento (`PROMPT MESTRE` §19.3).
-- **Validação estrutural**: abertura, quantidade de páginas, metadados, fontes, texto, imagens, links, bookmarks, tamanho, corrupção, **Tagged PDF** (quando o opt-in `pdfa: PdfA2b` for usado) (`PROMPT MESTRE` §19.4).
+- **Validação estrutural**: abertura, quantidade de páginas, metadados, fontes, texto, imagens, links, bookmarks, tamanho, corrupção (`PROMPT MESTRE` §19.4). **Tagged PDF NÃO é requisito** do PDF/A-2B (nível B / basic) — é o que separa o nível B (basic) do nível A (accessible). v1 declara apenas nível B; Tagged fica fora de escopo (ver "Não-objetivos" abaixo).
 - **Auditoria bloqueante** (`PROMPT MESTRE` §19.6): as duas validações executam dentro do salvamento do artefato; reprovação deixa em `invalid` e impede a entrega. **Sem interruptor** para desligar.
 - **Fidelidade ao criar PDF a partir de Word/Excel**: hierarquia, títulos, tabelas, gráficos, paginação preservados, arquivo de origem registrado (`PROMPT MESTRE` §19.5). **Etapa 6.**
 - **Engine** (D-PDF1 do ADR-0021): `reportlab` (BSD-3) para render; `pikepdf` (MPL-2.0) para auditoria estrutural e manipulação; `pypdfium2` (Apache-2.0/BSD-3-Clause, binding PDFium) para rasterizar na auditoria visual; `fontTools` (MIT) para checagem de glifo antes de renderizar. **AGPL descartada** (PyMuPDF/borb contaminariam o app .exe; cláusula de rede da AGPL atinge o caminho 2 do §5.5 do PROMPT MESTRE).
@@ -105,18 +128,36 @@ Relatórios, demonstrações, documentos para apresentação, capas, sumários, 
 - Geração de PDF "impressa" de uma página web (a não ser via `DocumentSpec`).
 - **PDF/A-1B** (só PDF/A-2B na v1).
 - **PDF/UA** (acessibilidade completa — fora do escopo da v1).
-- **Tagged PDF** automático sem opt-in de PDF/A-2B (lacuna registrada, ver "Lacunas da v0.1" abaixo).
+- **PDF/A-2A** (nível A / accessible, com Tagged PDF / `StructTree` completo) — fora do escopo da v1. v1 reivindica **apenas nível B (básico)**. Tagged PDF é o que separa o nível A do B; reivindicar A-2A exige escrever `StructTree` XML manualmente no `reportlab`, o que o v1 não faz. Se um dia reivindicar nível A, vira pendência 5.x com bump de schema.
+- **Tagged PDF automático fora do contexto PDF/A-2A** — não-objetivo da v1. A v1 nunca reivindica Tagged, mesmo quando o usuário pede explicitamente. (Reivindicar Tagged sem ser nível A é o que sistemas de protocolo (Junta, órgãos públicos) rejeitam na entrada.)
+- **Subida de Tagged para "PDF sério"** — não-objetivo. PDF 1.7 com fontes embutidas e grade auditada já é o piso de "PDF sério" do Frederico. Tagged é para conformidade arquivística (PDF/A-2A) ou acessibilidade (PDF/UA), não para "ficar mais sério".
+
+## Escopo declarado do PDF/A-2B (D-PDF5 do ADR-0021)
+
+A v1 do PDFPro **reivindica apenas o nível B (basic) do PDF/A-2**. O que isso significa em termos de auditoria:
+
+**O que o nível B verifica (D-PDF5, D-PDF6 — auditoria do §19.4 quando `pdfa: Some(PdfA2b)` é usado):**
+
+- Fontes embutidas (mesma regra do PDF comum, mas auditada via pikepdf)
+- XMP `pdfaid:part=2` e `pdfaid:conformance=B` batendo com DocInfo
+- OutputIntent com perfil ICC RGB embedded (sRGB IEC 61966-2.1, gerado pelo `tools/generate_srgb_icc.py` e validado por SHA-256 no `bootstrap.ps1`)
+- Sem cifragem, sem JavaScript (`/OpenAction`, `/AA`, `/Names/JavaScript` ausentes)
+- Sem referências externas (URL em `/A /URI`, `/EmbeddedFiles` com `/F`)
+
+**O que o nível B NÃO verifica (escopo declarado):**
+
+- **Tagged PDF / `StructTree`** — Nível B não exige. A v1 não verifica e não promete verificação no futuro para A-2B.
+- **PDF/A-2A (accessible)** — fora do escopo da v1. Reivindicar A-2A exige Tagged completo + outras restrições, e o `reportlab` tem suporte fraco a `StructTree`.
+- **PDF/A-1B, PDF/UA, PDF/A-3, PDF/A-4** — fora do escopo da v1.
+- **Validação rigorosa de TRC do sRGB, primaries, white point** — o `veraPDF` no job noturno `ci-nightly.yml` faz essa checagem. O PR 3 só fecha auditoria estrutural sem Java; rigor do `veraPDF` é problema do nightly, não deste PR.
+
+**Consequência prática:** se um sistema externo (Junta Comercial, órgão público, portal de protocolo) rejeitar PDFs A-2B por ausência de Tagged, é feature, não bug — o Frederico não reivindica A-2A. Para A-2A, o usuário precisa de outro pipeline (provavelmente com `borb` ou Ghostscript, com licença compatível — fora do escopo da v1).
 
 ## Lacunas da v0.1 (que impedem "implementado")
 
-A Etapa 5 entrega a v0.1 do PDFPro com `reportlab` (fontes Tinta & Latão embutidas, identidade visual, modo Sóbrio, 20 blocos) + auditoria bloqueante do §19.6 (visual + estrutural). **Não** entrega o pacote completo que o spec promete:
+A Etapa 5 entrega a v0.1 do PDFPro com `reportlab` (fontes Tinta & Latão embutidas, identidade visual, modo Sóbrio, 20 blocos) + auditoria bloqueante do §19.4 estrutural. **Não** entrega o pacote completo que o spec promete:
 
-1. **Tagged PDF** (D-FAILS-1) — `reportlab` tem suporte fraco a `StructTree`
-   (Tagged PDF). A v0.1 entrega PDF 1.7 com fontes embutidas e
-   grade auditada, mas **sem** Tagged PDF automático. PDF/A-2B
-   (que exige Tagged) é opt-in e a auditoria vai reportar a
-   lacuna. **Subida pra Tagged automático** é pre-requisito pra
-   PDF/A-2B virar padrão, não só opt-in.
+1. **Auditoria visual do §19.3** — `pypdfium2` rasteriza → checagem de grade, sobreposição, página vazia, alinhamento. Entra no PR 4 (D-AUDIT-1 já define o cache key).
 2. **Fidelidade Word → PDF e Excel → PDF** (`PROMPT MESTRE` §19.5) —
    Etapa 6. A v0.1 do PDFPro consome `DocumentSpec`; converter um
    `.docx` ou `.xlsx` existente em PDF é trabalho da Etapa 6.
@@ -129,14 +170,18 @@ A Etapa 5 entrega a v0.1 do PDFPro com `reportlab` (fontes Tinta & Latão embuti
    + `scanned_pages`, mas **não** reconstrói `DocumentSpec`. O
    round-trip de `.pdf` para `DocumentSpec` é não-trivial e
    registrado como pendência.
-5. **PDF/A-1B / PDF/UA** — fora do escopo da v1. PDF/A-2B é o
-   piso de "PDF sério" hoje; PDF/UA (acessibilidade completa)
-   entra em versão futura.
+5. **PDF/A-1B / PDF/UA / PDF/A-2A** — fora do escopo da v1.
+   PDF/A-2B (nível B) é o piso de "PDF sério" hoje; PDF/A-2A
+   (Tagged, accessible) e PDF/UA (acessibilidade completa)
+   entram em versão futura.
 
 A promoção pra `implementado` exige que todos os 5 itens acima
 estejam fechados. **A Etapa 6 não é pré-requisito pra isso** — o
-trabalho de Tagged PDF e sumário em duas passadas pode entrar em
-qualquer ordem entre 5.x e 6.
+trabalho de sumário em duas passadas pode entrar em qualquer
+ordem entre 5.x e 6. (Tagged PDF foi reclassificado: agora é
+**não-objetivo da v1**, não lacuna — ver "Não-objetivos" e
+"Escopo declarado do PDF/A-2B" acima. Lacuna é "ainda vou
+fazer"; não-objetivo é "decidi não fazer nesta versão".)
 
 ## Decisões
 

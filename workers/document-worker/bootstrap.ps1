@@ -532,6 +532,72 @@ if ($allFontsPresent) {
 }
 
 # ---------------------------------------------------------------------------
+# sRGB ICC profile (PDF/A-2B OutputIntent) - Etapa 5 PR 3, D-PDF6 do ADR-0021
+# ---------------------------------------------------------------------------
+#
+# PDF/A-2B (D-PDF5 do ADR-0021, opt-in via
+# DocumentSpec.metadata.pdfa: PdfAFlavor::PdfA2b) exige OutputIntent com
+# perfil ICC embedded. sRGB IEC 61966-2.1 e o perfil canonico pro
+# Frederico ("Tinta e Latao" = tinta/escuro sobre branco).
+#
+# O ICC tem o sRGB2014.icc como referencia publica, mas o site
+# color.org mudou de estrutura em 2026 e a URL direta nao e estavel
+# (mesmo problema do raw/main do tessdata que o ADR-0019 §Decisao 1 ja
+# pagou caro). Gerar localmente a partir dos parametros sRGB
+# D50-adaptados (IEC 61966-2-1:1999, Anexo A, publico) e do formato
+# ICC v2 (ISO 15076-1, publico) e o caminho reproduzivel. Script
+# `tools/generate_srgb_icc.py` produz bytes deterministicos.
+#
+# SHA-256 do output e fixado abaixo. Bump do script = bump do hash
+# no mesmo commit (D-AUDIT-1: "mudanca de regra = bump da
+# AUDIT_RULES_VERSION").
+#
+# Licenca: o espaco sRGB e IEC standard publico; o ICC profile
+# gerado e public domain na pratica; o gerador segue a licenca
+# do projeto.
+
+$IccDir = Join-Path $RuntimeDir 'icc'
+$IccPath = Join-Path $IccDir 'sRGB.icc'
+$IccSha256 = 'C4188E5C06585DDAD4F8781B8F8791BB4563874AC462C934D1420EA133D74B64'
+$GeneratorScript = Join-Path $ScriptDir 'tools\generate_srgb_icc.py'
+
+# Se o ICC ja esta presente com tamanho razoavel, pula a geracao
+# (mas sempre valida o SHA-256 abaixo - defesa contra bit-rot do
+# runtime).
+if ((Test-Path $IccPath) -and ((Get-Item $IccPath).Length -ge 400) -and ((Get-Item $IccPath).Length -le 2000)) {
+    Write-Host "[bootstrap] sRGB ICC ja presente em $IccPath - pulando geracao." -ForegroundColor Yellow
+} else {
+    if (-not (Test-Path $GeneratorScript)) {
+        Write-Host "[bootstrap] ERRO: gerador sRGB ICC nao encontrado em $GeneratorScript" -ForegroundColor Red
+        Write-Host '[bootstrap]   Esperado: tools/generate_srgb_icc.py no repo.' -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[bootstrap] gerando sRGB ICC em $IccPath" -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path $IccDir -Force | Out-Null
+    & $PythonExe $GeneratorScript $IccPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[bootstrap] ERRO: generate_srgb_icc.py saiu com exit code $LASTEXITCODE" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Valida SHA-256. Defesa contra:
+#   - bit-rot do runtime (HD corrompido)
+#   - mudanca silenciosa no gerador (alguem commitou alteracao
+#     sem bump do hash)
+#   - substituicao por ICC de origem duvidosa
+$actualHash = (Get-FileHash $IccPath -Algorithm SHA256).Hash
+if ($actualHash -ne $IccSha256) {
+    Write-Host "[bootstrap] ERRO: SHA-256 do sRGB ICC nao confere" -ForegroundColor Red
+    Write-Host "[bootstrap]   esperado: $IccSha256" -ForegroundColor Red
+    Write-Host "[bootstrap]   obtido:   $actualHash" -ForegroundColor Red
+    Write-Host '[bootstrap] Se o gerador mudou de proposito, atualize o hash no mesmo commit.' -ForegroundColor Red
+    Write-Host '[bootstrap] (D-AUDIT-1: bump do hash = bump da AUDIT_RULES_VERSION.)' -ForegroundColor Red
+    exit 1
+}
+Write-Host '[bootstrap]   SHA-256 do sRGB ICC OK' -ForegroundColor Green
+
+# ---------------------------------------------------------------------------
 # Verificacao final
 # ---------------------------------------------------------------------------
 
@@ -696,6 +762,43 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[bootstrap] $fontsCheck" -ForegroundColor Green
 Remove-Item $FontCheckPath -Force -ErrorAction SilentlyContinue
 
+# 4. sRGB ICC (PDF/A-2B OutputIntent, D-PDF6 do ADR-0021). Garante que
+#    o ICC esta presente, tem o tamanho esperado, e os bytes de header
+#    (sig 'acsp' no offset 36, color space 'RGB ' no offset 16) estao
+#    certos. O SHA-256 ja foi validado acima, mas a checagem de
+#    header e defesa contra ICC com formato invalido.
+$IccCheckPath = Join-Path $env:TEMP 'frederico_icc_check.py'
+$IccCheckScript = @"
+import hashlib, sys
+from pathlib import Path
+icc = Path(r'$IccPath')
+if not icc.is_file():
+    print('FAIL: sRGB.icc ausente')
+    sys.exit(1)
+data = icc.read_bytes()
+if len(data) < 400 or len(data) > 2000:
+    print('FAIL: sRGB.icc tamanho suspeito: ' + str(len(data)))
+    sys.exit(1)
+if data[36:40] != b'acsp':
+    print('FAIL: ICC signature != acsp (offset 36)')
+    sys.exit(1)
+if data[16:20] != b'RGB ':
+    print('FAIL: ICC color space != RGB (offset 16)')
+    sys.exit(1)
+h = hashlib.sha256(data).hexdigest()
+print('ICC OK: ' + str(len(data)) + ' bytes sha256=' + h[:16] + '...')
+"@
+Set-Content -Path $IccCheckPath -Value $IccCheckScript -NoNewline -Encoding UTF8
+$iccCheck = & $PythonExe $IccCheckPath
+if ($LASTEXITCODE -ne 0) {
+    Write-Host '[bootstrap] ERRO: sRGB ICC nao confere' -ForegroundColor Red
+    Write-Host $iccCheck
+    Remove-Item $IccCheckPath -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Host "[bootstrap] $iccCheck" -ForegroundColor Green
+Remove-Item $IccCheckPath -Force -ErrorAction SilentlyContinue
+
 # ---------------------------------------------------------------------------
 # Resumo final
 # ---------------------------------------------------------------------------
@@ -704,7 +807,7 @@ $totalSize = (Get-ChildItem $RuntimeDir -Recurse -File | Measure-Object -Propert
 $totalSizeMB = [math]::Round($totalSize / 1MB, 1)
 
 Write-Host ''
-Write-Host "[bootstrap] OK - runtime completo do document-worker v0.3.0 em $RuntimeDir" -ForegroundColor Green
+Write-Host "[bootstrap] OK - runtime completo do document-worker v0.4.0 em $RuntimeDir" -ForegroundColor Green
 Write-Host "[bootstrap] Tamanho total: $totalSizeMB MB" -ForegroundColor Green
 Write-Host '[bootstrap] Pra rodar o worker:' -ForegroundColor Green
 Write-Host "    & '$PythonExe' '$ScriptDir\document-worker.py'"

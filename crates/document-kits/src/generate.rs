@@ -329,6 +329,28 @@ impl Tool for DocsGenerateTool {
             Err(KitError::PathNotAllowed(msg)) => {
                 return ToolResult::err(self.tool_id.clone(), msg);
             }
+            Err(KitError::AuditFailed {
+                code,
+                message,
+                failed,
+            }) => {
+                // §19.6 sem interruptor: o PDF nao foi entregue.
+                // A mensagem vai pro modelo com o codigo e a
+                // lista de checks que falharam - o caller pode
+                // dizer ao usuario exatamente o que foi
+                // (fonte nao embedded, PDF cifrado, falta
+                // OutputIntent, etc.).
+                let failed_pretty = serde_json::to_string_pretty(&failed)
+                    .unwrap_or_else(|_| "<unparseable>".to_string());
+                return ToolResult::err(
+                    self.tool_id.clone(),
+                    format!(
+                        "kit '{}' - auditoria bloqueante (§19.6) falhou: {code} - {message}\n\
+                         checks que falharam:\n{failed_pretty}",
+                        kit.id()
+                    ),
+                );
+            }
         };
 
         // 7. Monta o `output` do ToolResult.

@@ -57,8 +57,8 @@ pub use blocks::{
 };
 pub use error::DocumentError;
 pub use spec::{
-    DocumentMetadata, DocumentSpec, DocumentStyle, DocumentType, SpecVersion, WatermarkPosition,
-    WatermarkSpec,
+    DocumentMetadata, DocumentSpec, DocumentStyle, DocumentType, PdfaFlavor, PdfaSpec, SpecVersion,
+    WatermarkPosition, WatermarkSpec,
 };
 pub use validate::{validate_against_schema, validate_semantic, SchemaError};
 

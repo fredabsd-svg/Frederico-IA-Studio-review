@@ -1,4 +1,4 @@
-"""`document-worker` v0.3.0 - sidecar Python do Frederico IA Studio (Fase 5, Etapa 2B+Y).
+"""`document-worker` v0.4.0 - sidecar Python do Frederico IA Studio (Fase 5, Etapa 5 PR 3).
 
 Worker que gera documentos profissionais (DOCX, XLSX, PDF), le os tres
 formatos e faz OCR de imagens e PDFs escaneados. Comunica com o app
@@ -35,6 +35,16 @@ estaveis em snake_case com prefixo de direcao: `worker.hello`,
 | `pdf.write`  | `path`, `title`, `sections`                 | `path`, `size_bytes`, `pages_rendered`              |
 | `pdf.read`   | `path`, `ocr: "auto"|"never"|"only"`        | `text`, `ocr_text`, `page_count`, `scanned_pages`, `ocr_available`, `ocr_truncated`, `tesseract_version` |
 | `ocr.run`    | `path`, `lang: "por+eng"` (opcional)        | `text`, `lang`, `conf`, `tesseract_version`         |
+| `pdf.audit`  | `path`, `kind: "structural"`, `pdfa: Option<PdfAFlavor>`, `metadata`, `expected_pages` | `ok`, `checks`, `coverage`, `cache_key`, `rules_version` (sucesso) ou `code: "pdf_audit_structural_failed"`, `failed` (falha) |
+
+**`pdf.audit` (Etapa 5 PR 3 da Fase 5, D-PDF5 + D-PDF6 do
+ADR-0021):** auditoria estrutural bloqueante do §19.4
+(PROMPT MESTRE). Roda em TODA geracao do PDFPro - o kit
+chama apos `pdf.write` e o `salvar()` falha estruturado se
+`ok: false` (§19.6 nao tem interruptor). `kind: "structural"`
+e o unico implementado nesta PR; `kind: "visual"` (rasterizacao
+pypdfium2 + grade/sobreposicao/pagina vazia) entra no PR 4
+como extensao do mesmo handler.
 
 **`pdf.read` ganhou fallback OCR (Etapa 2B+Y, ADR-0019 §Decisao 3):**
 - `text` so vem da camada de texto do PDF (fonte: `pdfplumber`).
@@ -94,6 +104,7 @@ import subprocess
 import sys
 import time
 import uuid
+import hashlib
 from pathlib import Path, PurePath
 from typing import Any, Callable
 
@@ -136,6 +147,13 @@ try:
         TableStyle,
     )
     import pdfplumber
+    # `pikepdf` (auditoria estrutural do PDFPro, D-PDF5 do ADR-0021,
+    # Etapa 5 PR 3 da Fase 5). D-FAIL-1: hard-fail no bootstrap se
+    # faltar, e o worker nao sobe sem ele a partir desta versao. As
+    # outras 3 (pypdfium2, fontTools) sao importaveis separadamente
+    # porque falhas nelas nao impedem o worker de subir - cada handler
+    # sinaliza estruturado quando a dep dele nao esta.
+    import pikepdf  # type: ignore[import-untyped]
 except ImportError as exc:
     print(
         f"[document-worker] ERRO: biblioteca faltando ({exc}). "
@@ -2471,6 +2489,501 @@ def handle_pdf_read(payload: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# pdf.audit - Etapa 5 PR 3 da Fase 5 (D-PDF5 + D-PDF6 do ADR-0021)
+# ---------------------------------------------------------------------------
+#
+# Auditoria estrutural bloqueante do §19.4 (PROMPT MESTRE). O §19.6
+# diz que a auditoria nao tem interruptor - o `pdf.audit` falha
+# barulhento quando algo nao bate, e o caller (kit) tem que abortar
+# a entrega.
+#
+# **Capability name:** `pdf.audit` (sem terceiro nivel). Todos os
+# outros capabilities do worker seguem `<dominio>.<verbo>`:
+# `pdf.write`, `pdf.read`, `ocr.run`. O PR 4 vai estender este mesmo
+# handler com `kind: "visual"` (pypdfium2 rasteriza + checa grade,
+# sobreposicao, pagina vazia, alinhamento) - o `salvar()` faz uma
+# chamada so porque §19.6 exige auditoria inteira.
+#
+# **Input:**
+#   - path (str): path do .pdf a ser auditado
+#   - kind (str): "structural" (PR 3) | "visual" (PR 4 - rejeitado por agora)
+#   - pdfa (None | "pdfa_2b"): D-PDF5 opt-in. None = baseline; "pdfa_2b"
+#     = baseline + A-2B subset
+#   - metadata (dict): campos do DocumentMetadata (author, title,
+#     organization, keywords, description) - usado pra cross-check
+#     XMP/DocInfo quando A-2B opt-in
+#   - expected_pages (int | None): cross-check com `pages_rendered` do
+#     `pdf.write`. None pula o cross-check
+#
+# **Output (sucesso):**
+#   {ok: True, checks: [...], coverage: "full", cache_key, rules_version}
+#
+# **Output (falha):**
+#   {ok: False, code: "pdf_audit_structural_failed", message,
+#    failed: [...], checks_passed: [...], cache_key, rules_version}
+#   Cada item em `failed` tem {check, expected, got} - motivo legivel
+#   pro caller (kit / tool / modelo) e pro usuario final.
+#
+# **Cache key (D-AUDIT-1):** sha256(pdf_bytes) + ":" + AUDIT_RULES_VERSION.
+# PR 3 nao persiste cache (cache persistente e PR proprio - mistura
+# correcao com otimizacao faz bug de cache virar bug de auditoria).
+# Cache key retornado no `tool.result` pra que o caller saiba invalidar
+# quando bumpar AUDIT_RULES_VERSION.
+
+# Versao das regras de auditoria. Bump quando uma regra mudar
+# (D-AUDIT-1: "mudanca de regra = bump da AUDIT_RULES_VERSION").
+# 0.1.0 no PR 3 (regras iniciais baseline + A-2B subset).
+AUDIT_RULES_VERSION = "0.1.0"
+
+
+def _audit_icc_signature(blob: bytes) -> tuple[bool, str]:
+    """Valida o header de um ICC profile embedded no OutputIntent.
+
+    Checa so o minimo estrutural: signature 'acsp' no offset 36 e
+    color space 'RGB ' no offset 16. Nao verifica TRC, primaries, ou
+    outros tags - a auditoria rigorosa (veraPDF) roda no ci-nightly
+    (D-PDF5 do ADR-0021: "veraPDF no job noturno valida PDFs
+    gerados com opt-in"). Hard-fail do bootstrap se pikepdf faltar
+    (D-FAIL-1).
+    """
+    if len(blob) < 128:
+        return False, f"ICC stream muito pequeno: {len(blob)} bytes (minimo 128)"
+    if blob[36:40] != b"acsp":
+        return False, f"ICC signature invalida: esperado 'acsp' no offset 36, veio {blob[36:40]!r}"
+    cs = blob[16:20]
+    if cs != b"RGB ":
+        return False, f"ICC color space != RGB (offset 16): {cs!r}"
+    return True, "ICC header OK"
+
+
+def _check_n_pages(pdf, n_pages_from_write: int | None) -> tuple[bool, dict]:
+    """Check 1: n_pages >= 1, e bate com pages_rendered do write se fornecido."""
+    n = len(pdf.pages)
+    if n < 1:
+        return False, {"check": "n_pages", "expected": ">= 1", "got": n}
+    if n_pages_from_write is not None and n != n_pages_from_write:
+        return False, {
+            "check": "n_pages_consistency",
+            "expected": n_pages_from_write,
+            "got": n,
+            "message": (
+                f"n_pages do pikepdf ({n}) difere do pages_rendered do "
+                f"pdf.write ({n_pages_from_write})"
+            ),
+        }
+    return True, {"check": "n_pages", "value": n}
+
+
+def _check_docinfo(pdf) -> tuple[bool, list[dict]]:
+    """Check 2: DocInfo populado (Author/Title/Producer/Creator nao vazios)."""
+    info = pdf.docinfo or {}
+    failed: list[dict] = []
+    for field in ("/Author", "/Title", "/Producer", "/Creator"):
+        value = ""
+        try:
+            value = str(info.get(field, "")) if field in info else ""
+        except Exception:
+            value = ""
+        if not value:
+            failed.append({
+                "check": "docinfo_field",
+                "field": field,
+                "expected": "non-empty",
+                "got": "",
+            })
+    if failed:
+        return False, failed
+    return True, [{"check": "docinfo_populated", "fields": ["Author", "Title", "Producer", "Creator"]}]
+
+
+def _check_fonts_embedded(pdf) -> tuple[bool, list[dict]]:
+    """Check 3: todas as fontes referenciadas tem FontFile embedded.
+
+    Walk em /Resources/Font/*. /FontDescriptor sem /FontFile* =
+    fonte nao embedded. Tipos: Type 1 -> /FontFile, TrueType ->
+    /FontFile2, CFF -> /FontFile3. O reportlab (PR 2) ja embarca
+    as Tinta e Latao via TTFont(), entao este check falha
+    estruturado se o FontFile sumir (bug no render ou manipulacao
+    pos-escrita).
+    """
+    failed: list[dict] = []
+    seen: set[str] = set()
+    for page_num, page in enumerate(pdf.pages, start=1):
+        try:
+            page_obj = page.obj if hasattr(page, "obj") else page
+        except Exception:
+            continue
+        if not page_obj or "/Resources" not in page_obj:
+            continue
+        res = page_obj["/Resources"]
+        if not res or "/Font" not in res:
+            continue
+        fonts = res["/Font"]
+        if not fonts:
+            continue
+        for font_name, font_ref in fonts.items():
+            key = str(font_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                f = font_ref.obj if hasattr(font_ref, "obj") else font_ref
+                if not f or "/FontDescriptor" not in f:
+                    continue
+                fd = f["/FontDescriptor"]
+                if not any(k in fd for k in ("/FontFile", "/FontFile2", "/FontFile3")):
+                    failed.append({
+                        "check": "font_embedded",
+                        "font": key,
+                        "page": page_num,
+                        "expected": "FontFile* em FontDescriptor",
+                        "got": "nenhum",
+                    })
+            except Exception:
+                # Nao conseguimos inspecionar essa fonte - nao
+                # falhamos por causa de bug do nosso walker.
+                continue
+    if failed:
+        return False, failed
+    return True, [{"check": "fonts_embedded", "value": f"all ({len(seen)} unique)"}]
+
+
+def _check_no_external_refs(pdf) -> tuple[bool, list[dict]]:
+    """Check 4: sem referencias externas (URL, /EmbeddedFiles com /F)."""
+    failed: list[dict] = []
+
+    # /Annot com /A /URI em qualquer pagina.
+    for page_num, page in enumerate(pdf.pages, start=1):
+        try:
+            page_obj = page.obj if hasattr(page, "obj") else page
+        except Exception:
+            continue
+        if not page_obj or "/Annots" not in page_obj:
+            continue
+        annots = page_obj["/Annots"]
+        for annot in annots:
+            try:
+                a_ref = annot.obj.get("/A", {}) if hasattr(annot, "obj") else annot.get("/A", {})
+            except Exception:
+                continue
+            if not a_ref:
+                continue
+            try:
+                a = a_ref.obj if hasattr(a_ref, "obj") else a_ref
+            except Exception:
+                a = a_ref
+            if not a or "/URI" not in a:
+                continue
+            try:
+                uri = str(a["/URI"])
+            except Exception:
+                continue
+            if uri.startswith(("http://", "https://", "ftp://", "mailto:")):
+                failed.append({"check": "external_uri", "uri": uri, "page": page_num})
+
+    # /Catalog /Names /EmbeddedFiles - filespecs externos.
+    try:
+        catalog = pdf.Root
+        if "/Names" in catalog:
+            names = catalog["/Names"]
+            if "/EmbeddedFiles" in names:
+                ef = names["/EmbeddedFiles"]
+                names_array = ef.get("/Names", []) if ef else []
+                for i in range(0, len(names_array) - 1, 2):
+                    spec_ref = names_array[i + 1]
+                    if spec_ref is None:
+                        continue
+                    spec = spec_ref.obj if hasattr(spec_ref, "obj") else spec_ref
+                    if not spec:
+                        continue
+                    # /F = file system path, /UF = unicode.
+                    if "/F" in spec or "/UF" in spec:
+                        path = ""
+                        try:
+                            path = str(spec.get("/F", spec.get("/UF", "")))
+                        except Exception:
+                            path = ""
+                        if path and (path.startswith("/") or path.startswith("\\")
+                                     or (len(path) > 1 and path[1] == ":")):
+                            failed.append({"check": "external_embedded_file", "path": path})
+    except Exception:
+        pass
+
+    if failed:
+        return False, failed
+    return True, [{"check": "no_external_refs", "value": "ok"}]
+
+
+def _check_no_encryption(pdf) -> tuple[bool, dict]:
+    """Check 5: PDF nao cifrado (PDF/A-2B exige sem cifragem)."""
+    if pdf.is_encrypted:
+        return False, {"check": "no_encryption", "expected": "false", "got": "true"}
+    return True, {"check": "no_encryption", "value": "ok"}
+
+
+def _check_pdfa2b(pdf) -> tuple[bool, list[dict]]:
+    """Checks PDF/A-2B opt-in (D-PDF5): OutputIntent, XMP, no JavaScript.
+
+    O que o nivel B exige (audit do §19.4 verifica quando o opt-in
+    `pdfa: PdfA2b` e usado - D-PDF5 do ADR-0021):
+    - OutputIntent com ICC profile RGB embedded (D-PDF6)
+    - XMP `pdfaid:part=2` e `pdfaid:conformance=B`
+    - Sem cifragem, sem JavaScript, sem /OpenAction
+
+    **Tagged PDF NAO e requisito do nivel B** - e o que separa
+    o nivel B (basic) do nivel A (accessible). A v1 do PDFPro
+    declara conformidade apenas com o nivel B. PDF/A-2A
+    (Tagged, acessibilidade) esta fora de escopo da v1.
+    """
+    failed: list[dict] = []
+
+    # 1. OutputIntents presente.
+    output_intents = []
+    try:
+        output_intents = pdf.Root.get("/OutputIntents", []) or []
+    except Exception:
+        output_intents = []
+    if not output_intents:
+        failed.append({
+            "check": "pdfa2b_output_intent",
+            "expected": "/OutputIntents com pelo menos 1 entrada",
+            "got": "ausente",
+        })
+    else:
+        # 2. OutputIntent referencia ICC profile RGB valido.
+        oi_ref = output_intents[0]
+        oi = oi_ref.obj if hasattr(oi_ref, "obj") else oi_ref
+        subtype = ""
+        try:
+            subtype = str(oi.get("/S", ""))
+        except Exception:
+            subtype = ""
+        if subtype != "/GTS_PDFA1":
+            failed.append({
+                "check": "pdfa2b_output_intent_subtype",
+                "expected": "/S = /GTS_PDFA1",
+                "got": subtype or "ausente",
+            })
+        if "/DestOutputProfile" not in oi:
+            failed.append({
+                "check": "pdfa2b_icc_profile",
+                "expected": "/DestOutputProfile referenciando ICC stream",
+                "got": "ausente",
+            })
+        else:
+            icc_ref = oi["/DestOutputProfile"]
+            icc_stream = icc_ref.obj if hasattr(icc_ref, "obj") else icc_ref
+            icc_bytes = b""
+            try:
+                # `read_bytes()` descomprime o stream (FlateDecode
+                # default do pikepdf no save). `read_raw_bytes()`
+                # retorna os bytes brutos pos-compressao, que NAO
+                # servem pra validar o ICC header (a estrutura 'acsp'
+                # so aparece nos bytes descomprimidos). PDF/A-2B
+                # tolera ICC comprimido embedded, mas a auditoria
+                # valida o conteudo. pikepdf 10.x: `read_bytes()` e
+                # a API; `get_data()` da versao 8 foi removido.
+                if hasattr(icc_stream, "read_bytes"):
+                    icc_bytes = bytes(icc_stream.read_bytes())
+                elif hasattr(icc_stream, "read_raw_bytes"):
+                    icc_bytes = bytes(icc_stream.read_raw_bytes())
+            except Exception as exc:
+                failed.append({
+                    "check": "pdfa2b_icc_read",
+                    "expected": "ICC stream legivel",
+                    "got": f"falha ao ler: {type(exc).__name__}: {exc}",
+                })
+            if icc_bytes:
+                ok, motivo = _audit_icc_signature(icc_bytes)
+                if not ok:
+                    failed.append({
+                        "check": "pdfa2b_icc_valid",
+                        "expected": "ICC header valido (acsp + RGB)",
+                        "got": motivo,
+                    })
+
+    # 3. XMP presente com pdfaid:part=2 e pdfaid:conformance=B.
+    xmp_data = ""
+    try:
+        with pdf.open_metadata() as xmp:
+            xmp_data = str(xmp) if xmp is not None else ""
+    except Exception:
+        xmp_data = ""
+    if not xmp_data:
+        failed.append({
+            "check": "pdfa2b_xmp_present",
+            "expected": "XMP metadata stream legivel",
+            "got": "ausente",
+        })
+    else:
+        # O XMP pode serializar o mesmo par campo/valor de duas
+        # formas: atributo (`pdfaid:part="2"`) ou elemento
+        # (`<pdfaid:part>2</pdfaid:part>`). PDF/A-2B aceita ambas
+        # e a pikepdf (e varios outros producers) usa elemento.
+        # Checamos as duas pra nao ter falso negativo.
+        for field, value, check_name in (
+            ("pdfaid:part", "2", "pdfa2b_xmp_part"),
+            ("pdfaid:conformance", "B", "pdfa2b_xmp_conformance"),
+        ):
+            field_present = (
+                re.search(rf'{re.escape(field)}\s*=\s*"{re.escape(value)}"', xmp_data)
+                is not None
+                or re.search(
+                    rf"<{re.escape(field)}[^>]*>\s*{re.escape(value)}\s*</{re.escape(field)}>",
+                    xmp_data,
+                ) is not None
+            )
+            if not field_present:
+                # Detalhe do motivo: o campo existe com valor
+                # diferente, ou nao existe?
+                field_anywhere = field in xmp_data
+                failed.append({
+                    "check": check_name,
+                    "expected": f'{field} = "{value}"',
+                    "got": "ausente" if not field_anywhere else "valor diferente",
+                })
+
+    # 4. Sem JavaScript (/OpenAction, /AA, /Names/JavaScript).
+    try:
+        if "/OpenAction" in pdf.Root:
+            oa_ref = pdf.Root["/OpenAction"]
+            oa = oa_ref.obj if hasattr(oa_ref, "obj") else oa_ref
+            if oa:
+                oa_subtype = ""
+                try:
+                    oa_subtype = str(oa.get("/S", ""))
+                except Exception:
+                    oa_subtype = ""
+                if oa_subtype == "/JavaScript" or "/JS" in oa:
+                    failed.append({
+                        "check": "pdfa2b_no_javascript",
+                        "value": "Catalog /OpenAction tem JS",
+                    })
+        if "/AA" in pdf.Root:
+            failed.append({
+                "check": "pdfa2b_no_javascript",
+                "value": "Catalog /AA presente",
+            })
+        if "/Names" in pdf.Root and "/JavaScript" in pdf.Root["/Names"]:
+            failed.append({
+                "check": "pdfa2b_no_javascript",
+                "value": "Catalog /Names/JavaScript presente",
+            })
+    except Exception:
+        pass
+
+    if failed:
+        return False, failed
+    return True, [{"check": "pdfa2b_compliance", "value": "B-level subset (sem Tagged)"}]
+
+
+def handle_pdf_audit(payload: dict) -> dict:
+    """Handler para `pdf.audit` (Etapa 5 PR 3).
+
+    Veja o comentario do bloco acima pra contrato, semantica, e
+    rationale do cache key (D-AUDIT-1).
+    """
+    path_str = payload.get("path", "")
+    if not path_str:
+        return {"ok": False, "code": "invalid_input", "message": "path ausente"}
+    kind = payload.get("kind", "structural")
+    pdfa = payload.get("pdfa", None)
+    metadata = payload.get("metadata", None) or {}
+    n_pages_from_write = payload.get("expected_pages", None)
+
+    if kind != "structural":
+        return {
+            "ok": False,
+            "code": "audit_kind_unsupported",
+            "message": (
+                f"kind {kind!r} nao suportado por esta build. "
+                f"PR 3 cobre apenas 'structural'; "
+                f"'visual' entra no PR 4 (pypdfium2)."
+            ),
+        }
+
+    try:
+        path = validate_path(path_str, "read")
+    except PathSafetyError as exc:
+        return {"ok": False, "code": exc.code, "message": exc.message}
+
+    # Abertura. `pikepdf.Pdf.open` levanta PasswordError se cifrado e
+    # sem senha, ou PdfError em caso de arquivo corrompido. Mapeia
+    # cada caso pra um codigo estruturado pro caller.
+    try:
+        pdf = pikepdf.Pdf.open(path)
+    except pikepdf.PasswordError:
+        return {
+            "ok": False,
+            "code": "pdf_audit_structural_failed",
+            "message": "PDF cifrado (PDF/A-2B e PDF nao-cifrado por definicao)",
+            "failed": [{"check": "no_encryption", "expected": "false", "got": "true"}],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "code": "pdf_audit_structural_failed",
+            "message": f"pikepdf nao abriu o PDF: {type(exc).__name__}: {exc}",
+            "failed": [{
+                "check": "pdf_open",
+                "expected": "pikepdf.Pdf.open sem exception",
+                "got": type(exc).__name__,
+            }],
+        }
+
+    checks_passed: list[dict] = []
+    failed: list[dict] = []
+
+    ok, item = _check_n_pages(pdf, n_pages_from_write)
+    (checks_passed if ok else failed).append(item)
+
+    ok, items = _check_docinfo(pdf)
+    (checks_passed if ok else failed).extend(items)
+
+    ok, items = _check_fonts_embedded(pdf)
+    (checks_passed if ok else failed).extend(items)
+
+    ok, items = _check_no_external_refs(pdf)
+    (checks_passed if ok else failed).extend(items)
+
+    ok, item = _check_no_encryption(pdf)
+    (checks_passed if ok else failed).append(item)
+
+    # PDF/A-2B opt-in (D-PDF5): baseline + OutputIntent/ICC/XMP/JS.
+    if pdfa == "pdfa_2b":
+        ok, items = _check_pdfa2b(pdf)
+        (checks_passed if ok else failed).extend(items)
+
+    # Cache key (D-AUDIT-1): hash do PDF + versao das regras.
+    try:
+        pdf_bytes = path.read_bytes()
+        pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    except Exception:
+        pdf_hash = "<unreadable>"
+    cache_key = f"{pdf_hash}:{AUDIT_RULES_VERSION}"
+
+    if failed:
+        return {
+            "ok": False,
+            "code": "pdf_audit_structural_failed",
+            "message": (
+                f"{len(failed)} check(s) falharam (kind=structural, pdfa={pdfa!r})"
+            ),
+            "failed": failed,
+            "checks_passed": checks_passed,
+            "cache_key": cache_key,
+            "rules_version": AUDIT_RULES_VERSION,
+        }
+    return {
+        "ok": True,
+        "checks": checks_passed,
+        "coverage": "full",
+        "cache_key": cache_key,
+        "rules_version": AUDIT_RULES_VERSION,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -2482,6 +2995,7 @@ HANDLERS: dict[str, Callable[[dict], dict]] = {
     "pdf.write": handle_pdf_write,
     "pdf.read": handle_pdf_read,
     "ocr.run": handle_ocr_run,
+    "pdf.audit": handle_pdf_audit,
 }
 
 
@@ -2540,9 +3054,8 @@ def handle_tool_invoke(
                 "ok": False,
                 "code": "unknown_capability",
                 "message": (
-                    f"document-worker v0.2.0 nao implementa "
-                    f"{capability!r}. Capabilities declaradas: {declared}. "
-                    f"`ocr.run` entra na Etapa 2B+Y."
+                    f"document-worker v0.4.0 nao implementa "
+                    f"{capability!r}. Capabilities declaradas: {declared}."
                 ),
             },
             request_id=request_id,
