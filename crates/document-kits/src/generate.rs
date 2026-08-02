@@ -329,7 +329,11 @@ impl Tool for DocsGenerateTool {
             Err(KitError::PathNotAllowed(msg)) => {
                 return ToolResult::err(self.tool_id.clone(), msg);
             }
-            Err(KitError::AuditFailed { code, message, failed }) => {
+            Err(KitError::AuditFailed {
+                code,
+                message,
+                failed,
+            }) => {
                 // §19.6 sem interruptor: o PDF nao foi entregue.
                 // A mensagem vai pro modelo com o codigo e a
                 // lista de checks que falharam - o caller pode
