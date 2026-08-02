@@ -1,7 +1,7 @@
 [project]
 name = "frederico-document-worker"
-version = "0.3.0"
-description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, le os tres formatos e faz OCR - Fase 5, Etapa 2B+Y)"
+version = "0.4.0"
+description = "Document worker sidecar do Frederico IA Studio (gera DOCX, XLSX, PDF, le os tres formatos, faz OCR, e audita PDF estruturalmente - Fase 5, Etapa 5 PR 3)"
 requires-python = ">=3.11"
 # Dependencias centradas (todas instaladas pelo `bootstrap.ps1` em
 # `runtime/`, nao via pip do sistema):

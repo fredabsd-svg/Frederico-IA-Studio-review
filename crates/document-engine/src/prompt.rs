@@ -176,7 +176,7 @@ const fn block_descriptions() -> &'static [BlockDescription] {
 
 const MODE_HEADER: &str = "\
 Você está no modo documental. Sua saída é um JSON que respeita o
-contrato `DocumentSpec` (versão 0.1.0). O JSON descreve a **estrutura**
+contrato `DocumentSpec` (versão 0.3.0). O JSON descreve a **estrutura**
 do documento; a engine cuida de tipografia, cores e paginação.";
 
 const SPEC_INTRO: &str = "\
@@ -184,7 +184,7 @@ O JSON tem esta forma:
 
 ```json
 {
-  \"spec_version\": \"0.1.0\",
+  \"spec_version\": \"0.3.0\",
   \"doc_type\": \"report\",
   \"style\": \"tinta_e_latao\",
   \"language\": \"pt-br\",
@@ -196,8 +196,10 @@ O JSON tem esta forma:
 
 const SEMANTIC_RULES: &str = "\
 1. `blocks` não pode ser vazio.
-2. `spec_version` deve ser exatamente `\"0.1.0\"` enquanto o catálogo
-   não mudar.
+2. `spec_version` deve ser exatamente `\"0.3.0\"` enquanto o catálogo
+   não mudar (Etapa 5 PR 3: bump 0.2.0 -> 0.3.0 adiciona
+   `metadata.pdfa` opt-in; Etapa 5 PR 2: 0.1.0 -> 0.2.0 adicionou
+   `metadata.watermark` opt-in).
 3. `kpis` aceita 2 a 4 cartões (não 1, não 5).
 4. `steps` aceita 1 ou mais passos.
 5. `table.rows[i]` deve ter o mesmo número de colunas que
@@ -259,7 +261,9 @@ mod tests {
     fn prompt_is_stable_and_nonempty() {
         let p = document_mode_prompt();
         assert!(p.contains("modo documental"));
-        assert!(p.contains("0.1.0"));
+        // SpecVersion bump 0.2.0 (PR 2) -> 0.3.0 (PR 3) atualizou
+        // SEMANTIC_RULES. Mantemos a assercao na forma atual.
+        assert!(p.contains("0.3.0"));
         assert!(p.contains("`kpis`"));
         assert!(p.contains("`spreadsheet`"));
         // Tamanho mínimo razoável (catálogo + regras + estilos).

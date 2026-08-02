@@ -1,5 +1,17 @@
 # 0021 — Fase 5 Etapa 5: `PdfPro` completo (auditoria bloqueante §19.6) + chart visual nativo Excel + identidade visual Excel
 
+> **Revisão 1 (2026-08-01, Etapa 5 PR 3):** duas correções aplicadas
+> sem mudar a numeração. (a) Erro factual em D-PDF5 e em "Mais
+> difícil" / "Pendências #8": Tagged PDF **não** é requisito do
+> PDF/A-2B (nível B / basic). É requisito do **nível A**
+> (accessible). A v1 do PDFPro reivindica **apenas nível B**;
+> Tagged vira "não-objetivo" da v1, não lacuna. (b) Adicionado
+> **D-PDF6** (escolha do sRGB ICC + SHA-256 fixado) porque o PR 3
+> entrega PDF/A-2B opt-in e o OutputIntent precisa de ICC embedded.
+> color.org não tem mais URL estável, então geramos localmente
+> (espaço sRGB = IEC standard público, formato ICC v2 = ISO 15076-1
+> público). Detalhes em D-PDF6.
+
 ## Contexto
 
 A Etapa 4 da Fase 5 fechou o `ExcelPro` v0.1 (PR #14, SHA `5460a0f` em
@@ -158,15 +170,27 @@ Caso de uso "documento sigiloso" existe mas é minoria.
 
 ### D-PDF5 — PDF/A-2B: opt-in, com auditoria de conformidade bloqueando
 
-PDF/A-2B é o piso de "PDF sério" hoje (Tagged PDF + fontes
-embutidas + XMP + OutputIntent com perfil ICC). Mas `reportlab`
-permite escrever o metadado `pdfaid:part=2` sem que o arquivo
-de fato satisfaça os requisitos (OutputIntent com ICC profile
-válido, XMP batendo com DocInfo, ausência de referência externa,
-tudo embutido). Declarar conformidade sem verificar é
-sistemicamente pior que um PDF comum — sistemas de protocolo
-(Junta Comercial, órgãos públicos) validam na entrada e rejeitam,
-ou pior, aceitam e o problema aparece meses depois.
+PDF/A-2B é o piso de "PDF sério" hoje (fontes embutidas + XMP
++ OutputIntent com perfil ICC). **Tagged PDF NÃO é requisito do
+nível B (basic) — é o que separa o nível B (basic) do nível A
+(accessible).** A v1 do PDFPro declara conformidade **apenas
+com o nível B**; nível A (Tagged, acessibilidade completa) está
+fora de escopo. Ver `pdfpro-specification.md` §"Não-objetivos".
+
+O que o nível B exige (audit do §19.4 verifica quando o opt-in
+`pdfa: PdfA2b` é usado):
+- Fontes embutidas (mesma regra do PDF comum, mas auditada)
+- XMP `pdfaid:part=2` e `pdfaid:conformance=B` batendo com DocInfo
+- OutputIntent com ICC profile RGB embedded
+- Sem cifragem, sem JavaScript, sem `/OpenAction`
+- Sem referências externas
+
+O `reportlab` permite escrever o metadado `pdfaid:part=2` sem
+que o arquivo de fato satisfaça os requisitos. Declarar
+conformidade sem verificar é sistemicamente pior que um PDF
+comum — sistemas de protocolo (Junta Comercial, órgãos públicos)
+validam na entrada e rejeitam, ou pior, aceitam e o problema
+aparece meses depois.
 
 **Política: opt-in.** Campo `DocumentSpec.metadata.pdfa: Option<PdfaSpec>`
 com `flavor: PdfaFlavor` (`PdfA2b` na v1). Quando ligado, a
@@ -189,6 +213,61 @@ pendência (não bloqueia PR) e gera ADR com a correção.
 transparência. PDF/A-1 não aceitaria. Como PDF/A-1 não está na v1,
 a combinação funciona — mas o teste cobre essa combinação para
 garantir que o comportamento não regride.
+
+### D-PDF6 — sRGB ICC: gerado localmente, SHA-256 fixado no bootstrap
+
+O D-PDF5 exige OutputIntent com perfil ICC embedded pra
+PDF/A-2B. O sRGB IEC 61966-2.1 é o perfil canônico pro
+Frederico ("Tinta e Latao" = tinta/escuro sobre branco).
+
+**Por que não usar `sRGB2014.icc` do ICC reference:** o site
+`color.org` mudou de estrutura em 2026 e a URL direta
+(`/srgb2014.icc`, `/profiles/srgb2014.icc`, etc.) está 404
+(verificado em 2026-08-01). É o mesmo problema do `raw/main`
+do `tessdata` que o ADR-0019 §Decisão 1 já pagou — URL
+versionada + SHA-256 do arquivo é o antídoto. Como o ICC não
+tem URL versionada estável, a alternativa é gerar localmente.
+
+**Por que não usar `Pillow.ImageCms.createProfile("sRGB")`:** a
+API não expõe `tobytes()` de forma estável entre versões. O
+hash do output muda quando Pillow é bumpado. Bump de Pillow =
+bump do ICC = dependência escondida que o `pip install`
+resolveria silenciosamente. Ruim pra reprodutibilidade.
+
+**Por que não vendorar o ICC no repo:** a decisão foi não
+commitar binários que têm alternativa determinística (a fonte
+TTF e o `tessdata` também entram via bootstrap, mesmo princípio).
+
+**Decisão:** gerar o ICC v2 programaticamente a partir dos
+parâmetros sRGB D50-adaptados (IEC 61966-2-1:1999, Anexo A,
+padrão internacional público) e do formato ICC v2 (ISO 15076-1,
+padrão internacional público). Script
+`workers/document-worker/tools/generate_srgb_icc.py` produz
+bytes determinísticos. SHA-256 do output fixado em
+`workers/document-worker/bootstrap.ps1`:
+
+```text
+sRGB.icc (526 bytes): C4188E5C06585DDAD4F8781B8F8791BB4563874AC462C934D1420EA133D74B64
+```
+
+**Bump do hash = bump do `AUDIT_RULES_VERSION` (D-AUDIT-1).**
+Mudança no gerador (parâmetros, formato, encoding) exige
+atualizar o hash no mesmo commit. `bootstrap.ps1` falha
+estruturado com mensagem clara se o SHA não bater.
+
+**Sobre `veraPDF` (job noturno `ci-nightly.yml`):** ele vai
+validar a conformidade rigorosa (incluindo TRC exato do sRGB).
+Nosso ICC v2 usa gamma 2.2 (aproximação "sRGB compatível");
+o EOTF exato do sRGB é piecewise. O delta é visualmente
+imperceptível e o `veraPDF` no noturno vai dizer se o
+aproximação passa ou se precisamos de TRC paramétrico (v4).
+PR 3 só fecha a auditoria estrutural sem Java; rigor do
+`veraPDF` é problema do nightly, não deste PR.
+
+**Licença:** o espaço sRGB é IEC standard público; o ICC
+profile gerado a partir dele é public domain na prática (os
+parâmetros numéricos do padrão não têm copyright). O gerador
+segue a licença do projeto.
 
 ### D-CONF-1 — Correção do §7.1 do `PROMPT MESTRE`
 
@@ -323,11 +402,15 @@ A Etapa 5 entrega em 5-6 PRs, todos com CI verde antes de merge:
   de render. Suíte unit + integration do `document-kits` verde.
   E2E do PDF (gera, abre, confere `n_pages` + textos-chave) verde.
 - **PR 3 (auditoria estrutural §19.4)** — `pikepdf` valida
-  abertura, `n_pages`, metadados, fontes embutidas, Tagged PDF,
-  **PDF/A-2B só quando o opt-in for usado**. Falha =
-  `KitError::AuditFailed` com `code: "pdf_audit_structural_failed"`
-  + motivo legível. 5+ testes negativos injetando falha. Cache key
-  = hash do `.pdf` + `AUDIT_RULES_VERSION` (`D-AUDIT-1`).
+  abertura, `n_pages`, metadados, fontes embutidas, sem cifragem,
+  sem referências externas. **PDF/A-2B só quando o opt-in for
+  usado** (D-PDF5) — verifica OutputIntent com ICC sRGB (D-PDF6),
+  XMP `pdfaid` batendo com DocInfo, sem JavaScript. **Tagged
+  PDF não é verificado** — A-2B não exige; v1 não reivindica
+  nível A. Falha = `KitError::AuditFailed` com
+  `code: "pdf_audit_structural_failed"` + motivo legível.
+  10+ testes negativos injetando falha. Cache key = hash do
+  `.pdf` + `AUDIT_RULES_VERSION` (`D-AUDIT-1`).
 - **PR 4 (auditoria visual §19.3)** — `pypdfium2` rasteriza página
   → checagem de grade, sobreposição, página vazia, alinhamento,
   cabeçalho/rodapé. **glifo-check via `fontTools` já feito no PR 2**
@@ -421,15 +504,15 @@ A Etapa 5 entrega em 5-6 PRs, todos com CI verde antes de merge:
 
 **Mais difícil:**
 
-- **Tagged PDF no `reportlab` é fraco.** O `reportlab` não tem
-  suporte oficial forte pra Tagged PDF / PDF/A-2B. Pode ser
-  necessário escrever `StructTree` XML manualmente. Mitigação:
-  a v0.1 do `PDFPro` entrega **PDF 1.7 com fontes embutidas e
-  grade auditada**, com `Tagged PDF` registrado como **lacuna da
-  v0.1** (PDF/A-2B só funciona com Tagged; v0.1 não reivindica
-  PDF/A-2B por padrão — só quando o opt-in for usado e mesmo
-  assim com auditoria honesta). Promoção pra Tagged + PDF/A-2B
-  padrão fica para a Etapa 5.x.
+- **Tagged PDF no `reportlab` é fraco, mas o PDF/A-2B não
+  exige Tagged** (é requisito do nível A, não do B). A v1 do
+  PDFPro reivindica conformidade apenas com o nível B;
+  promoção pra nível A (Tagged, acessibilidade) exige escrever
+  `StructTree` XML manualmente. Mitigação: a v0.1 do `PDFPro`
+  entrega **PDF 1.7 com fontes embutidas e grade auditada**;
+  `Tagged PDF` registrado como **não-objetivo explícito da v1**
+  (pertence ao PDF/A-2A, fora de escopo do B). Se um dia
+  reivindicar nível A, vira pendência 5.x.
 - **Auditoria visual é cara** (render de N páginas = subprocess
   `pypdfium2` + checagem pixel a pixel). Mitigação: cache
   (`hash + AUDIT_RULES_VERSION`); render em `tokio::task::spawn_blocking`
@@ -480,8 +563,11 @@ A Etapa 5 entrega em 5-6 PRs, todos com CI verde antes de merge:
 7. **Filtros / tabelas estruturadas / validação de dados**
    (`PROMPT MESTRE` §18.1).
 8. **Tagged PDF** no `reportlab` (escrita manual de `StructTree`
-   XML) — pre-requisito pra PDF/A-2B virar padrão, não só
-   opt-in.
+   XML) — pre-requisito pra **PDF/A-2A (accessible)** entrar
+   como conformidade declarada. **Não** bloqueia PDF/A-2B
+   (básico), que é o que o PR 3 desta Etapa entrega opt-in.
+   O `reportlab` tem suporte fraco a StructTree, e a v1
+   reivindica apenas nível B.
 9. **Fidelidade Word → PDF e Excel → PDF** (`PROMPT MESTRE` §19.5).
 10. **Sumário automático em duas passadas** (`PROMPT MESTRE`
     §16.4) — requer `multiBuild` do `reportlab` + integração com
