@@ -23,22 +23,27 @@ use crate::blocks::DocumentBlock;
 ///
 /// Aceita qualquer string no formato `MAJOR.MINOR.PATCH` — a
 /// comparação é lexicográfica por componente. A Etapa 1 define a
-/// `0.1.0`. **Etapa 5 bump**: `0.2.0` adiciona o campo
-/// `DocumentMetadata.watermark: Option<WatermarkSpec>` (opcional,
+/// `0.1.0`. **Bumps da Etapa 5** (ADR-0021):
+/// - `0.2.0` adiciona `DocumentMetadata.watermark: Option<WatermarkSpec>`
+///   (D-PDF2, opt-in).
+/// - `0.3.0` adiciona `DocumentMetadata.pdfa: Option<PdfaSpec>`
+///   (D-PDF5/D-PDF6, opt-in PDF/A-2B).
+///
+/// Todos os campos novos sao opcionais com
 /// `#[serde(default, skip_serializing_if = "Option::is_none")]` —
-/// backward-compat com 0.1.0). Mudança de catálogo continua MINOR;
-/// remoção de campo ou mudança de semântica incompatível seria
-/// MAJOR.
+/// backward-compat com 0.1.0 e 0.2.0. Mudanca de catalogo
+/// continua MINOR; remocao de campo ou mudanca de semantica
+/// incompativel seria MAJOR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct SpecVersion(pub String);
 
 impl Default for SpecVersion {
     fn default() -> Self {
-        // Bump pra 0.2.0 na Etapa 5 (ADR-0021). O JSON Schema gerado
-        // em runtime via `schemars` reflete o novo campo
-        // `watermark` automaticamente.
-        Self("0.2.0".to_string())
+        // Bump pra 0.3.0 no PR 3 da Etapa 5 (ADR-0021 D-PDF5 +
+        // D-PDF6). O JSON Schema gerado em runtime via `schemars`
+        // reflete o novo campo `pdfa` automaticamente.
+        Self("0.3.0".to_string())
     }
 }
 
@@ -139,6 +144,37 @@ pub struct WatermarkSpec {
     pub font_size: Option<f32>,
 }
 
+/// Flavor de conformidade PDF/A declarado (D-PDF5 do ADR-0021).
+///
+/// A v1 do PDFPro entrega **apenas o nível B (basic) do PDF/A-2**.
+/// Nível A (accessible, Tagged PDF) está fora de escopo — ver
+/// [`pdfpro-specification.md`](../architecture/pdfpro-specification.md)
+/// §"Não-objetivos". Tagged PDF é o que separa o nível B do
+/// nível A; reivindicar A-2A exige escrever `StructTree` XML
+/// manualmente no `reportlab`, o que o v1 não faz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfaFlavor {
+    /// PDF/A-2 nível B (basic). Opt-in via
+    /// `DocumentMetadata.pdfa: Some(PdfaSpec { flavor: PdfA2b })`.
+    /// Ativa o passo de conformidade do `pdf.audit` do
+    /// document-worker (D-PDF5) e o embute o sRGB ICC no
+    /// `OutputIntent` (D-PDF6).
+    PdfA2b,
+}
+
+/// Especificação da conformidade PDF/A opt-in (D-PDF5 do ADR-0021).
+///
+/// O `flavor` é uma enum pra acomodar níveis futuros (PDF/A-3,
+/// PDF/A-4 quando entrarem) sem quebrar o schema. Na v1, apenas
+/// `PdfA2b` é implementado; os outros flavor values sao
+/// reservados.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PdfaSpec {
+    /// Sabor de conformidade. Único implementado na v1: `pdfa_2b`.
+    pub flavor: PdfaFlavor,
+}
+
 /// Metadados do documento. Não afeta a renderização do
 /// **conteúdo** (vai para propriedades do arquivo:
 /// `docProps/core.xml` no `.docx`, metadados PDF, etc.) — mas o
@@ -170,6 +206,15 @@ pub struct DocumentMetadata {
     /// `DocumentStyle::Sobrio` (`validate_semantic` regra 8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watermark: Option<WatermarkSpec>,
+    /// Conformidade PDF/A opt-in (Etapa 5, ADR-0021
+    /// §D-PDF5). `None` = sem declaracao (default). Quando
+    /// `Some(PdfaSpec { flavor: PdfA2b })`, o kit ativa o
+    /// passo de conformidade do `pdf.audit` (D-PDF5) e
+    /// embute o sRGB ICC no `OutputIntent` do PDF (D-PDF6).
+    /// **Nível B apenas** — Tagged PDF (nível A) está fora de
+    /// escopo da v1; ver `pdfpro-specification.md` §"Não-objetivos".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdfa: Option<PdfaSpec>,
 }
 
 /// O `DocumentSpec` — o contrato raiz.

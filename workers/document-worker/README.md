@@ -4,10 +4,10 @@ Worker sidecar do Frederico IA Studio que gera documentos profissionais
 (DOCX, XLSX, PDF) e le os tres formatos. Python embutido (ADR-0004),
 comunica com o app via **named pipes** do Windows.
 
-## Estado atual (Etapa 2B+Y, 2026-07-30)
+## Estado atual (Etapa 5 PR 3, 2026-08-01)
 
-**7 handlers reais** (Etapa 2B+X entregou 6; o 7º, `ocr.run`, entra
-nesta etapa com Tesseract 5.4.0 + por/eng/osd traineddata):
+**8 handlers** (Etapa 2B+Y entregou 7; o 8º, `pdf.audit`, entra
+nesta etapa com pikepdf + sRGB ICC v2 gerado localmente):
 
 | Capability   | Input                                                  | Library                          |
 | ------------ | ------------------------------------------------------ | -------------------------------- |
@@ -18,6 +18,7 @@ nesta etapa com Tesseract 5.4.0 + por/eng/osd traineddata):
 | `pdf.write`  | `path`, `title`, `sections`                            | reportlab                        |
 | `pdf.read`   | `path`, `ocr: "auto"|"never"|"only"` (opcional)         | pdfplumber + pytesseract (fallback OCR) |
 | `ocr.run`    | `path`, `lang: "por+eng"` (opcional)                   | pytesseract + Tesseract 5.4.0     |
+| `pdf.audit`  | `path`, `kind: "structural"`, `pdfa: Option<PdfAFlavor>`, `metadata` (Etapa 5 PR 3) | pikepdf (D-PDF5/D-PDF6 do ADR-0021) |
 
 **`pdf.read` com fallback OCR transparente (Etapa 2B+Y, ADR-0019):**
 
@@ -49,6 +50,27 @@ instalados — erro estruturado (`code: "invalid_lang"`) com lista
 de disponíveis, em vez da mensagem críptica do Tesseract quando
 o idioma não existe. Códigos: `ocr_not_available`, `invalid_lang`,
 `tesseract_failed`, `ocr_timeout`, `image_not_found`.
+
+**`pdf.audit` (Etapa 5 PR 3, D-PDF5 + D-PDF6 do ADR-0021):**
+auditoria estrutural bloqueante do §19.4 do PROMPT MESTRE.
+`pikepdf` valida o PDF que o `pdf.write` acabou de gerar:
+abertura, n_pages >= 1, DocInfo populado (Author/Title/Producer/
+Creator), todas as fontes embutidas, sem cifragem, sem
+referências externas. Quando `pdfa: Some(PdfA2b)` (opt-in),
+valida adicionalmente OutputIntent com ICC RGB válido (signature
+`acsp` no offset 36, color space `RGB ` no offset 16 — ICC gerado
+localmente pelo `tools/generate_srgb_icc.py`, SHA-256 pinado em
+`bootstrap.ps1`), XMP `pdfaid:part=2` + `pdfaid:conformance=B`,
+sem JavaScript. Falha = `tool.result {ok: false, code: "pdf_audit_structural_failed", failed: [...]}` (o
+kit mapeia pra `KitError::AuditFailed`; artefato NÃO é
+entregue, §19.6 sem interruptor). Cache key (D-AUDIT-1) =
+`sha256(pdf_bytes) + ":" + AUDIT_RULES_VERSION` (v0.1.0). 19
+testes em `tests/test_pdf_audit.py` (pytest não está no stack do
+Frederico — roda via `python tests/test_pdf_audit.py`, exit 0/1).
+**Tagged PDF NÃO é verificado** — A-2B (básico) não exige; v1
+declara apenas nível B. O PR 4 estende este mesmo handler com
+`kind: "visual"` (pypdfium2 rasteriza + checa grade, sobreposição,
+página vazia, alinhamento).
 
 **Path safety minima (ADR-0018 §Decisão 4):** handlers rejeitam
 `..` como componente, exigem path absoluto ou relativo ao `cwd`,

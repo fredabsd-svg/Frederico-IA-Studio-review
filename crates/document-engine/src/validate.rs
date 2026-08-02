@@ -278,7 +278,7 @@ mod tests {
     /// `spec_version` MAJOR.MINOR.PATCH (regra 2) garantidos.
     fn spec_with(style: DocumentStyle, watermark: Option<WatermarkSpec>) -> DocumentSpec {
         DocumentSpec {
-            spec_version: SpecVersion("0.2.0".to_string()),
+            spec_version: SpecVersion("0.3.0".to_string()),
             doc_type: DocumentType::Report,
             style,
             language: "pt-br".to_string(),
@@ -295,6 +295,7 @@ mod tests {
                 keywords: None,
                 description: None,
                 watermark,
+                pdfa: None,
             },
             confidentiality: None,
         }
@@ -360,14 +361,15 @@ mod tests {
         }
     }
 
-    /// Bump de `SpecVersion` 0.1.0 → 0.2.0 continua validando
+    /// Bump de `SpecVersion` 0.2.0 → 0.3.0 (PR 3 da Etapa 5
+    /// adiciona `DocumentMetadata.pdfa`) continua validando
     /// o formato MAJOR.MINOR.PATCH (regra 2). Defesa contra
     /// alguém voltar o default sem perceber.
     #[test]
-    fn spec_version_0_2_0_passes_format_check() {
+    fn spec_version_0_3_0_passes_format_check() {
         let spec = spec_with(DocumentStyle::TintaELatao, None);
-        // O spec construído pelo helper já tem "0.2.0".
-        assert_eq!(spec.spec_version.0, "0.2.0");
+        // O spec construído pelo helper já tem "0.3.0".
+        assert_eq!(spec.spec_version.0, "0.3.0");
         assert!(validate_semantic(&spec).is_ok());
     }
 

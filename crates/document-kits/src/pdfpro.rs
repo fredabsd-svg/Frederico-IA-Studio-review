@@ -84,7 +84,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use frederico_document_engine::{
     CalloutKind, ChartKind, ConfidentialityLevel, DocumentBlock, DocumentError, DocumentSpec,
-    DocumentStyle, WatermarkPosition, WatermarkSpec,
+    DocumentStyle, PdfaFlavor, WatermarkPosition, WatermarkSpec,
 };
 use frederico_process_architecture::WorkerHandle;
 use frederico_tool_registry::{
@@ -700,13 +700,78 @@ impl Kit for PdfProKit {
             .get("size_bytes")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        // `pages_rendered` do `pdf.write` v0.4.0 e chute (1 -
+        // reportlab nao expoe n_pages pos-build; ver
+        // `document-worker.py:2185`). A auditoria le n_pages
+        // direto do PDF via pikepdf, que e a fonte da verdade.
+        // Mantemos o read aqui so pra popular o `extra` com a
+        // informacao (info, nao fail).
+        let pages_rendered = response
+            .get("pages_rendered")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
-        // `extra` carrega metadados úteis do render:
-        // pages_rendered, blocks_written, glifo_check.
+        // 4. Auditoria bloqueante do §19.6 (D-PDF5 do ADR-0021,
+        //    Etapa 5 PR 3). Roda SEMPRE - §19.6 nao tem
+        //    interruptor. Mapeia `ok: false` do `pdf.audit`
+        //    pra `KitError::AuditFailed` (o artefato NAO e
+        //    entregue). Sucesso popula `KitOutput.extra.audit`
+        //    com as informacoes estruturais do check.
+        //
+        //    **Sem cross-check com `pages_rendered` do write:**
+        //    o `pdf.write` retorna 1 como chute (limitacao
+        //    conhecida do PR 2 - reportlab nao expoe n_pages
+        //    pos-build; ver `pdfpro.rs:2185`). A auditoria
+        //    le o n_pages direto do PDF via pikepdf, que e a
+        //    fonte da verdade. O cross-check so entra quando
+        //    o write reportar n_pages real (pendencia 5.x,
+        //    registrada no `pdfpro-specification.md`).
+        let audit_payload = json!({
+            "capability": "pdf.audit",
+            "path": path.to_string_lossy(),
+            "kind": "structural",
+            "pdfa": pdfa_payload_value(&spec.metadata.pdfa),
+            "metadata": metadata_payload_value(&spec.metadata),
+        });
+        let audit_response = self
+            .handle
+            .invoke(audit_payload)
+            .await
+            .map_err(KitError::Process)?;
+        if audit_response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let code = audit_response
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pdf_audit_structural_failed")
+                .to_string();
+            let message = audit_response
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("auditoria estrutural sem mensagem")
+                .to_string();
+            let failed = audit_response
+                .get("failed")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new()));
+            return Err(KitError::AuditFailed {
+                code,
+                message,
+                failed,
+            });
+        }
+
+        // `extra` carrega metadados uteis do render + auditoria.
         let extra = json!({
-            "pages_rendered": response.get("pages_rendered").cloned().unwrap_or(json!(0)),
-            "blocks_written": response.get("blocks_written").cloned().unwrap_or(json!(0)),
+            "pages_rendered": pages_rendered,
+            "blocks_written": response.get("blocks_written").cloned().unwrap_or(json!(null)),
             "glifo_check": response.get("glifo_check").cloned().unwrap_or(json!(null)),
+            "audit": {
+                "structural": "passed",
+                "rules_version": audit_response.get("rules_version").cloned().unwrap_or(json!(null)),
+                "coverage": audit_response.get("coverage").cloned().unwrap_or(json!(null)),
+                "cache_key": audit_response.get("cache_key").cloned().unwrap_or(json!(null)),
+                "checks": audit_response.get("checks").cloned().unwrap_or(json!([])),
+            },
         });
 
         Ok(KitOutput {
@@ -726,6 +791,31 @@ impl Kit for PdfProKit {
             warnings,
         })
     }
+}
+
+/// Mapeia `DocumentMetadata.pdfa` pro formato do payload do
+/// handler `pdf.audit` (D-PDF5 do ADR-0021). Retorna `None` se
+/// o spec NAO reivindica PDF/A — auditoria roda so o baseline.
+fn pdfa_payload_value(pdfa: &Option<frederico_document_engine::PdfaSpec>) -> Option<&'static str> {
+    match pdfa {
+        Some(spec) => match spec.flavor {
+            PdfaFlavor::PdfA2b => Some("pdfa_2b"),
+        },
+        None => None,
+    }
+}
+
+/// Serializa `DocumentMetadata` em `serde_json::Value` para o
+/// cross-check XMP/DocInfo do `pdf.audit`. Apenas os campos
+/// que o handler consulta vao no payload.
+fn metadata_payload_value(m: &frederico_document_engine::DocumentMetadata) -> Value {
+    json!({
+        "title": m.title,
+        "author": m.author,
+        "organization": m.organization,
+        "keywords": m.keywords,
+        "description": m.description,
+    })
 }
 
 #[cfg(test)]
