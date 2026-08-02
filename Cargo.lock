@@ -1075,6 +1075,13 @@ dependencies = [
 [[package]]
 name = "frederico-app"
 version = "0.1.0"
+dependencies = [
+ "frederico-core",
+ "frederico-tool-registry",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "frederico-core"

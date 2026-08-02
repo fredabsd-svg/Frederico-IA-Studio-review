@@ -41,17 +41,14 @@
 //!   da Etapa 1; Etapa 7 substitui por `SecurityJailResolver`
 //!   via `frederico-security`).
 //!
-//! ## Estado da Etapa 1
+//! ## Estado do commit
 //!
-//! Este commit (2) é o **skeleton**: o crate existe, o módulo
-//! `lib.rs` documenta a intenção, e os testes cobrem o mínimo
-//! (versão exposta). A lógica de composição entra nos commits
-//! seguintes (3, 4a, 4b, 5) com testes próprios. Manter o
-//! skeleton mínimo na Etapa 1 serve a dois propósitos: (a)
-//! o build de `cargo test --workspace` continua verde desde
-//! o commit 2, sem dependências quebradas; (b) a revisão
-//! pode ler a forma do contrato (nomes de funções, structs,
-//! traits) antes do comportamento entrar.
+//! - **Commit 2**: skeleton. `lib.rs` documenta a intenção; única
+//!   API exposta é `version()`.
+//! - **Commit 3 (atual)**: módulo `jail` com `JailResolver` trait
+//!   e `FileSystemJailResolver` (default). O `composition` continua
+//!   populado nos commits 4b (catálogo de ferramentas e permissões
+//!   iniciais) e 5 (`ChatOrchestrator` usa o que o 4 preparou).
 
 /// Versão do crate, derivada do workspace (`Cargo.toml` raiz).
 ///
@@ -62,6 +59,11 @@
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+// Módulos públicos. `jail` entra no commit 3; `composition` entra
+// no commit 4b. A ordem de declaração aqui reflete a ordem de
+// entrada, mas não é requisito do compilador.
+pub mod jail;
 
 #[cfg(test)]
 mod tests {

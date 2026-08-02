@@ -8,3 +8,10 @@ description = "Camada de composicao do Frederico IA Studio: cataloga ferramentas
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dependencies]
+frederico-core = { workspace = true }
+frederico-tool-registry = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
