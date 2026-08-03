@@ -405,7 +405,7 @@ async fn e2e_docs_generate_pdf_full_vertical() {
         //    sem validacao (o `output_path` vem do
         //    chamador no teste; em prod, o ToolRegistry
         //    popula com o workspace do usuario).
-        let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         // 3. Spec DoD.
@@ -493,7 +493,7 @@ async fn e2e_docs_generate_pdf_missing_glyph_blocks() {
             let mut registry = KitRegistry::new();
             registry.register(pdfpro);
             let registry = Arc::new(registry);
-            let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
             let tool = DocsGenerateTool::new(registry, dispatcher);
 
             let spec = spec_com_glifo_faltando();
@@ -569,7 +569,7 @@ async fn e2e_docs_generate_pdf_watermark_opt_in() {
             let mut registry = KitRegistry::new();
             registry.register(pdfpro);
             let registry = Arc::new(registry);
-            let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
             let tool = DocsGenerateTool::new(registry, dispatcher);
 
             let spec = spec_com_watermark();

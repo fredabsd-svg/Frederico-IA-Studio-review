@@ -197,7 +197,7 @@ async fn e2e_docs_inspect_docx_roundtrip() {
         registry.register(wordpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
         let generate_tool = DocsGenerateTool::new(registry, dispatcher.clone());
         let inspect_tool = DocsInspectTool::new(dispatcher);
 

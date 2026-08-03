@@ -55,7 +55,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use frederico_document_engine::{ChartSeries, DocumentBlock, DocumentError, DocumentSpec, KpiCard};
-use frederico_process_architecture::WorkerHandle;
+use frederico_core::WorkerInvoker;
 use frederico_tool_registry::{
     JsonSchema, RiskLevel, ToolCategory, ToolManifest, ToolManifestBuilder,
 };
@@ -429,7 +429,7 @@ fn compute_column_formats(
 /// `ExcelProKit` v0.1 — implementação real (Etapa 4 da
 /// Fase 5).
 pub struct ExcelProKit {
-    handle: Arc<WorkerHandle>,
+    handle: Arc<dyn WorkerInvoker>,
     manifest: ToolManifest,
 }
 
@@ -438,7 +438,7 @@ impl ExcelProKit {
     /// `document-worker` (clonado do `AppState` ou
     /// passado no teste).
     #[must_use]
-    pub fn new(handle: Arc<WorkerHandle>) -> Self {
+    pub fn new(handle: Arc<dyn WorkerInvoker>) -> Self {
         Self {
             handle,
             manifest: Self::build_manifest(),

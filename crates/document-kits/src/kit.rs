@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use frederico_document_engine::{DocumentError, DocumentSpec};
-use frederico_process_architecture::ProcessError;
+use frederico_core::InvokeError;
 use frederico_tool_registry::ToolManifest;
 use serde_json::Value;
 use thiserror::Error;
@@ -62,7 +62,7 @@ pub enum KitError {
     /// caller do kit não precise importar `process-architecture`
     /// direto).
     #[error(transparent)]
-    Process(#[from] ProcessError),
+    Process(#[from] InvokeError),
 
     /// O `output_path` viola a allowlist do `ToolManifest`
     /// (a mesma checagem que o `WorkerToolDispatcher` faz —

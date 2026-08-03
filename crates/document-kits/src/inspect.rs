@@ -597,7 +597,7 @@ impl Tool for DocsInspectTool {
                         allowed
                     ),
                 ),
-                DispatchError::Process(_) => ToolResult::err(
+                DispatchError::Invoke(_) => ToolResult::err(
                     self.tool_id.clone(),
                     "erro de processo na validação de path",
                 ),
