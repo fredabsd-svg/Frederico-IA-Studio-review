@@ -45,10 +45,19 @@
 //!
 //! - **Commit 2**: skeleton. `lib.rs` documenta a intenção; única
 //!   API exposta é `version()`.
-//! - **Commit 3 (atual)**: módulo `jail` com `JailResolver` trait
-//!   e `FileSystemJailResolver` (default). O `composition` continua
-//!   populado nos commits 4b (catálogo de ferramentas e permissões
-//!   iniciais) e 5 (`ChatOrchestrator` usa o que o 4 preparou).
+//! - **Commit 3**: módulo `jail` com `JailResolver` trait e
+//!   `FileSystemJailResolver` (default).
+//! - **Commit 4a (na raiz `fase-ligacao/conectar-motor-a-casca`,
+//!   ainda na fase de Ligação)**: muda `Tool::execute` para
+//!   receber `ToolContext`; o `JailResolver` trait migra para
+//!   `frederico-tool-registry` (com `StaticJailResolver`); a
+//!   casca usa `FileSystemJailResolver` direto. O `composition`
+//!   ainda é só declaração do `ChatOrchestratorParts`.
+//! - **Commit 4b (atual)**: `composition::build_tool_registry`
+//!   itera sobre `tool.manifest()` e registra. `initial_permission_set`
+//!   carrega `file_read: WorkspaceOnly` (todo o resto deny).
+//!   `ChatOrchestratorParts` é declarado mas `build_chat_orchestrator`
+//!   entra no commit 5.
 
 /// Versão do crate, derivada do workspace (`Cargo.toml` raiz).
 ///
@@ -63,6 +72,7 @@ pub fn version() -> &'static str {
 // Módulos públicos. `jail` entra no commit 3; `composition` entra
 // no commit 4b. A ordem de declaração aqui reflete a ordem de
 // entrada, mas não é requisito do compilador.
+pub mod composition;
 pub mod jail;
 
 #[cfg(test)]

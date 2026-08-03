@@ -12,6 +12,11 @@ unsafe_code = "forbid"
 [dependencies]
 frederico-core = { workspace = true }
 frederico-tool-registry = { workspace = true }
+frederico-provider-engine = { workspace = true }
+frederico-model-catalog = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-security = { workspace = true }
+frederico-memory = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

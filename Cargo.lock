@@ -1077,6 +1077,11 @@ name = "frederico-app"
 version = "0.1.0"
 dependencies = [
  "frederico-core",
+ "frederico-memory",
+ "frederico-model-catalog",
+ "frederico-provider-engine",
+ "frederico-security",
+ "frederico-storage",
  "frederico-tool-registry",
  "thiserror 1.0.69",
  "tracing",
