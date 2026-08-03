@@ -1,4 +1,112 @@
-﻿## [Não publicado]
+## [Não publicado]
+
+### Fechado — Fase de Ligação, Etapa 1 (caminho de produção agora ligado) (2026-08-03)
+
+- **Caminho de produção do Frederico IA Studio agora executa
+  o que a suíte de testes dos crates já provava.** A Etapa 1
+  da Fase de Ligação fecha 5 commits encadeados (todos em
+  `fase-ligacao/conectar-motor-a-casca`, ainda sem PR
+  conforme a regra do projeto "só abre a próxima PR depois
+  que a anterior entrou em main"):
+
+  1. **Commit 1 (`563d6e2`):** `docs: move narrativas de PRs
+     da Fase 5 para docs/releases/fase-5/`. Limpa a raiz do
+     `docs/` (4 arquivos `pr*-description.md` soltos viram
+     `pr-NN-titulo.md` indexados por `README.md`).
+  2. **Commit 2 (`a07fb0d`):** `feat(app): adiciona crate
+     frederico-app (camada de composicao pura) + ADR-0022`.
+     Workspace member sem `tauri`/`windows` — passa no
+     `check-core-purity` automaticamente, reusável no modo
+     servidor §5.5 sem fork.
+  3. **Commit 3 (`5dbcc09`):** `feat(app): adiciona
+     JailResolver trait + FileSystemJailResolver (erro duro,
+     sem fallback)`. `mkdir -p` idempotente; falha é
+     propagada como `JailResolverError` (sem fallback pra
+     `temp_dir` — degradação silenciosa num caminho de
+     isolamento).
+  4. **Commit 4a (`073237f`):** `feat(tool-registry):
+     Tool::execute recebe ToolContext + RunExecutor usa
+     JailResolver`. Breaking change: `Tool::execute` agora
+     recebe `&ToolContext` (com `Jail` resolvido por
+     conversa + IDs imutáveis do run); `RunExecutor::new`
+     recebe `Arc<dyn JailResolver>`; `ChatOrchestrator`
+     ganha campo `jail_resolver`; casca Tauri cria
+     `FileSystemJailResolver` e remove o
+     `Jail::new(current_dir())` pré-existente. ADR-0022 §D2
+     foi revisado com nota "Alterado em relação ao plano
+     original: motivo" — o `JailResolver` trait mora no
+     `frederico-tool-registry` (não no `frederico-app`) pra
+     evitar ciclo de dependência.
+  5. **Commit 4b (`b25bd41`):** `feat(app): build_tool_registry
+     + initial_permission_set em frederico-app`. Funções
+     puras (sem I/O) que substituem o `ToolRegistry::new()`
+     vazio + `PermissionSet::default()` deny-all hardcoded
+     da casca. `initial_permission_set()` carrega
+     `file_read: WorkspaceOnly`, todo o resto deny incluindo
+     `documents: None` (bump atômico na Etapa 2).
+  6. **Commit 5 (`dbcfa41`):** `feat(desktop): casca consome
+     frederico_app::build_chat_orchestrator; ChatOrchestrator
+     recebe permission_set real`. A casca Tauri agora monta
+     `ChatOrchestratorParts` e chama
+     `frederico_app::build_chat_orchestrator(parts)` — mesma
+     função que os E2E da raiz (`tests/e2e/`, Etapa 5) vão
+     chamar. `ChatOrchestrator` recebe `permission_set:
+     PermissionSet` (substitui o `PermissionSet::default()`
+     deny-all que bloqueava o Passo 5 do `validate_tool_call`).
+
+  **Sumário da Etapa 1:** os 3 itens do diagnóstico do prompt
+  da fase foram corrigidos. (1) `ToolRegistry::new()` vazio:
+  agora `build_tool_registry(tools)` itera sobre
+  `tool.manifest()` e registra (divergência "manifesto à mão
+  vs. tool real" do §5.2 mecanicamente fechada). (2)
+  `PermissionSet::default()` deny-all: agora
+  `initial_permission_set()` carrega `file_read:
+  WorkspaceOnly` (mínimo da Etapa 1). (3) `Jail::new(
+  current_dir())`: agora `FileSystemJailResolver` resolve por
+  `ConversationId` (sem vazamento entre escopos, mesma classe
+  de I4 da memória).
+
+  **Estatísticas:** 30 arquivos modificados (+11.279 / -10.511
+  linhas — a maior parte é a refatoração dos tests do
+  `execution-engine` para usar `static_jail_resolver` + os
+  tests novos do `frederico-app` + os 4 arquivos de tests do
+  `document-kits` atualizados com `&dummy_ctx()`). 7 novos
+  testes no `frederico-app` (12 totais). Suíte workspace
+  (excluindo `process-architecture` com 2 testes pré-
+  existentes de OCR que precisam de Tesseract) **100%
+  verde**. `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings -D clippy::await_holding_lock`,
+  `check-core-purity.ps1`, `check-docs.mjs` limpos.
+
+  **Pendências que esta commit NÃO fecha (vão para as
+  próximas etapas da Fase de Ligação):**
+  - Etapa 2: ligar `frederico-document-kits` como dep da
+    casca + registrar `docs.generate` + `docs.inspect` no
+    `build_tool_registry` + bump atômico do `documents`
+    permission.
+  - Etapa 3: injetar embedding adapter real (OpenRouter +
+    `text-embedding-3-small`) + `CompletionProvider` real
+    no `LlmMemoryClassifier` (OpenRouter + gpt-4o-mini).
+  - Etapa 4: decidir `frederico-agent-engine` (promover
+    `apply_transition` ou remover o crate).
+  - Etapa 5: `tests/e2e/` na raiz atravessando a casca.
+  - Etapa 6: nova regra de "definição de pronto" no
+    `REGRAS-DO-PROJETO.md` + gate no CI + compressão de
+    `docs/status.md`/`CHANGELOG.md`.
+  - Etapa 7 (modo desenvolvedor): `SecurityJailResolver`
+    via `frederico-security` (Job Objects + AllowVolumeAccess)
+    substitui `FileSystemJailResolver` (interface do trait é
+    estável, troca é drop-in).
+
+  **Pré-existente que continua vermelho (não relacionado a
+  esta commit):** 2 testes E2E de OCR no
+  `frederico-process-architecture`
+  (`e2e_ocr_run_with_real_image`,
+  `e2e_pdf_read_with_ocr_fallback_on_scanned`) — precisam
+  do Tesseract instalado via `bootstrap.ps1` em contexto
+  Admin. Verificado no commit `eab413a` (main) também falha.
+  Cobertura desses cenários em CI depende do job "Bootstrap
+  document-worker" do `.github/workflows/ci.yml`.
 
 ### Alterado — breaking (Fase de Ligação, Etapa 1 commit 4a)
 
