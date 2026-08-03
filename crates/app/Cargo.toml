@@ -18,6 +18,13 @@ frederico-storage = { workspace = true }
 frederico-security = { workspace = true }
 frederico-execution-engine = { workspace = true }
 frederico-memory = { workspace = true }
+frederico-document-kits = { workspace = true }
+frederico-process-architecture = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -70,10 +70,14 @@ pub fn version() -> &'static str {
 }
 
 // Módulos públicos. `jail` entra no commit 3; `composition` entra
-// no commit 4b. A ordem de declaração aqui reflete a ordem de
-// entrada, mas não é requisito do compilador.
+// no commit 4b; `runtime` e `launcher` entram no commit 2.A da
+// fase-ligação (Etapa 2.A, registrada em ADR-0023). A ordem de
+// declaração aqui reflete a ordem de entrada, mas não é requisito
+// do compilador.
 pub mod composition;
 pub mod jail;
+pub mod launcher;
+pub mod runtime;
 
 #[cfg(test)]
 mod tests {
