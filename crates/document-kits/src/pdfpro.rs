@@ -82,11 +82,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use frederico_core::WorkerInvoker;
 use frederico_document_engine::{
     CalloutKind, ChartKind, ConfidentialityLevel, DocumentBlock, DocumentError, DocumentSpec,
     DocumentStyle, PdfaFlavor, WatermarkPosition, WatermarkSpec,
 };
-use frederico_core::WorkerInvoker;
 use frederico_tool_registry::{
     JsonSchema, RiskLevel, ToolCategory, ToolManifest, ToolManifestBuilder,
 };

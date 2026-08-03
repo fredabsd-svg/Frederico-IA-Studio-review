@@ -53,8 +53,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use frederico_core::WorkerInvoker;
-use frederico_process_architecture::ProcessError;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -109,7 +107,10 @@ impl WorkerToolDispatcher {
     /// ser absoluta na entrada — `validate_against_allowlist`
     /// cuida).
     #[must_use]
-    pub fn new(invoker: Arc<dyn frederico_core::WorkerInvoker>, allowed_paths: Vec<PathBuf>) -> Self {
+    pub fn new(
+        invoker: Arc<dyn frederico_core::WorkerInvoker>,
+        allowed_paths: Vec<PathBuf>,
+    ) -> Self {
         Self {
             invoker,
             allowed_paths,

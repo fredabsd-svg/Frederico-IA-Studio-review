@@ -169,67 +169,67 @@ pub fn initial_permission_set_for_capable_launcher() -> PermissionSet {
 /// código da casca.
 #[must_use]
 pub fn build_default_tools(
-    runtime_for_documents: Option<&crate::runtime::RuntimeLocation>,
+    invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
 ) -> Vec<Arc<dyn Tool>> {
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
+    let mut tools: Vec<Arc<dyn Tool>> =
+        vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
 
-    if let Some(_location) = runtime_for_documents {
+    if let Some(invoker) = invoker {
         // Runtime disponível. Constrói o `KitRegistry` com os
         // 3 kits (WordPro + ExcelPro + PDFPro, todos
-        // implementados desde a Fase 5) e o
-        // `WorkerToolDispatcher` apontando pro runtime.
+        // implementados desde a Fase 5) + o
+        // `WorkerToolDispatcher` apontando pro `invoker` (que
+        // pode ser `WorkerHandle` real ou `DocumentWorkerLauncher`
+        // lazy, indistinguíveis pelo trait).
         //
-        // **Importante:** o `WorkerToolDispatcher::new`
-        // recebe um `WorkerHandle`, mas o launcher é
-        // lazy — não há `WorkerHandle` até a primeira
-        // `invoke`. Solução: o `DocsGenerateTool` e o
-        // `DocsInspectTool` recebem o `DocumentWorkerLauncher`
-        // em vez do `WorkerToolDispatcher` direto (via um
-        // wrapper `LauncherDispatcher`). O wrapper delega
-        // `dispatch` pro `launcher.invoke(...)`, que cuida
-        // do ciclo de vida (lazy + restart + kill).
+        // **Bump atômico do capability + permission** (ADR-0020
+        // §3 D3): a allowlist do `build_default_allowed_for_run`
+        // também inclui os 2 `ToolId`s novos. A casca chama
+        // ambas as funções com a **mesma** `Option` — quando
+        // o invoker é `Some`, os 2 tools aparecem no
+        // `ToolRegistry` E na allowlist; quando é `None`,
+        // nenhum dos dois aparece. **Bump atômico.**
         //
-        // **Por enquanto, nesta Etapa 2.A:** o
-        // `build_default_tools` recebe `Option<&RuntimeLocation>`
-        // (não o launcher), e a casca Tauri é responsável
-        // por construir o `LauncherDispatcher` (definido
-        // no `launcher.rs` da Etapa 2.A) que adapta o
-        // `WorkerHandle::invoke` pro ciclo de vida do
-        // launcher. Aqui só marcamos a intenção: o
-        // `Arc<dyn Tool>` que retornamos para o `docs.generate`
-        // é um `Adapter` que a casca configura depois.
-        //
-        // **Decisão de implementação:** o `build_default_tools`
-        // retorna APENAS o `FilesReadTool` quando o
-        // runtime está disponível, e a casca Tauri adiciona
-        // os 2 tools do `document-worker` em um passo
-        // separado (depois de construir o launcher e o
-        // adapter). A função é simétrica com
-        // `build_default_allowed_for_run` — que **inclui**
-        // os 2 `ToolId`s extras quando o runtime está
-        // disponível, sinalizando ao `RunExecutor` que
-        // eles são permitidos.
-        //
-        // **Por que não retornamos os 2 tools concretos
-        // daqui:** o `DocsGenerateTool::new(registry,
-        // dispatcher)` precisa de um `dispatcher`, e o
-        // `dispatcher` precisa do `LauncherDispatcher`
-        // (wrapper), que precisa do `DocumentWorkerLauncher`.
-        // A ordem de inicialização fica:
-        //   1. `resolve_document_worker_runtime` →
-        //      `Option<RuntimeLocation>`
-        //   2. casca cria `DocumentWorkerLauncher` (se
-        //      location é Some)
-        //   3. casca cria `LauncherDispatcher` (wrapper)
-        //   4. casca cria `KitRegistry` + `DocsGenerateTool` +
-        //      `DocsInspectTool` usando o dispatcher wrapper
-        //   5. casca chama `build_default_tools(Some(&loc))`
-        //      e adiciona os 2 tools ao `Vec` retornado
-        //   6. casca constrói `build_default_allowed_for_run`
-        //      que **inclui** os 2 `ToolId`s
-        //
-        // Esta função é o passo 5 — os 2 tools extras
-        // chegam por outro caminho (passo 4).
+        // **Por que `Arc<dyn WorkerInvoker>` em vez do
+        // `LauncherDispatcher` wrapper (como o comentário
+        // anterior sugeria):** a Etapa 2.B introduziu o
+        // trait `WorkerInvoker` no `core` (ADR-0024). O
+        // `WorkerHandle` (Fase 5) e o `DocumentWorkerLauncher`
+        // (Etapa 2.A) **ambos** implementam o trait. O
+        // wrapper `LauncherDispatcher` que o comentário
+        // anterior previa não é mais necessário — o trait
+        // faz o papel. Construção mais simples, sem
+        // redundância.
+        let wordpro = Arc::new(frederico_document_kits::WordProKit::new(invoker.clone()));
+        let excelpro = Arc::new(frederico_document_kits::ExcelProKit::new(invoker.clone()));
+        let pdfpro = Arc::new(frederico_document_kits::PdfProKit::new(invoker.clone()));
+
+        let mut registry = frederico_document_kits::KitRegistry::new();
+        registry.register(wordpro);
+        registry.register(excelpro);
+        registry.register(pdfpro);
+        let registry = Arc::new(registry);
+
+        // `allowed_paths` vazio por enquanto: o
+        // `docs.generate` valida o `output_path` contra a
+        // allowlist do `ToolManifest` (Etapa 3 da Fase 5),
+        // não a do dispatcher. O `Tool::execute` do
+        // `docs.generate` (em `document-kits/src/generate.rs`)
+        // chama `dispatcher.check_path()` antes de tocar
+        // o disco. Por enquanto, sem `allowed_paths`, o
+        // check é no-op — a allowlist do `ToolManifest` é
+        // quem protege. A Etapa 6 da fase-ligação (UI de
+        // configuração) ou a Fase 9 (empacotamento) podem
+        // popular esse vetor.
+        let dispatcher = frederico_tool_registry::WorkerToolDispatcher::new(invoker, vec![]);
+
+        tools.push(Arc::new(frederico_document_kits::DocsGenerateTool::new(
+            registry.clone(),
+            dispatcher.clone(),
+        )));
+        tools.push(Arc::new(frederico_document_kits::DocsInspectTool::new(
+            dispatcher,
+        )));
     }
 
     tools
@@ -239,9 +239,8 @@ pub fn build_default_tools(
 /// `Vec<ToolId>` que a casca Tauri e o modo servidor §5.5
 /// vão passar pro `build_chat_orchestrator`.
 ///
-/// Mesma regra do [`build_default_tools`]: se o runtime do
-/// `document-worker` está disponível, **inclui**
-/// `ToolId::new("docs.generate")` e
+/// Mesma regra do [`build_default_tools`]: se o invoker
+/// está disponível, **inclui** `ToolId::new("docs.generate")` e
 /// `ToolId::new("docs.inspect")` na allowlist (o `RunExecutor`
 /// aceita invocação). Se não está, **não inclui** (o
 /// `RunExecutor` rejeita invocação com `ToolNotAllowed`,
@@ -250,11 +249,11 @@ pub fn build_default_tools(
 /// `files.read` é sempre incluído (Etapa 1).
 #[must_use]
 pub fn build_default_allowed_for_run(
-    runtime_for_documents: Option<&crate::runtime::RuntimeLocation>,
+    invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
 ) -> Vec<frederico_core::ToolId> {
     let mut allowed = vec![frederico_core::ToolId::new("files.read")];
 
-    if runtime_for_documents.is_some() {
+    if invoker.is_some() {
         allowed.push(frederico_core::ToolId::new("docs.generate"));
         allowed.push(frederico_core::ToolId::new("docs.inspect"));
     }
@@ -349,6 +348,24 @@ pub fn build_chat_orchestrator(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use frederico_process_architecture::FakeWorkerConfig;
+
+    /// Helper: cria um `Arc<dyn WorkerInvoker>` real apontando
+    /// pra um `FakeWorker` in-process. Não toca em disco, não
+    /// spawna Python — só exercita o contrato do trait
+    /// `WorkerInvoker` (ADR-0024). O `_manager` segura o
+    /// `WorkerManager` vivo (o `WorkerHandle` é um `Arc`
+    /// interno; sem o manager, o handle morre quando o handle
+    /// é droppado — manter no escopo do test).
+    async fn fake_invoker() -> Arc<dyn frederico_core::WorkerInvoker> {
+        let (_manager, handle) = frederico_process_architecture::WorkerManager::spawn_in_process(
+            FakeWorkerConfig::default(),
+            frederico_process_architecture::WorkerSpawnConfig::default(),
+        )
+        .await
+        .expect("spawn fake");
+        Arc::new(handle)
+    }
 
     /// Helper: tool `files.read` real (a única do catálogo
     /// default da Etapa 1). Útil para verificar que o
@@ -471,43 +488,33 @@ mod tests {
         assert_eq!(manifest.id, frederico_core::ToolId::new("files.read"));
     }
 
-    #[test]
-    fn build_default_tools_with_runtime_still_returns_files_read_only() {
-        // **Decisão documentada:** o `build_default_tools`
-        // **não** constrói os 2 tools extras
-        // (`DocsGenerateTool`, `DocsInspectTool`) — a
-        // construção depende do `DocumentWorkerLauncher` (lazy
-        // state) + `LauncherDispatcher` (wrapper) +
-        // `KitRegistry`, e a ordem de inicialização é
-        // controlada pela casca Tauri, não por esta função.
-        // O `Vec` retornado aqui é o **mínimo** que a casca
-        // sempre tem; a casca adiciona os 2 tools extras
-        // num passo separado (depois de construir o launcher).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_default_tools_with_invoker_returns_three_tools() {
+        // Com invoker, o `Vec` contém **3** tools:
+        // `FilesReadTool` + `DocsGenerateTool` + `DocsInspectTool`.
+        // É o **bump atômico do ADR-0020 §3 D3** (capability
+        // + permission atômicas) — quando o invoker é `Some`,
+        // as 2 tools do `document-worker` entram no schema do
+        // modelo (juntas com a permissão `documents: Full` em
+        // `initial_permission_set_for_capable_launcher`).
         //
-        // Por isso este test verifica que o `Vec` continua
-        // com 1 tool (files.read) **mesmo quando o runtime
-        // está disponível** — a casca vai popular os 2
-        // tools depois. O test é importante pra fixar a
-        // **decisão** de design (build_default_tools =
-        // mínimo; launcher popula o resto), não pra validar
-        // comportamento mágico.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let loc = crate::runtime::RuntimeLocation {
-            python_exe: dir.path().join("python.exe"),
-            script: dir.path().join("document-worker.py"),
-            root: dir.path().to_path_buf(),
-            source: crate::runtime::RuntimeSource::DevRepo,
-        };
-        let tools = build_default_tools(Some(&loc));
+        // O `Arc<dyn WorkerInvoker>` aqui é o **contrato
+        // genérico** (ADR-0024) — o test usa um `FakeWorker`
+        // in-process (sem Python, sem disco) só pra satisfazer
+        // o trait. A integração com o `DocumentWorkerLauncher`
+        // lazy é responsabilidade da casca Tauri.
+        let invoker = fake_invoker().await;
+        let tools = build_default_tools(Some(invoker));
         assert_eq!(
             tools.len(),
-            1,
-            "build_default_tools sempre retorna o mínimo (1 tool); launcher popula o resto"
+            3,
+            "Esperado 3 tools: FilesReadTool + DocsGenerateTool + DocsInspectTool"
         );
-        assert_eq!(
-            tools[0].manifest().id,
-            frederico_core::ToolId::new("files.read")
-        );
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("docs.generate")));
+        assert!(ids.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
 
     #[test]
@@ -520,26 +527,19 @@ mod tests {
         assert_eq!(allowed, vec![frederico_core::ToolId::new("files.read")]);
     }
 
-    #[test]
-    fn build_default_allowed_for_run_with_runtime_includes_documents() {
-        // Com runtime, allowlist inclui os 2 `ToolId`s de
-        // documentos. Bump atômico capability + permission
-        // (ADR-0020 §3 D3).
-        let dir = tempfile::tempdir().expect("tempdir");
-        let loc = crate::runtime::RuntimeLocation {
-            python_exe: dir.path().join("python.exe"),
-            script: dir.path().join("document-worker.py"),
-            root: dir.path().to_path_buf(),
-            source: crate::runtime::RuntimeSource::DevRepo,
-        };
-        let allowed = build_default_allowed_for_run(Some(&loc));
-        assert_eq!(
-            allowed,
-            vec![
-                frederico_core::ToolId::new("files.read"),
-                frederico_core::ToolId::new("docs.generate"),
-                frederico_core::ToolId::new("docs.inspect"),
-            ]
-        );
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_default_allowed_for_run_with_invoker_includes_documents() {
+        // Com invoker, allowlist inclui os 2 `ToolId`s de
+        // documentos. **Bump atômico capability + permission**
+        // (ADR-0020 §3 D3): mesma `Option<Arc<dyn WorkerInvoker>>`
+        // passada pra `build_default_tools` e
+        // `build_default_allowed_for_run` — quando `Some`, os
+        // 2 `ToolId`s aparecem em ambos; quando `None`, em
+        // nenhum. A casca Tauri é quem garante a simetria.
+        let invoker = fake_invoker().await;
+        let allowed = build_default_allowed_for_run(Some(invoker));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
 }

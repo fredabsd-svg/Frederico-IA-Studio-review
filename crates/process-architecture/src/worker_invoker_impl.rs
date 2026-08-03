@@ -85,7 +85,9 @@ mod tests {
             message: "JSON malformado".to_string(),
         };
         let ie = process_to_invoke_error(pe);
-        assert!(matches!(ie, InvokeError::Protocol { ref message } if message == "JSON malformado"));
+        assert!(
+            matches!(ie, InvokeError::Protocol { ref message } if message == "JSON malformado")
+        );
     }
 
     #[test]

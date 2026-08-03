@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use frederico_core::{MemoryHit, MemoryScopeType, MemorySourceType, ToolId};
+use frederico_core::{MemoryHit, MemoryScopeType, MemorySourceType, WorkerInvoker};
 use frederico_diagnostics as diagnostics;
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
 use frederico_execution_engine::recovery::{
@@ -33,7 +33,6 @@ use frederico_shared_contracts::{
     ProviderConfigView, ScoreBreakdownView,
 };
 use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
-use frederico_tool_registry::Tool;
 use tauri::{Manager, State};
 
 mod sink;
@@ -345,26 +344,81 @@ fn main() {
                     }
                 };
 
-            // Tools concretas. A Etapa 6 (UI de configuração)
-            // permite ligar/desligar; aqui vem hardcoded o
-            // `FilesReadTool` (a única ferramenta do catálogo
-            // inicial). A partir do commit 4a, o `FilesReadTool::new()`
-            // não recebe jail — o jail vem do `ToolContext` por
-            // chamada (resolvido pelo `JailResolver`).
+            // **Etapa 2.B (ADR-0024):** o mesmo launcher vira
+            // um `Arc<dyn WorkerInvoker>` — o contrato genérico
+            // que `build_default_tools` / `build_default_allowed_for_run`
+            // esperam. **Bump atômico** com o `documents: None →
+            // Full` (ADR-0020 §3 D3) e o registro de
+            // `DocsGenerateTool` + `DocsInspectTool` no
+            // `ToolRegistry`: a casca chama as 3 funções de
+            // composição (`build_default_tools`,
+            // `build_default_allowed_for_run`,
+            // `initial_permission_set*`) com a **mesma**
+            // `Option<Arc<dyn WorkerInvoker>>` — quando `Some`,
+            // tudo aparece; quando `None`, nada aparece. Sem
+            // meia-medida.
             //
-            // **Etapa 2.A:** os 2 tools do `document-worker`
-            // (`DocsGenerateTool`, `DocsInspectTool`) NÃO
-            // entram no `Vec` ainda — a integração com o
-            // `ToolRegistry` (bump atômico do `documents: Full`
-            // + tools no schema do modelo) é Etapa 2.B. Aqui
-            // o launcher existe, mas o caminho do modelo
-            // continua passando por `FilesReadTool` apenas.
-            // O frontend React pode chamar `docs.generate` via
-            // `DocumentWorkerInvoke` (caminho de invoke
-            // direto), e checar status via `DocumentWorkerStatus`.
-            let files_read: Arc<dyn Tool> = Arc::new(frederico_tool_registry::FilesReadTool::new());
-            let tools: Vec<Arc<dyn Tool>> = vec![files_read];
-            let allowed_for_run: Vec<ToolId> = vec![ToolId::new("files.read")];
+            // O launcher continua existindo como
+            // `Option<Arc<DocumentWorkerLauncher>>` (campo
+            // `document_worker` do `AppState`) porque os
+            // commands Tauri `document_worker_status` /
+            // `document_worker_invoke` / `document_worker_reset`
+            // precisam do tipo concreto (o trait
+            // `WorkerInvoker` **não** expõe `status()` nem
+            // `reset()` — `WorkerError::PermanentlyDead` pede
+            // `reset()` da UI). **Dois papéis, mesmo objeto.**
+            //
+            // **Por que `(**launcher_arc).clone()`:** o campo
+            // `document_worker` é `Option<Arc<DocumentWorkerLauncher>>`
+            // (o `Arc` permite que o `DocumentWorkerLauncher`
+            // viva no `AppState` E seja clonado pra cá). Para
+            // construir o `Arc<dyn WorkerInvoker>`, preciso
+            // de um `DocumentWorkerLauncher` **dono** (não
+            // outro `Arc`) — então extraio o conteúdo via
+            // `(**launcher_arc).clone()` e reempacoto. O
+            // `state` interno é `Arc<Mutex<...>>` (custo do
+            // clone: refcount + 1) e `location`/`config` são
+            // `Clone` barato — o clone é leve.
+            let document_worker_invoker: Option<Arc<dyn WorkerInvoker>> =
+                document_worker.as_ref().map(|launcher_arc| {
+                    let launcher: DocumentWorkerLauncher = (**launcher_arc).clone();
+                    Arc::new(launcher) as Arc<dyn WorkerInvoker>
+                });
+
+            // Tools concretas. A Etapa 6 (UI de configuração)
+            // permite ligar/desligar; aqui vem do
+            // `build_default_tools`, que retorna o **mínimo
+            // comum** (1 tool: `FilesReadTool`) quando o
+            // invoker é `None`, e `FilesReadTool +
+            // DocsGenerateTool + DocsInspectTool` quando o
+            // invoker é `Some`. O `ToolRegistry` é construído
+            // a partir dessas tools concretas em
+            // `frederico_app::build_tool_registry` (commit 4b)
+            // — não há mais `ToolRegistry::new()` solto.
+            //
+            // **Bump atômico capability + permission**
+            // (ADR-0020 §3 D3, ADR-0024 §D2): mesma
+            // `Option<Arc<dyn WorkerInvoker>>` passada pra
+            // `build_default_tools`, `build_default_allowed_for_run`
+            // e pro ternário do `permission_set` — quando
+            // `Some`, as 2 tools do `document-worker`
+            // aparecem no `ToolRegistry`, os 2 `ToolId`s
+            // aparecem na allowlist do `RunExecutor`, e
+            // `documents` vira `Full`; quando `None`, em
+            // nenhum dos três lugares. A simetria é o que
+            // garante que o modelo **nunca** vê um tool que
+            // não consegue invocar (degradação declarada, não
+            // substituição silenciosa).
+            let tools =
+                frederico_app::composition::build_default_tools(document_worker_invoker.clone());
+            let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
+                document_worker_invoker.clone(),
+            );
+            let permission_set = if document_worker_invoker.is_some() {
+                frederico_app::composition::initial_permission_set_for_capable_launcher()
+            } else {
+                frederico_app::composition::initial_permission_set()
+            };
 
             // `MemoryExtractor` (Fase 4, Etapa 5). Usa
             // `LlmMemoryClassifier` com `NoopCompletionProvider`
@@ -399,7 +453,7 @@ fn main() {
                 jail_resolver: jail_resolver.clone(),
                 tools,
                 allowed_for_run,
-                permission_set: frederico_app::composition::initial_permission_set(),
+                permission_set,
                 memory_extractor: Some(memory_extractor_handle),
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
