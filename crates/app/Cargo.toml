@@ -16,6 +16,7 @@ frederico-provider-engine = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-storage = { workspace = true }
 frederico-security = { workspace = true }
+frederico-execution-engine = { workspace = true }
 frederico-memory = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }

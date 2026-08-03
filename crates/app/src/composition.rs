@@ -103,22 +103,16 @@ pub fn initial_permission_set() -> PermissionSet {
 /// Agrupa os argumentos do construtor do `ChatOrchestrator`
 /// em um struct. Existe para que a casca Tauri e o modo
 /// servidor §5.5 chamem `build_chat_orchestrator(parts)` em
-/// vez de passar 11 args posicionais (decisão registrada na
+/// vez de passar 12 args posicionais (decisão registrada na
 /// conversa da Etapa 1: "campo na struct, não parâmetro
 /// de `new()`").
 ///
-/// **No commit 4b da Etapa 1, este struct é declarado mas
-/// ainda não usado** (o `build_chat_orchestrator` entra no
-/// commit 5). A declaração aqui serve para fixar a forma
-/// do contrato antes da implementação — segue o padrão
-/// "skeleton mínimo, comportamento depois" do commit 2.
-///
-/// Os campos refletem os 11 args do `ChatOrchestrator::new`
-/// (Etapa 4.x.y da Fase 3, hoje). Quando o
-/// `build_chat_orchestrator` entrar no commit 5, este
-/// struct ganha um método `build()` que monta o
-/// `ChatOrchestrator`.
-#[allow(dead_code)] // Ativa quando o `build_chat_orchestrator` entra no commit 5.
+/// **O `build_chat_orchestrator(parts)` é o ponto de entrada
+/// único** para construir o `ChatOrchestrator` (Etapa 1
+/// commit 5 da Fase de Ligação). Os campos refletem os 12
+/// args do `ChatOrchestrator::new` (Etapa 4.x.y da Fase 3
+/// + `permission_set` da Etapa 1).
+#[allow(dead_code)] // Ativado quando o `build_chat_orchestrator` for consumido.
 pub struct ChatOrchestratorParts {
     /// `Arc<ProviderMap>` com adapters pré-registrados.
     pub providers: Arc<frederico_provider_engine::ProviderMap>,
@@ -154,6 +148,40 @@ pub struct ChatOrchestratorParts {
     /// memórias; `Some(h)` enfileira um `MemoryExtractionJob`
     /// após o run finalizar.
     pub memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
+}
+
+/// Constrói o `ChatOrchestrator` a partir de `parts`.
+///
+/// Esta é a **única** forma de construir o `ChatOrchestrator`
+/// na Fase de Ligação (Etapa 1 commit 5). A casca Tauri e o
+/// modo servidor §5.5 chamam esta função em vez de passar 12
+/// args posicionais pro `ChatOrchestrator::new` direto
+/// (decisão registrada na conversa da Etapa 1: "campo na
+/// struct, não parâmetro de `new()`"). **Mesma função para
+/// a casca e para os E2E** (regra do prompt da Fase de
+/// Ligação) — os testes E2E da Etapa 5 (`tests/e2e/`) usam
+/// esta função, garantindo que a forma do contrato é a
+/// mesma em todos os pontos.
+///
+/// Ver ADR-0022 §D4.
+#[must_use]
+pub fn build_chat_orchestrator(
+    parts: ChatOrchestratorParts,
+) -> frederico_execution_engine::orchestrator::ChatOrchestrator {
+    frederico_execution_engine::orchestrator::ChatOrchestrator::new(
+        parts.providers,
+        parts.runs,
+        parts.sink,
+        parts.db,
+        parts.clock,
+        parts.catalog,
+        parts.tool_registry,
+        parts.jail_resolver,
+        parts.tools,
+        parts.allowed_for_run,
+        parts.permission_set,
+        parts.memory_extractor,
+    )
 }
 
 #[cfg(test)]

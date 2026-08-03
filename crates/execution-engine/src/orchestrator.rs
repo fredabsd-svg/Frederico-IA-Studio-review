@@ -150,6 +150,14 @@ pub struct ChatOrchestrator {
     /// de aprovação) carrega o `PermissionSet` real; aqui
     /// passamos um `default()` deny.
     pub allowed_for_run: Vec<ToolId>,
+    /// `PermissionSet` carregado de configuração fixa
+    /// (Etapa 1 da Fase de Ligação, ADR-0022 §D4). Substitui
+    /// o `PermissionSet::default()` deny-all hardcoded que
+    /// bloqueava o Passo 5 do `validate_tool_call` antes
+    /// desta fase. O `frederico_app::initial_permission_set()`
+    /// constrói o mínimo da Etapa 1; a Etapa 6 (UI) carrega o
+    /// real do `assistant`/`project`/`user`.
+    pub permissions: PermissionSet,
     /// Handle opcional pro `MemoryExtractor` (Fase 4, Etapa 5).
     /// Quando `Some`, o `send_message` enfileira um
     /// `MemoryExtractionJob` após o run finalizar (Completed
@@ -174,6 +182,7 @@ impl ChatOrchestrator {
         jail_resolver: Arc<dyn JailResolver>,
         tools: Vec<Arc<dyn Tool>>,
         allowed_for_run: Vec<ToolId>,
+        permission_set: PermissionSet,
         memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
     ) -> Self {
         Self {
@@ -184,12 +193,16 @@ impl ChatOrchestrator {
             clock,
             catalog,
             tool_registry,
+            permissions: permission_set,
             jail_resolver,
             tools,
             allowed_for_run,
             memory_extractor,
         }
     }
+
+    // Helper para criar ChatOrchestrator a partir de `ChatOrchestratorParts`.
+    // Movido para o final do arquivo via macro impl-block.
 
     /// Persiste a mensagem do usuário, cria a assistant e o run, e
     /// dispara o stream em background (delegando pro
@@ -261,10 +274,10 @@ impl ChatOrchestrator {
         let asst_id = asst_msg.id;
         let this_for_err = Arc::clone(&this);
         tokio::spawn(async move {
-            let permissions = PermissionSet::default(); // Etapa 6 carrega o real
-                                                        // `DbAuditSink` (Etapa 5.x, Passo 10) — grava cada
-                                                        // tool_call em `tool_audit` (SQLite). A UI da Fase 5/6
-                                                        // consome via `ToolAuditRepo::list_for_run`.
+            let permissions = this.permissions.clone();
+            // `DbAuditSink` (Etapa 5.x, Passo 10) — grava cada
+            // tool_call em `tool_audit` (SQLite). A UI da Fase 5/6
+            // consome via `ToolAuditRepo::list_for_run`.
             let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> = Arc::new(
                 crate::audit_sink::DbAuditSink::new((*this.db).clone(), run_id),
             );

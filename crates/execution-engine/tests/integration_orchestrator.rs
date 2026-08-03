@@ -76,6 +76,7 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         jail_resolver,
         vec![],
         vec![],
+        frederico_tool_registry::PermissionSet::default(),
         None, // memory_extractor (Etapa 5 da Fase 4)
     );
     (Arc::new(orch), dir, sink)

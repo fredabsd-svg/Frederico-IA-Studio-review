@@ -33,7 +33,7 @@ use frederico_shared_contracts::{
     ProviderConfigView, ScoreBreakdownView,
 };
 use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
-use frederico_tool_registry::{Tool, ToolRegistry};
+use frederico_tool_registry::Tool;
 use tauri::{Manager, State};
 
 mod sink;
@@ -202,8 +202,10 @@ fn main() {
             // Tooling (Etapa 4.x.y): `ToolRegistry` + Jail + tools
             // concretas. A Etapa 6 carrega o `PermissionSet` real do
             // assistente/projeto. Aqui o catálogo inicial tem só
-            // `FilesReadTool` (in-process, sem worker sidecar).
-            let tool_registry = ToolRegistry::new();
+            // `FilesReadTool` (in-process, sem worker sidecar). O
+            // `ToolRegistry` é construído a partir das tools
+            // concretas em `frederico_app::build_tool_registry`
+            // (commit 4b) — não há mais `ToolRegistry::new()` solto.
             // `JailResolver` para workspace per-conversa
             // (Etapa 1 da Fase de Ligação, ADR-0022 §D2/D3). Cria
             // `<data_local_dir>/workspaces/<conversation_id>/` sob
@@ -244,20 +246,26 @@ fn main() {
                 std::sync::Arc::new(extractor.handle())
             };
 
-            let orch = ChatOrchestrator::new(
-                providers,
-                runs,
-                sink,
-                db.clone(),
-                clock,
-                catalog,
-                tool_registry,
-                jail_resolver,
+            // Composição centralizada no `frederico-app` (Etapa 1
+            // da Fase de Ligação, ADR-0022 §D4). Esta é a
+            // **mesma função** que os E2E da raiz chamam
+            // (`tests/e2e/`, Etapa 5 da fase). O `ChatOrchestratorParts`
+            // agrupa os 12 args que antes eram posicionais.
+            let parts = frederico_app::composition::ChatOrchestratorParts {
+                providers: providers.clone(),
+                runs: runs.clone(),
+                sink: sink.clone(),
+                db: db.clone(),
+                clock: clock.clone(),
+                catalog: catalog.clone(),
+                tool_registry: frederico_app::composition::build_tool_registry(&tools),
+                jail_resolver: jail_resolver.clone(),
                 tools,
                 allowed_for_run,
-                Some(memory_extractor_handle),
-            );
-            let orch = Arc::new(orch);
+                permission_set: frederico_app::composition::initial_permission_set(),
+                memory_extractor: Some(memory_extractor_handle),
+            };
+            let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 
             // Recovery de crash (Etapa 5.x). Spawna uma task em
             // background que lista runs não-terminais com
