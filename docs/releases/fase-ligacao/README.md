@@ -43,11 +43,12 @@ deny-all).
 
 | Etapa | Status | Próxima | Bloqueia |
 |-------|--------|---------|----------|
-| Etapa 1 — composição + jail + tools | **fechada** (esta PR) | Etapa 2 | — |
-| Etapa 2 — `docs.generate`/`docs.inspect` na casca | não iniciada | Etapa 1 | nenhuma |
+| Etapa 1 — composição + jail + tools | **fechada** (PR #21) | Etapa 2 | — |
+| **Etapa 2.A** — `DocumentWorkerLauncher` + resolvedor de runtime + status/invoke direto | **fechada** (esta PR) | Etapa 2.B | nenhuma |
+| Etapa 2.B — `docs.generate`/`docs.inspect` no `ToolRegistry` (bump atômico capability+permission) | não iniciada | Etapa 2.A | nenhuma |
 | Etapa 3 — `MemoryExtractor` + embedding adapter reais | não iniciada | Etapa 1 | nenhuma |
 | Etapa 4 — decidir `frederico-agent-engine` | não iniciada | nenhuma | nenhuma |
-| Etapa 5 — `tests/e2e/` atravessando a casca | não iniciada | Etapa 1 | nenhuma |
+| Etapa 5 — `tests/e2e/` atravessando a casca | não iniciada | Etapa 1, 2.A, 2.B | nenhuma |
 | Etapa 6 — regra de "definição de pronto" + gate CI | não iniciada | nenhuma | nenhuma |
 | Etapa 7 — `SecurityJailResolver` (modo desenvolvedor) | não iniciada | Etapa 1 | Fase 7 do PROMPT MESTRE |
 

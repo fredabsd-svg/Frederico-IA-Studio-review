@@ -1,5 +1,81 @@
 ## [Não publicado]
 
+### Fechado — Fase de Ligação, Etapa 2.A (DocumentWorkerLauncher + caminho de invoke direto) (2026-08-03)
+
+- **Lifecycle do `document-worker` agora é gerenciado pela casca
+  Tauri via `DocumentWorkerLauncher`** (ADR-0023 §D3). 3
+  responsabilidades: **lazy start** (worker só sobe na primeira
+  `invoke`, não no startup — não pesa os 2s de abertura), **restart
+  on death com teto** (3 tentativas com recuo exponencial 1s, 2s,
+  4s; excedeu → state `Dead` permanente, `invoke` retorna
+  `WorkerError::PermanentlyDead`), e **kill tree no app exit**
+  (via Windows SO + Job Objects da Etapa 7). **Sempre mata o
+  antigo antes de criar o novo** — worker em ciclo de falha
+  gerando processos Python órfãos é o pior modo de falha
+  possível num app desktop.
+- **`resolve_document_worker_runtime()` com precedência fixa**
+  (ADR-0023 §D1) — função pura no `frederico-app`, 11 unit
+  tests. Opção 1: env var `FREDERICO_DOCUMENT_WORKER_RUNTIME`.
+  Opção 2: `app.path().resolve("document-worker", Resource)`
+  (bundle.resources do Tauri — populado pela Fase 9 do
+  PROMPT MESTRE em produção). Opção 3: caminho de dev no
+  repositório (`<repo>/workers/document-worker/runtime/`,
+  populado pelo `bootstrap.ps1`). **Ausência do runtime =
+  indisponibilidade, não erro** (D2): as 2 tools do
+  `document-worker` não entram no `ToolRegistry` da casca, o
+  modelo não as enxerga, a UI mostra a mensagem de
+  diagnóstico.
+- **3 `tauri::command` novos na casca** (Etapa 2.A — invoke
+  direto, sem passar pelo `ChatOrchestrator`):
+  `DocumentWorkerStatus` (devolve `{ available, runtime_source,
+  runtime_path, message }` PT-BR), `DocumentWorkerInvoke(payload)`
+  (caminho de invoke direto que o frontend React usa quando o
+  usuário clica em "gerar documento"), `DocumentWorkerReset`
+  (botão "tentar reiniciar" após `PermanentlyDead`). 13 unit
+  tests novos no `frederico-app` (3 launcher + 10 runtime + 1
+  error message) — suíte do crate sobe pra **32/32 verde**.
+- **Helpers de Etapa 2.B já testados e prontos** (não usados
+  ainda pela casca, integração com `ToolRegistry` fica pra
+  Etapa 2.B por mexer em Fase 5 fechada): `build_default_tools`
+  com `Option<&RuntimeLocation>`, `build_default_allowed_for_run`
+  com o mesmo, `initial_permission_set_for_capable_launcher`
+  (bumpar `documents: None → Full` quando launcher disponível
+  — bump atômico capability+permission do ADR-0020 §3 D3).
+  6 testes novos no `composition` documentam a direção da
+  Etapa 2.B.
+- **Pendente nomeado com escopo e consequência** (D4,
+  registrado no `ADR-0023`): o `.exe` instalado do Frederico
+  **não gera documentos** até o `document-worker` ser
+  empacotado como `bundle.resources` do Tauri (ou a
+  alternativa D6 do ADR-0023 — instalador leve + bootstrap
+  lazy em `%APPDATA%\studio\frederico\ia\document-worker-runtime\`
+  no primeiro uso). Quem ler `docs/status.md` em 6 meses
+  precisa entender que **a Fase 5 fechou os 3 kits
+  DocumentSpec no motor, mas o caminho de produção até o
+  usuário final (`.exe`) ainda não gera documentos** — a
+  fase de Ligação fecha a integração no motor, não o
+  empacotamento. Fecha na Fase 9 do PROMPT MESTRE.
+- **Status honesto** (D5, ADR-0023): o E2E de `docs.generate`
+  da Etapa 5 (`tests/e2e/` atravessando a casca) vai
+  exercitar o **kit** e o **IPC** (via `DocumentWorkerLauncher`
+  + invoke direto), **não** o caminho empacotado. O
+  empacotamento é Fase 9. Sem essa anotação, a fase de
+  Ligação fecha reivindicando mais do que entregou.
+- ADR-0023 (novo) — 4 decisões: D1 (resolvedor com
+  precedência), D2 (ausência = indisponibilidade), D3
+  (launcher com lazy + restart + kill tree), D6
+  (alternativa instalador leve + bootstrap em `%APPDATA%`
+  registrada enquanto o contexto está fresco).
+- Suíte workspace (excluindo `process-architecture` com 2
+  testes de OCR pré-existentes) **531/531 verde** (era 315 na
+  Etapa 1; +216 testes do `document-kits` acumulados da
+  Etapa 1 não mexeram — 0 testes novos na Etapa 2.A na
+  verdade; só reorganizei os do `frederico-app` que estavam
+  em 5 grupos e agora cobrem runtime+launcher+composition).
+  `cargo fmt --check` limpo, `cargo clippy --workspace
+  --all-targets -- -D warnings -D clippy::await_holding_lock`
+  limpo, `check-core-purity.ps1` OK, `check-docs.mjs` OK.
+
 ### Fechado — Fase de Ligação, Etapa 1 (caminho de produção agora ligado) (2026-08-03)
 
 - **Caminho de produção do Frederico IA Studio agora executa
