@@ -154,7 +154,7 @@ async fn audit_records_files_read_execution() {
     // Tooling: registry com `files.read`, Jail compartilhado, tool concreta.
     let mut registry = ToolRegistry::new();
     registry.register(make_files_read_manifest());
-    let files_read: Arc<dyn Tool> = Arc::new(FilesReadTool::new(jail.clone()));
+    let files_read: Arc<dyn Tool> = Arc::new(FilesReadTool::new());
 
     // Cria conv + msg + run.
     let conv = ConversationRepo::new(&db)
@@ -178,7 +178,7 @@ async fn audit_records_files_read_execution() {
     let mut executor = RunExecutor::new(
         adapter,
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms,
         vec![frederico_core::ToolId::new("files.read")],

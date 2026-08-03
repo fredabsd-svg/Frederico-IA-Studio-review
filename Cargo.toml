@@ -44,6 +44,7 @@ frederico-document-engine = { path = "crates/document-engine" }
 frederico-document-kits = { path = "crates/document-kits" }
 frederico-process-architecture = { path = "crates/process-architecture" }
 frederico-test-support = { path = "crates/test-support" }
+frederico-app = { path = "crates/app" }
 frederico-shared-contracts = { path = "packages/shared-contracts" }
 
 # Async runtime

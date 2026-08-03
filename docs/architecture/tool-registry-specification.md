@@ -1,18 +1,19 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-27
-Fase correspondente: 3 (Etapa 2)
+Verificado contra o código em: 2026-08-03
+Fase correspondente: 3 (Etapa 2) + Fase de Ligação (Etapa 1)
 -->
 
-> Última verificação: 2026-07-27. Reflete a Etapa 2 da Fase 3 — crate
-> `frederico-tool-registry` com a enum `ToolManifest` (todos os
-> 22 campos do spec §"Contrato do manifesto" + builder fluente),
-> `JsonSchema` validado pelo crate `jsonschema` 0.18, a
-> `ToolRegistry` com `register`/`get`/`all`/`effective_tools`
-> (interseção filtrada por `availability` + `health` + allowlist),
-> a `Jail` (rejeita `..`/absoluto/UNC/letra de unidade/symlink —
-> defesa contra a ameaça I3 do `security-threat-model.md`), a
-> `validate_tool_call` (Passos 1, 2, 3, 4, 6, 7, 8, 9 do spec
+> Última verificação: 2026-08-03. Reflete a Etapa 2 da Fase 3 + a
+> Etapa 1 da Fase de Ligação — crate `frederico-tool-registry`
+> com a enum `ToolManifest` (todos os 22 campos do spec
+> §"Contrato do manifesto" + builder fluente), `JsonSchema`
+> validado pelo crate `jsonschema` 0.18, a `ToolRegistry` com
+> `register`/`get`/`all`/`effective_tools` (interseção filtrada
+> por `availability` + `health` + allowlist), a `Jail` (rejeita
+> `..`/absoluto/UNC/letra de unidade/symlink — defesa contra a
+> ameaça I3 do `security-threat-model.md`), a `validate_tool_call`
+> (Passos 1, 2, 3, 4, 6, 7, 8, 9 do spec
 > §7.7; Passos 5 e 10 ficam pras Etapas 3 e 5), o modelo de
 > `ApprovalRequest`/`ApprovalDecision`/`ApprovalScope`, a trait
 > `Tool` e a única ferramenta in-process do catálogo inicial:
@@ -169,7 +170,63 @@ Ferramentas fora deste catálogo só entram com manifesto completo, testes do §
 
 ## Decisões
 
-Nenhuma nova nesta versão. Decisões relacionadas:
+### D-2026-08-03: `Tool::execute` recebe `&ToolContext` (Etapa 1 da Fase de Ligação)
+
+**Mudança breaking** na Etapa 1 da Fase de Ligação
+([`docs/architecture/process-architecture.md`](./process-architecture.md)):
+a trait `Tool` carrega um `ToolContext` além dos `arguments`.
+A entrega é o `Jail` resolvido por `ConversationId` (ADR-0022 §D3)
+mais os IDs imutáveis do run (`conversation_id`, `run_id`,
+`message_id`). `#[non_exhaustive]` no `ToolContext` permite
+acrescentar campos depois (Etapa 7: `workspace:
+Option<WorkspaceSnapshot>`) sem nova quebra.
+
+```rust
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn manifest(&self) -> &ToolManifest;
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        arguments: &serde_json::Value,
+    ) -> ToolResult;
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ToolContext {
+    pub conversation_id: ConversationId,
+    pub run_id: RunId,
+    pub message_id: MessageId,
+    pub jail: Jail,
+}
+```
+
+**Por que o contexto, não só o `Jail`:** o `conversation_id` é o
+que identifica o escopo; ferramentas que precisem correlacionar
+com a tabela de auditoria (`tool_audit`) usam `run_id`;
+ferramentas que precisem associar com a mensagem do journal usam
+`message_id`. Passar isso como argumento de função separado
+polui a assinatura de cada `Tool`; carregar tudo no contexto
+mantém o `execute(ctx, args)` estável.
+
+**Carregamento:** o `RunExecutor` resolve o `conversation_id`
+**uma vez por run** (query única no `RunRepo::get(run_id)` no
+início do `run()`) e o `Jail` (via `JailResolver`). O
+`ToolContext` é construído por tool_call com custo O(1), sem
+I/O por chamada. O `conversation_id` é imutável durante o run.
+
+**Posição do `JailResolver` trait:** mora no
+`frederico-tool-registry` (não no `frederico-app`, como o plano
+original do ADR-0022 §D2 dizia) por uma razão prática: a
+`FilesReadTool` precisa de uma referência ao trait, e o
+`frederico-tool-registry` não pode depender do `frederico-app`
+(seria ciclo — `frederico-app` já depende de `tool-registry`).
+A `FileSystemJailResolver` (a impl default usada em produção)
+continua no `frederico-app`. ADR-0022 §D2 foi revisado com
+esta nota.
+
+Decisões relacionadas:
 
 - [`security-threat-model.md`](./security-threat-model.md) — ameaças ao registro.
 - [`tool-permission-model.md`](./tool-permission-model.md) — permissões hierárquicas.

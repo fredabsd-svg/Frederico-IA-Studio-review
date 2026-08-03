@@ -151,7 +151,7 @@ async fn watchdog_closes_run_after_event_timeout() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         frederico_tool_registry::PermissionSet::default(),
         vec![],

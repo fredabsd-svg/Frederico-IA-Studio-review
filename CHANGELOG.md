@@ -1,8 +1,89 @@
-﻿# Changelog
+﻿## [Não publicado]
 
-Todas as mudanÃ§as notÃ¡veis deste projeto sÃ£o documentadas aqui. O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/), e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
+### Alterado — breaking (Fase de Ligação, Etapa 1 commit 4a)
 
-## [Não publicado]
+- **`Tool::execute` agora recebe `&ToolContext`** (além dos
+  `arguments`). O `ToolContext` carrega o `Jail` resolvido
+  para a conversa corrente (ADR-0022 §D3) mais os IDs
+  imutáveis do run (`conversation_id`, `run_id`,
+  `message_id`). `#[non_exhaustive]` no contexto permite
+  acrescentar campos depois sem nova quebra. Assinatura
+  nova:
+
+  ```rust
+  async fn execute(
+      &self,
+      ctx: &ToolContext,
+      arguments: &serde_json::Value,
+  ) -> ToolResult;
+  ```
+
+  Único tool concreto em produção hoje é o `FilesReadTool`;
+  `DocsGenerateTool` e `DocsInspectTool` (Etapa 2) também
+  foram atualizados. O `RunExecutor` resolve o `Jail` uma
+  vez por run (no início do `run()` via `RunRepo::get +
+  JailResolver::resolve(&cid)`), não por `tool_call` — o
+  `conversation_id` é imutável durante o run.
+
+- **`RunExecutor::new` recebe `Arc<dyn JailResolver>` em vez
+  de `Jail` direto.** Substitui o campo `jail: Jail` das
+  Etapas anteriores. O `Jail` efetivo é cacheado em
+  `cached_jail` no `RunExecutor` para uso pela validação
+  (Passo 7 do `validate_tool_call`) e pelo `ToolContext`
+  entregue a `Tool::execute` por tool_call. A interface
+  do `JailResolver` trait é estável — a Etapa 7 (modo
+  desenvolvedor) substitui o `FileSystemJailResolver` por
+  `SecurityJailResolver` (via `frederico-security` com
+  Job Objects + AllowVolumeAccess) sem mudar
+  `ChatOrchestrator`, `RunExecutor` nem `FilesReadTool`.
+
+- **`FilesReadTool::new()` sem args** — o `Jail` vem do
+  `ctx.jail` por chamada. O construtor é estável entre
+  runs e processos; uma única instância pode ser
+  compartilhada por todos os runs.
+
+- **`JailResolver` trait mora no `frederico-tool-registry`**
+  (não no `frederico-app`, como o plano original do
+  ADR-0022 §D2 dizia) — ajuste arquitetural registrado
+  com nota "Alterado em relação ao plano original" no
+  ADR-0022 §D2. A `FileSystemJailResolver` (impl default
+  usada em produção) continua no `frederico-app`. A
+  `FilesReadTool` precisa de uma referência ao trait, e
+  o `frederico-tool-registry` não pode depender do
+  `frederico-app` (seria ciclo). O trait é abstração pura
+  do toolkit; a impl é decisão de composição.
+
+- **Casca Tauri (`apps/desktop/src-tauri/src/main.rs`)** —
+  `Jail::new(std::env::current_dir()?)` foi removido. O
+  workspace é resolvido por conversa via
+  `FileSystemJailResolver::new(<data_local_dir>/workspaces/)`.
+  Falha de `mkdir` é erro duro (sem fallback para
+  `temp_dir` — degradação silenciosa num caminho de
+  isolamento). Pré-existente no código antigo (linha 203
+  do `main.rs` em `main`); corrigido nesta fase.
+
+### Adicionado (Fase de Ligação, Etapa 1 commit 4a)
+
+- **`frederico-tool-registry::JailResolver` trait** + erro
+  + `StaticJailResolver` (para testes e fase de transição).
+- **`frederico-tool-registry::ToolContext`** com
+  `#[non_exhaustive]`. Carrega o `Jail` resolvido para a
+  conversa + os IDs imutáveis do run.
+- **`frederico-app::jail::FileSystemJailResolver`** (impl
+  default) — resolve por `ConversationId`, cria
+  `<workspaces_root>/<conversation_id>/` sob demanda via
+  `mkdir -p` idempotente, propaga `JailResolverError` em
+  falha (sem fallback para `temp_dir`).
+
+### Pendência (Fase de Ligação, Etapa 1 commit 4a)
+
+- A casca Tauri ainda **não** chama `MemoryExtractor`
+  (Fase 4 Etapa 5) com `CompletionProvider` real
+  (OpenRouter + gpt-4o-mini) — fica para a Etapa 3 da
+  Fase de Ligação. Também **não** injeta o embedding
+  adapter real (OpenRouter + `text-embedding-3-small`)
+  — fica para a Etapa 3. Esta commit corrige apenas o
+  caminho de jail/tools (Etapa 1 do prompt da fase).
 
 - Fase 5 (Etapa 5 - PR 3 do PDFPro: **auditoria estrutural bloqueante** do §19.4 + PDF/A-2B opt-in + sRGB ICC gerado localmente) fechada: **o `document-worker` v0.4.0 ganha a capability `pdf.audit`** (D-PDF5 + D-PDF6 do ADR-0021) e o `PdfProKit::render` chama ela após o `pdf.write` — **§19.6 sem interruptor: falha do audit = artefato NÃO é entregue**. Capability name `pdf.audit` (sem terceiro nível, todos os outros capabilities seguem `<dominio>.<verbo>`; o PR 4 estende este mesmo handler com `kind="visual"` — `salvar()` faz uma chamada só). **Checks baseline (sempre):** abertura, n_pages >= 1, DocInfo populado (Author/Title/Producer/Creator), todas as fontes embutidas (FontFile* em FontDescriptor), sem cifragem, sem referências externas (URL em /A /URI, /EmbeddedFiles com /F). **Checks A-2B opt-in** (quando `pdfa: Some(PdfA2b)`): OutputIntent com ICC RGB válido (signature `acsp` no offset 36, color space `RGB ` no offset 16), XMP `pdfaid:part=2` + `pdfaid:conformance=B`, sem JavaScript em /OpenAction/AA/Names. **Tagged PDF NÃO é verificado** — A-2B (básico) não exige; v1 declara apenas nível B (PDF/A-2A / accessible / Tagged está fora de escopo, registrado como não-objetivo). Cache key (D-AUDIT-1) = `sha256(pdf_bytes) + ":" + AUDIT_RULES_VERSION` (v0.1.0). 19 testes Python em `tests/test_pdf_audit.py` (5+ negativos injetando falha, baseline + A-2B + cross-cutting). E2E do kit: 3/3 verde (full_vertical, watermark_opt_in, missing_glyph_blocks passam pelo render + audit). **`KitError::AuditFailed` novo variant** no `kit.rs` — o `DocsGenerateTool` (generate.rs) formata a mensagem pro modelo com a lista de checks que falharam (code, expected, got). **Bug real do `pdf.write` pego pelo cross-check:** o handler retorna `pages_rendered=1` como chute (limitação do `reportlab` em v0.4.0 — não expõe n_pages pós-build). Cross-check removido do PR 3 com pendência registrada (n_pages real do write). **sRGB ICC v2** (D-PDF6) gerado pelo `tools/generate_srgb_icc.py` a partir dos parâmetros sRGB D50-adaptados (IEC 61966-2.1:1999) e formato ICC v2 (ISO 15076-1) — ambos padrões internacionais públicos. SHA-256 `C4188E5C06585DDAD4F8781B8F8791BB4563874AC462C934D1420EA133D74B64` (526 bytes) pinado em `bootstrap.ps1` (hard-fail se divergir, D-FAIL-1). **Por que não usar `sRGB2014.icc` do color.org:** URL do reference profile mudou em 2026 e `/srgb2014.icc` está 404 (verificado em 2026-08-01). Mesma lição do `raw/main` do tessdata (ADR-0019 §Decisão 1). Gerar localmente é o caminho determinístico. **Correção factual no ADR-0021:** D-PDF5 + "Mais difícil" + "Pendências #8" diziam "PDF/A-2B exige Tagged" — **errado**. Tagged é o que separa A (accessible) de B (basic); A-2B não exige. v1 declara apenas nível B; Tagged vai pra "não-objetivo" do spec (decisão, não lacuna). **Schema bump `SpecVersion` 0.2.0 → 0.3.0:** `DocumentMetadata` ganha `pdfa: Option<PdfaSpec>` (opt-in PDF/A-2B). `PdfaFlavor` enum (`PdfA2b` na v1) + `PdfaSpec` struct. Backward-compat com 0.1.0 e 0.2.0 (campo opcional com `#[serde(default, skip_serializing_if = "Option::is_none")]`). `prompt.rs` (SEMANTIC_RULES) e `validate.rs` (helper do teste) atualizados. **`document-worker` agora v0.4.0** (era v0.3.0): pikepdf virou dep obrigatória (hard-fail do bootstrap se faltar) por causa do audit. **Pendência registrada:** n_pages real do pdf.write (limitação do reportlab) e 3 lacunas restantes do ExcelPro (chart nativo, identidade visual, tabela estilizada) — fecham no PR 5.
 - Fase 5 (Etapa 5 - PR 2 do PDFPro: `render` real + bump atômico) fechada: **o `PdfProKit` v0.1 nasce completo, `DocumentFormat::Pdf` entra no enum, e o `render` de verdade é entregue — bump atômico no mesmo commit** (precedente do ADR-0020 §3 D3; o PR 1 tinha tentado flipar antes e foi revertido no commit `5c39bac`). **`render`** via `reportlab` Platypus + **fontes Tinta & Latão embutidas (sem fallback, D-FAIL-1)** + **identidade visual "Tinta & Latão"** (paleta `#1A2B4A` Tinta / `#B8924A` Latão / `#2D7A4F` Success / `#1F2937` Text / `#6B7280` Muted / `#F3F4F6` Light) + **modo Sóbrio** (monocromático, margens 3cm, sem ornamento, registráveis) + **20 blocos cobertos** (Cover, Toc, Heading, Paragraph, List, Table, KeyValue, Kpis, Callout, Quote, Steps, Chart-placeholder, Image, Code, Divider, Spacer, PageBreak, Footer, Signatures, BackCover — Chart e Toc viram placeholder explícito com warning no output, D-CHART-1 do PR 5 fecha o chart real). **Glifo-check via `fontTools` ANTES do `doc.build()`** (D-GLYPH-1) — varre `(text, font_name)` por bloco, intersecta com `TTFont.getBestCmap()` da Tinta & Latão Sans/Serif, falha estruturado com `code: "missing_glyph"` + lista `{block_index, char, codepoint, font_name, block_type}` — render mudo é pior que erro claro, então a falha acontece **antes** do `doc.build()` (PDF não é criado). **Marca d'água opt-in** (D-PDF2 do ADR-0021) via `onPage` callback do `SimpleDocTemplate` — 4 posições (Center/Diagonal/BottomRight/TopRight), cor `latao`, opacidade 0.15 default, font_size 60-72 conforme posição. **Bug fix crítico do `bootstrap.ps1`**: a `LibSentinels` original só checava 4 libs e pulava o `pip install` de pikepdf/pypdfium2/fonttools se as 4 já estivessem presentes — **violava D-FAIL-1** (hard-fail bypassado por silent skip — runtime reaproveitado, `pip show fonttools` retornaria ok em runtime antigo, mas as outras 3 poderiam faltar). Corrigido: 7 libs no sentinel, hard-fail real. **`KitRegistry::implemented_formats()`** agora retorna `["docx", "xlsx", "pdf"]`; o modelo vê `pdf` no schema do `docs.generate`; a `kit_id` da atomic-bump (`atomic_bump_target_format_and_is_implemented` em `pdfpro.rs::tests`) trava que `is_implemented=true` + `target_format=Pdf` + variante no enum vivem juntos (regressão do `5c39bac` fica visível no CI). **3 testes E2E novos** (`crates/document-kits/tests/e2e_docs_generate_pdf.rs`): `e2e_docs_generate_pdf_full_vertical` (spec → .pdf → reopen via `pdfplumber` subprocess → n_pages≥2, título, heading, parágrafo, tabela, chart placeholder, callout), `e2e_docs_generate_pdf_missing_glyph_blocks` (caractere `\u732b` fora do cmap → `KitError::Worker` com `missing_glyph`, PDF NÃO criado — D-GLYPH-1 ponta a ponta), `e2e_docs_generate_pdf_watermark_opt_in` (watermark diagonal opt-in → PDF gerado). **`generate.rs::parse_format`** aprendeu `"pdf"`; **`inspect.rs`** rejeita `.pdf` explicitamente com mensagem citando D-INSPECT-1 (era erro genérico; agora cita a pendência 5.x). Suíte workspace: **504+ passed, 0 failed** (+10 vs. PR 1: 8 unit novos em `pdfpro::tests` + 3 E2E novos). `cargo fmt --check` limpo; `cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock` limpo. `scripts/verify-external.ps1` ganha o step "E2E docs.generate pdf" (roda em todo PR). **Lacunas registradas (NÃO silenciadas) no `pdfpro.rs` docstring + spec**: auditoria bloqueante do §19.6 (PRs 3-4), Tagged PDF (PDF/A-2B exige; reportlab fraco), chart visual nativo no PDF, sumário em duas passadas (`Toc` é placeholder), `docs.inspect` cobrindo `.pdf` (D-INSPECT-1), PDF/A-1B/UA fora do escopo. **`pdfpro-specification.md`** atualizado com breakdown por PR + data 2026-08-01.
@@ -85,3 +166,4 @@ Todas as mudanÃ§as notÃ¡veis deste projeto sÃ£o documentadas aqui. O forma
 
 ### Adicionado
 - Esqueleto do repositÃ³rio: `LICENSE` e `README.md` mÃ­nimo.
+

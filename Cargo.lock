@@ -1100,6 +1100,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "directories",
+ "frederico-app",
  "frederico-core",
  "frederico-diagnostics",
  "frederico-execution-engine",
@@ -1321,6 +1322,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-07-31
-Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3)
+Verificado contra o código em: 2026-08-03
+Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3) + Fase de Ligação (Etapa 1)
 -->
 
 # `frederico-tool-registry`
@@ -142,6 +142,27 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 - `Tool` trait, `ToolResult`.
 - `FilesReadTool` (in-process, com jail aplicado no `execute`).
+- `ToolContext` (`#[non_exhaustive]`) — entregue pelo `RunExecutor`
+  por tool_call, carrega o `Jail` resolvido por `ConversationId`
+  (Etapa 1 da Fase de Ligação, ADR-0022 §D3). `Tool::execute`
+  passou de `(args)` para `(ctx, args)` — **breaking change**
+  registrado no `CHANGELOG.md` da Etapa 1.
+
+**`JailResolver` (Etapa 1 da Fase de Ligação, ADR-0022 §D2):**
+
+- `pub trait JailResolver: Send + Sync` — resolve um `Jail` por
+  `&ConversationId`. Mora aqui (não no `frederico-app`) para
+  evitar ciclo de dependência com a `FilesReadTool`. A impl
+  default (`FileSystemJailResolver`) mora no `frederico-app`.
+- `pub struct StaticJailResolver` — usado por testes e fase de
+  transição; sempre devolve o mesmo `Jail` (não é fallback de
+  produção).
+- `pub fn static_jail_resolver(jail: Jail) -> Arc<dyn JailResolver>`
+  — helper para `Arc::new(StaticJailResolver::new(jail))` em
+  testes.
+- `pub enum JailResolverError` (com `Box<dyn Error>` no source
+  para carregar o erro concreto — `FileSystemJailResolver`
+  produz variantes específicas que são wrapped aqui).
 
 **Erros (Etapa 2):**
 

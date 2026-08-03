@@ -70,32 +70,54 @@ Quatro decisões, todas no commit `fase-ligacao/conectar-motor-a-casca`
 
 ### D2. `JailResolver` trait + `FileSystemJailResolver` (default)
 
-- Trait `JailResolver` no `frederico_app::jail`:
+- **Trait `JailResolver` mora no `frederico-tool-registry`** (não
+  no `frederico-app`, como o plano original dizia — **ajustado
+  em relação ao plano original: motivo** logo abaixo).
 
   ```rust
   pub trait JailResolver: Send + Sync {
-      fn resolve(&self, conversation_id: &ConversationId) -> Jail;
+      fn resolve(
+          &self,
+          conversation_id: &ConversationId,
+      ) -> JailResolverResult<Jail>;
   }
   ```
 
-- `FileSystemJailResolver` é a única implementação da Etapa 1.
-  Recebe `workspaces_root: PathBuf` no construtor (resolvido
-  pela casca como `<data_local_dir>/workspaces/`).
-  `resolve(cid)` faz `mkdir -p` idempotente em
-  `workspaces_root.join(cid.to_string())` e devolve `Jail::new(path)`.
-  **Falha de `mkdir` é erro duro**, propagado como
-  `ToolError::PathSetup { conversation_id, source }` legível pro
-  usuário (não warn + fallback pra `temp_dir`, que seria
-  degradação silenciosa num caminho de isolamento — exatamente o
-  que o `JailResolver` foi criado pra impedir).
+- `FileSystemJailResolver` (a única implementação concreta da
+  Etapa 1) **mora no `frederico-app`** — em
+  `crates/app/src/jail.rs`, como `pub struct` e `impl
+  JailResolver` do trait do toolkit. Recebe `workspaces_root:
+  PathBuf` no construtor. `resolve(cid)` faz `mkdir -p`
+  idempotente em `workspaces_root.join(cid.to_string())` e
+  devolve `Jail::new(path)`. **Falha de `mkdir` é erro duro**,
+  propagado como `JailResolverError::CreateWorkspace {
+  conversation_id, source }` legível pro usuário (não warn +
+  fallback pra `temp_dir`, que seria degradação silenciosa num
+  caminho de isolamento — exatamente o que o `JailResolver` foi
+  criado pra impedir).
 
 - O resolvedor definitivo da Etapa 7
   (`SecurityJailResolver` via `frederico-security`, com Job
-  Objects e AllowVolumeAccess) implementa o mesmo trait.
-  A interface é estável: trocar a implementação não exige mudar
-  `ChatOrchestrator`, `RunExecutor` nem `FilesReadTool`.
+  Objects e AllowVolumeAccess) implementa o mesmo trait e
+  também mora no `frederico-app`. A interface é estável: trocar
+  a implementação não exige mudar `ChatOrchestrator`,
+  `RunExecutor` nem `FilesReadTool`.
 
-### D3. `ToolContext` carrega o `conversation_id` por tool_call
+**Alterado em relação ao plano original:** o **trait**
+`JailResolver` foi promovido de `frederico-app` para
+`frederico-tool-registry`. O motivo é arquitetural: a
+`FilesReadTool` precisa de uma referência ao trait (porque
+`Tool::execute` recebe `ToolContext { jail: Jail, ... }`, e
+ferramentas que precisem de mais contexto carregam o
+`JailResolver` no construtor), e o `frederico-tool-registry`
+não pode depender do `frederico-app` (seria ciclo — `app`
+já depende de `tool-registry`). A **implementação concreta**
+default (`FileSystemJailResolver`) continua no `frederico-app`:
+trait é abstração pura do toolkit; impl é decisão de composição.
+A Etapa 7 (modo desenvolvedor) introduz o
+`SecurityJailResolver` no mesmo lugar.
+
+### D3. `ToolContext` carrega o `Jail` resolvido + IDs imutáveis do run
 
 - Novo tipo em `frederico_tool_registry::tools`:
 
@@ -106,6 +128,7 @@ Quatro decisões, todas no commit `fase-ligacao/conectar-motor-a-casca`
       pub conversation_id: ConversationId,
       pub run_id: RunId,
       pub message_id: MessageId,
+      pub jail: Jail,
   }
   ```
 
@@ -126,18 +149,24 @@ Quatro decisões, todas no commit `fase-ligacao/conectar-motor-a-casca`
   async fn execute(&self, ctx: &ToolContext, arguments: &serde_json::Value) -> ToolResult;
   ```
 
-  Breaking change consciente: único `Tool` concreto hoje é o
-  `FilesReadTool`, e o `RunExecutor` é o único caller
-  (além dos testes do crate). Registrada no `CHANGELOG.md` da
-  Etapa 1 com a seção "Alterado — breaking".
+  Breaking change consciente: os 3 `Tool` concretos hoje são
+  `FilesReadTool`, `DocsGenerateTool` e `DocsInspectTool`
+  (estes dois últimos ainda não registrados no catálogo
+  default — entram na Etapa 2). O `RunExecutor` é o único
+  caller em produção. Registrada no `CHANGELOG.md` da Etapa 1
+  com a seção "Alterado — breaking".
 
-- O `RunExecutor` resolve `conversation_id` **uma vez por run**
-  (na construção do executor, lendo do `Run` carregado), não por
-  `tool_call`. O `conversation_id` é imutável durante o run (a
-  conversa não muda de ID no meio da execução), então carregá-lo
-  uma vez elimina query por chamada e ponto de falha em caminho
-  quente. O `ToolContext` é construído uma vez por tool_call com
-  os IDs em mão, custo O(1) sem I/O.
+- O `RunExecutor` resolve `conversation_id` + `Jail`
+  **uma vez por run** (no início do `run()` via
+  `RunRepo::get(run_id)` + `JailResolver::resolve(&cid)`), não
+  por `tool_call`. O `Jail` é cacheado em `cached_jail` no
+  `RunExecutor` para uso pela validação (Passo 7 do
+  `validate_tool_call`) e pelo `ToolContext` entregue a
+  `Tool::execute`. O `conversation_id` é imutável durante o
+  run (a conversa não muda de ID no meio da execução), então
+  carregá-lo uma vez elimina query por chamada e ponto de
+  falha em caminho quente. O `ToolContext` é construído por
+  tool_call com custo O(1) sem I/O.
 
 ### D4. Composição via `frederico_app`, casca consome
 

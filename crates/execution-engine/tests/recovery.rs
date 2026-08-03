@@ -83,7 +83,7 @@ async fn journal_persists_events_within_run_executor_lifecycle() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms_with_file_read(),
         vec![ToolId::new("files.read")],
@@ -140,7 +140,7 @@ async fn final_state_persists_to_database() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry.clone(),
-        jail.clone(),
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms_with_file_read(),
         vec![],
@@ -196,7 +196,7 @@ async fn provider_error_persists_as_failed() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms_with_file_read(),
         vec![],
@@ -265,13 +265,13 @@ async fn journal_includes_tool_result_event() {
     ));
 
     let tools: Vec<std::sync::Arc<dyn frederico_tool_registry::Tool>> = vec![std::sync::Arc::new(
-        frederico_tool_registry::FilesReadTool::new(jail.clone()),
+        frederico_tool_registry::FilesReadTool::new(),
     )];
 
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms_with_file_read(),
         vec![ToolId::new("files.read")],

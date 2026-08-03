@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use frederico_agent_engine::{Budget, RunState};
+use frederico_core::ConversationId;
 use frederico_core::{MessageId, ModelId, RunId, ToolId};
 use frederico_provider_engine::{
     ChatMessage, ChatRequest, ProviderAdapter, ProviderError, StopReason, StreamEvent,
@@ -74,8 +75,9 @@ use frederico_storage::{
     StorageError,
 };
 use frederico_tool_registry::{
-    validate_tool_call, AuditEntry, AuditSink, Jail, NoopAuditSink, PermissionSet, Tool,
-    ToolCall as RegistryToolCall, ToolRegistry, ValidationContext, ValidationOutcome,
+    validate_tool_call, AuditEntry, AuditSink, Jail, JailResolver, JailResolverError,
+    NoopAuditSink, PermissionSet, Tool, ToolCall as RegistryToolCall, ToolContext, ToolRegistry,
+    ValidationContext, ValidationOutcome,
 };
 use futures::StreamExt;
 use thiserror::Error;
@@ -150,6 +152,13 @@ pub enum ExecutorError {
     /// já rejeita; esse erro é o fallback de defesa em profundidade.
     #[error("ferramenta '{0}' não está no registro")]
     UnknownTool(String),
+    /// Falha ao resolver o `Jail` para a `ConversationId` do run
+    /// (Etapa 1 da Fase de Ligação, ADR-0022 §D3). O `JailResolver`
+    /// propagou `JailResolverError` (mkdir falhou, jail não pôde
+    /// ser construído, etc.). Erro duro — não há fallback; o run
+    /// falha com mensagem legível pro usuário.
+    #[error("falha ao resolver jail: {0}")]
+    JailResolution(#[from] JailResolverError),
 }
 
 pub type ExecutorResult<T> = Result<T, ExecutorError>;
@@ -161,7 +170,22 @@ pub type ExecutorResult<T> = Result<T, ExecutorError>;
 pub struct RunExecutor {
     adapter: Arc<dyn ProviderAdapter>,
     registry: ToolRegistry,
-    jail: Jail,
+    /// Resolvedor de jail por `ConversationId`. O `Jail` efetivo é
+    /// resolvido **uma vez por run** no início de `run()` (não por
+    /// tool_call), e cacheado em `cached_jail` para uso pela
+    /// validação (Passo 7 do `validate_tool_call`) e pelo
+    /// `ToolContext` entregue a `Tool::execute`. Ver
+    /// ADR-0022 §D3 — `JailResolver` trait mora no
+    /// `frederico-tool-registry`; `FileSystemJailResolver` (a
+    /// impl default) mora no `frederico-app`.
+    jail_resolver: Arc<dyn JailResolver>,
+    /// `Jail` resolvido para a conversa do run. Carregado em
+    /// `run()` (uma query de `Run` + uma resolução). `None`
+    /// antes do `run()` ser chamado.
+    cached_jail: Option<Jail>,
+    /// `ConversationId` carregado em `run()`. Imutável durante o
+    /// run (a conversa não muda de ID no meio da execução).
+    cached_conversation_id: Option<ConversationId>,
     db: Database,
     permissions: PermissionSet,
     allowed_for_run: Vec<ToolId>,
@@ -188,22 +212,27 @@ impl RunExecutor {
     ///
     /// - `adapter`: o `ProviderAdapter` que produz o stream.
     /// - `registry`: o `ToolRegistry` com os manifestos.
-    /// - `jail`: a raiz do workspace (canonicalizada) pra validar
-    ///   caminhos. **Importante**: o `FilesReadTool` deve ter sido
-    ///   construído com o **mesmo** `Jail` pra coerência.
+    /// - `jail_resolver`: o `JailResolver` (trait em
+    ///   `frederico-tool-registry`). O `Jail` efetivo é resolvido
+    ///   em `run()` por `ConversationId` (query única no
+    ///   `RunRepo::get`). Substitui o `jail: Jail` direto das
+    ///   Etapas anteriores — ADR-0022 §D3.
     /// - `db`: o `Database` (clonável, internamente `Arc`).
     /// - `permissions`: o `PermissionSet` da execução. Etapa 4 usa
     ///   `default()` (deny); Etapa 6 carrega o real do assistente.
     /// - `allowed_for_run`: os `ToolId` permitidos pra este Run
     ///   (passa pelo `ToolRegistry::effective_tools`).
     /// - `tools`: as implementações concretas (`FilesReadTool` etc.).
+    ///   A partir da Etapa 1 da Fase de Ligação, `FilesReadTool`
+    ///   **não** carrega `Jail` no construtor (o jail vem do
+    ///   `ToolContext` por chamada).
     /// - `budget`: o `Budget` da execução (default 50 steps).
     /// - `cancel`: o `CancellationToken` (Etapa 5 monitora).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         adapter: Arc<dyn ProviderAdapter>,
         registry: ToolRegistry,
-        jail: Jail,
+        jail_resolver: Arc<dyn JailResolver>,
         db: Database,
         permissions: PermissionSet,
         allowed_for_run: Vec<ToolId>,
@@ -218,7 +247,9 @@ impl RunExecutor {
         Self {
             adapter,
             registry,
-            jail,
+            jail_resolver,
+            cached_jail: None,
+            cached_conversation_id: None,
             db,
             permissions,
             allowed_for_run,
@@ -288,6 +319,19 @@ impl RunExecutor {
         let event_repo = MessageEventRepo::new(&self.db);
         let message_repo = MessageRepo::new(&self.db);
         let run_repo = RunRepo::new(&self.db);
+
+        // Carrega o `Run` para extrair o `conversation_id` e resolve
+        // o `Jail` **uma vez por run** (não por tool_call). O
+        // `conversation_id` é imutável durante o run; carregar uma
+        // vez elimina query por chamada e ponto de falha em caminho
+        // quente. ADR-0022 §D3. Falha do resolver aborta o run
+        // antes de qualquer tool_call — não há fallback de
+        // degradação (decisão registrada na conversa da Etapa 1).
+        let run = run_repo.get(&run_id).await?;
+        let conversation_id = run.conversation_id;
+        let resolved_jail = self.jail_resolver.resolve(&conversation_id)?;
+        self.cached_conversation_id = Some(conversation_id);
+        self.cached_jail = Some(resolved_jail);
 
         loop {
             // 0. Checagem de cancelamento entre rounds. Se chegou
@@ -645,7 +689,7 @@ impl RunExecutor {
         &self,
         event_repo: &MessageEventRepo<'_>,
         _message_repo: &MessageRepo<'_>,
-        _run_id: RunId,
+        run_id: RunId,
         message_id: MessageId,
         call_id: String,
         tool_id: ToolId,
@@ -665,9 +709,18 @@ impl RunExecutor {
             approval: None,
         };
 
+        let cached_jail = self
+            .cached_jail
+            .as_ref()
+            .expect("cached_jail é populado no início de run()")
+            .clone();
+        let conversation_id = self
+            .cached_conversation_id
+            .expect("cached_conversation_id é populado no início de run()");
+
         let ctx = ValidationContext::with_permissions(
             self.registry.clone(),
-            self.jail.clone(),
+            cached_jail.clone(),
             self.allowed_for_run.clone(),
             self.permissions.clone(),
             None,
@@ -677,15 +730,20 @@ impl RunExecutor {
 
         match validate_tool_call(&ctx, &call) {
             ValidationOutcome::Approved { .. } => {
-                // 2. Executa via Tool::execute.
+                // 2. Executa via Tool::execute. O `ToolContext` é
+                //    construído por tool_call (custo O(1), sem I/O)
+                //    carregando o `Jail` cacheado e os IDs imutáveis
+                //    do run. ADR-0022 §D3.
                 let tool = self
                     .tools
                     .get(&tool_id)
                     .ok_or_else(|| ExecutorError::ToolNotExecutable(tool_id.clone()))?
                     .clone();
 
+                let tool_ctx = ToolContext::new(conversation_id, run_id, message_id, cached_jail);
+
                 let start = std::time::Instant::now();
-                let result = tool.execute(&args).await;
+                let result = tool.execute(&tool_ctx, &args).await;
                 let duration = start.elapsed();
 
                 // 3. Emite StreamEvent::ToolResult.
@@ -767,12 +825,12 @@ impl RunExecutor {
                 let request_json = serde_json::to_string(&req).unwrap_or_else(|_| "{}".to_string());
                 let approval_repo = ApprovalQueueRepo::new(&self.db);
                 match approval_repo
-                    .enqueue(&_run_id, &tool_id.to_string(), &request_json)
+                    .enqueue(&run_id, &tool_id.to_string(), &request_json)
                     .await
                 {
                     Ok(approval_id) => {
                         tracing::info!(
-                            run_id = ?_run_id,
+                            run_id = ?run_id,
                             tool_id = %tool_id,
                             approval_id = %approval_id,
                             "ApprovalRequired enfileirado na approval_queue"
@@ -780,7 +838,7 @@ impl RunExecutor {
                     }
                     Err(e) => {
                         tracing::error!(
-                            run_id = ?_run_id,
+                            run_id = ?run_id,
                             tool_id = %tool_id,
                             "falha ao enfileirar ApprovalRequired: {e}"
                         );

@@ -57,6 +57,7 @@
 pub mod approval;
 pub mod audit;
 pub mod error;
+pub mod jail_resolver;
 pub mod manifest;
 pub mod permission;
 pub mod registry;
@@ -64,6 +65,20 @@ pub mod tools;
 pub mod validate;
 pub mod worker_dispatch;
 pub mod workspace;
+
+// Reexports do `jail_resolver` (Etapa 1 da Fase de Ligação,
+// ADR-0022 §D2). A trait mora no toolkit para que ferramentas
+// como `FilesReadTool` (que vivem no `frederico-tool-registry`)
+// possam usar o tipo sem ciclo com `frederico-app`. A impl
+// default (`FileSystemJailResolver`) mora no `frederico-app`.
+pub use jail_resolver::{
+    static_jail_resolver, JailResolver, JailResolverError, JailResolverResult, StaticJailResolver,
+};
+
+// Reexport do `ToolContext` (Etapa 1 da Fase de Ligação,
+// ADR-0022 §D3). O `RunExecutor` constrói por tool_call;
+// tools o recebem por referência no `execute`.
+pub use tools::ToolContext;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalScope};
 pub use audit::{AuditEntry, AuditSink, NoopAuditSink};

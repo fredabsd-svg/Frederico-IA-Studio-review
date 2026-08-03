@@ -2,6 +2,16 @@
 //!
 //! Ver ADR-0022 §D2 para a motivação e o contexto.
 //!
+//! ## Posição do trait (revisão do ADR-0022 §D2)
+//!
+//! O **trait** `JailResolver` mora em `frederico-tool-registry`
+//! (reexportado aqui como `pub use`). A `FileSystemJailResolver`
+//! (a impl concreta default usada em produção) mora aqui. Esta
+//! divisão evita ciclo: o toolkit depende do `frederico-core`
+//! (não pode depender do `frederico-app`); o `frederico-app`
+//! depende do toolkit. A Etapa 7 (modo desenvolvedor) introduz
+//! `SecurityJailResolver` aqui mesmo, sem mudar a interface.
+//!
 //! ## Princípio de erro duro
 //!
 //! `FileSystemJailResolver::resolve` falha com `JailResolverError`
@@ -19,18 +29,32 @@
 use std::path::PathBuf;
 
 use frederico_core::ConversationId;
-use frederico_tool_registry::{Jail, ToolError};
+use frederico_tool_registry::{Jail, JailResolver, ToolError};
 use thiserror::Error;
 use tracing::warn;
 
-/// Erro do `JailResolver`.
+// Reexporta o trait do `frederico-tool-registry` sob o nome
+// `JailResolver` neste módulo. O `impl JailResolver for
+// FileSystemJailResolver` abaixo é o impl do trait do toolkit —
+// não há trait paralelo no `frederico-app`. Isso garante
+// coerência de tipos: `Arc<dyn frederico_tool_registry::JailResolver>`
+// e `Arc<dyn frederico_app::jail::JailResolver>` são o mesmo trait.
+pub use frederico_tool_registry::JailResolver as _;
+
+/// Erro do `JailResolver` (específico do `FileSystemJailResolver`).
+///
+/// O trait `JailResolver` no toolkit define um `JailResolverError`
+/// mais genérico (Box<dyn Error>); aqui temos as variantes
+/// específicas do filesystem para mensagens PT-BR mais precisas.
+/// `From<FileSystemJailResolverError> for frederico_tool_registry::JailResolverError`
+/// faz a ponte (no impl do trait).
 ///
 /// **Erro duro** (sem fallback): `FileSystemJailResolver::resolve`
 /// propaga `io::Error` quando o `mkdir -p` falha, em vez de
 /// degradar para `temp_dir` (que reintroduziria vazamento entre
 /// conversas).
 #[derive(Debug, Error)]
-pub enum JailResolverError {
+pub enum FileSystemJailResolverError {
     /// Falha ao criar o diretório do workspace da conversa.
     /// Inclui o `conversation_id` e o `io::Error` original.
     #[error("falha ao criar workspace para conversa {conversation_id}: {source}")]
@@ -50,25 +74,6 @@ pub enum JailResolverError {
         #[source]
         source: ToolError,
     },
-}
-
-/// `Result` padrão do `JailResolver`.
-pub type JailResolverResult<T> = Result<T, JailResolverError>;
-
-/// `JailResolver` é o ponto de entrada para o workspace per-conversa.
-///
-/// Cada `ConversationId` tem o seu próprio jail (criado sob
-/// demanda quando a conversa é criada). A interface é estável:
-/// a Etapa 7 (modo desenvolvedor) substitui o
-/// `FileSystemJailResolver` por `SecurityJailResolver` via
-/// `frederico-security` (Job Objects + AllowVolumeAccess),
-/// sem mudança no `ChatOrchestrator` nem no `RunExecutor`.
-///
-/// Ver ADR-0022 §D2.
-pub trait JailResolver: Send + Sync {
-    /// Resolve o jail para a conversa dada. Falha com erro duro
-    /// (sem fallback) se a criação do workspace não for possível.
-    fn resolve(&self, conversation_id: &ConversationId) -> JailResolverResult<Jail>;
 }
 
 /// Resolvedor de jail baseado em filesystem. **Default da Etapa 1**.
@@ -99,7 +104,10 @@ impl FileSystemJailResolver {
 }
 
 impl JailResolver for FileSystemJailResolver {
-    fn resolve(&self, conversation_id: &ConversationId) -> JailResolverResult<Jail> {
+    fn resolve(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> frederico_tool_registry::JailResolverResult<Jail> {
         // Path do workspace da conversa: workspaces_root / UUID.
         // UUID em formato hyphenated (mesmo formato de
         // `ConversationId::as_uuid().to_string()`), igual ao que
@@ -119,21 +127,44 @@ impl JailResolver for FileSystemJailResolver {
                 error = %source,
                 "falha ao criar workspace da conversa; jail NAO resolvido"
             );
-            return Err(JailResolverError::CreateWorkspace {
-                conversation_id: *conversation_id,
-                source,
-            });
+            return Err(Self::wrap_error(
+                *conversation_id,
+                FileSystemJailResolverError::CreateWorkspace {
+                    conversation_id: *conversation_id,
+                    source,
+                },
+            ));
         }
 
         // `Jail::new` faz o canonicalize da raiz. Em Windows, o
         // `\\?\` prefix pode ser introduzido; o `starts_with` usado
         // depois pelo `Jail::resolve` lida com isso.
-        let jail = Jail::new(&workspace).map_err(|source| JailResolverError::JailSetup {
-            conversation_id: *conversation_id,
-            source,
+        let jail = Jail::new(&workspace).map_err(|source| {
+            Self::wrap_error(
+                *conversation_id,
+                FileSystemJailResolverError::JailSetup {
+                    conversation_id: *conversation_id,
+                    source,
+                },
+            )
         })?;
 
         Ok(jail)
+    }
+}
+
+impl FileSystemJailResolver {
+    /// Converte o erro específico do filesystem no erro genérico
+    /// do trait (`JailResolverError` no toolkit). Box<dyn Error>
+    /// carrega o erro concreto para diagnóstico.
+    fn wrap_error(
+        conversation_id: ConversationId,
+        specific: FileSystemJailResolverError,
+    ) -> frederico_tool_registry::JailResolverError {
+        frederico_tool_registry::JailResolverError::Resolve {
+            conversation_id,
+            source: Box::new(specific),
+        }
     }
 }
 
@@ -157,12 +188,7 @@ mod tests {
             // do relógio do Windows (granularidade grosseira
             // em nanosegundos + paralelismo de testes podem
             // colidir no mesmo valor).
-            let unique = format!(
-                "frederico-app-jail-{}-{}-{}",
-                label,
-                std::process::id(),
-                n,
-            );
+            let unique = format!("frederico-app-jail-{}-{}-{}", label, std::process::id(), n,);
             let dir = base.join(unique);
             std::fs::create_dir_all(&dir).expect("cria tempdir raiz do teste");
             Self(dir)
@@ -216,10 +242,7 @@ mod tests {
         // `\\?\` prefix, então comparamos via `canonicalize` dos dois
         // lados (mesmo método usado pelo próprio `Jail`).
         let expected_canonical = expected.canonicalize().unwrap();
-        assert_eq!(
-            jail.root().canonicalize().unwrap(),
-            expected_canonical
-        );
+        assert_eq!(jail.root().canonicalize().unwrap(), expected_canonical);
     }
 
     #[test]

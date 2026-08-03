@@ -77,7 +77,7 @@ use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
 use frederico_security::Clock;
 use frederico_storage::{Database, RunStatus};
-use frederico_tool_registry::{Jail, PermissionSet, Tool, ToolRegistry};
+use frederico_tool_registry::{JailResolver, PermissionSet, Tool, ToolRegistry};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -136,9 +136,13 @@ pub struct ChatOrchestrator {
     /// pra validar `tool_call`s e construir o `tools:` do
     /// `ChatRequest`.
     pub tool_registry: ToolRegistry,
-    /// Jail do workspace atual. O `RunExecutor` passa pro
-    /// `validate_tool_call` (Passo 7).
-    pub jail: Jail,
+    /// Resolvedor de jail por `ConversationId` (Etapa 1 da Fase de
+    /// Ligação, ADR-0022 §D3). O `RunExecutor` resolve o `Jail`
+    /// efetivo uma vez por run (não por tool_call) e cacheia.
+    /// Substitui o campo `jail: Jail` direto das Etapas
+    /// anteriores — a fronteira de isolamento agora é a conversa,
+    /// não o cwd do processo.
+    pub jail_resolver: Arc<dyn JailResolver>,
     /// Tools concretas (`FilesReadTool` etc.). O `RunExecutor`
     /// consulta pelo `ToolId` no `HashMap` interno.
     pub tools: Vec<Arc<dyn Tool>>,
@@ -167,7 +171,7 @@ impl ChatOrchestrator {
         clock: Arc<dyn Clock>,
         catalog: Arc<Catalog>,
         tool_registry: ToolRegistry,
-        jail: Jail,
+        jail_resolver: Arc<dyn JailResolver>,
         tools: Vec<Arc<dyn Tool>>,
         allowed_for_run: Vec<ToolId>,
         memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
@@ -180,7 +184,7 @@ impl ChatOrchestrator {
             clock,
             catalog,
             tool_registry,
-            jail,
+            jail_resolver,
             tools,
             allowed_for_run,
             memory_extractor,
@@ -267,7 +271,7 @@ impl ChatOrchestrator {
             let mut executor = RunExecutor::new(
                 adapter,
                 this.tool_registry.clone(),
-                this.jail.clone(),
+                this.jail_resolver.clone(),
                 (*this.db).clone(),
                 permissions,
                 this.allowed_for_run.clone(),
