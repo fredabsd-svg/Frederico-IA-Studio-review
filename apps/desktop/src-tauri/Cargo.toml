@@ -27,6 +27,8 @@ frederico-execution-engine = { workspace = true }
 frederico-tool-registry = { workspace = true }
 frederico-memory = { workspace = true }
 frederico-app = { workspace = true }
+frederico-document-kits = { workspace = true }
+frederico-process-architecture = { workspace = true }
 tokio = { workspace = true }
 directories = { workspace = true }
 tracing = { workspace = true }

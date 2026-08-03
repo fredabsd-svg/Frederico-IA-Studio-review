@@ -1,6 +1,6 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-01
+Verificado contra o código em: 2026-08-03
 Fase correspondente: Fase de Ligação (entre Fase 5 e Fase 6)
 -->
 
@@ -8,6 +8,8 @@ Fase correspondente: Fase de Ligação (entre Fase 5 e Fase 6)
 
 Camada de composição do Frederico IA Studio. Detém **o que é
 montar o app** (catálogo de ferramentas, permissões iniciais,
+**resolvedor de runtime do `document-worker`** — Etapa 2.A, e
+**lifecycle do worker sidecar** — Etapa 2.A).
 resolvedor de jail por conversa, construção do `ChatOrchestrator`)
 e **nada do que é rodar a UI**. A casca Tauri continua sendo a
 casca — o `frederico-app` é o que ela importa.

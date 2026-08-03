@@ -38,6 +38,16 @@ use tauri::{Manager, State};
 
 mod sink;
 
+// ADR-0023 — Etapa 2.A da fase-ligação. O launcher do
+// `document-worker` é um `Option` no `AppState`: quando o
+// runtime é resolvido (em dev, com o `bootstrap.ps1` rodado),
+// o launcher está disponível e o frontend React pode invocar
+// `docs.generate` via `DocumentWorkerInvoke` (caminho de
+// invoke direto, sem passar pelo `ChatOrchestrator`). Quando
+// o runtime está indisponível, o `Option` é `None` e a UI
+// mostra "indisponível" no diagnóstico. Ver ADR-0023 §D3.
+use frederico_app::launcher::DocumentWorkerLauncher;
+
 /// Estado compartilhado passado aos comandos Tauri.
 ///
 /// O `credentials` é a instância **real** de
@@ -49,6 +59,13 @@ struct AppState {
     db: Arc<Database>,
     orch: Arc<ChatOrchestrator>,
     credentials: Arc<WindowsCredentialStore>,
+    /// Launcher do `document-worker` (ADR-0023, Etapa 2.A).
+    /// `None` quando o runtime está indisponível (em produção
+    /// sem `bundle.resources` populado, ou em dev sem
+    /// `bootstrap.ps1` rodado). A UI mostra o status via
+    /// `DocumentWorkerStatus` e pode chamar
+    /// `DocumentWorkerInvoke` quando `Some`.
+    document_worker: Option<Arc<DocumentWorkerLauncher>>,
 }
 
 /// Diretório local de dados do aplicativo (Windows: `%LOCALAPPDATA%\studio\frederico\ia`).
@@ -64,6 +81,77 @@ fn data_local_dir() -> PathBuf {
 /// Resolve o caminho do banco de dados.
 fn resolve_db_path() -> PathBuf {
     data_local_dir().join("frederico.db")
+}
+
+/// Constrói o `RuntimeContext` (ADR-0023 §D1) com os 3
+/// candidatos de runtime do `document-worker`. Função pura
+/// em relação ao `document-worker` em si — só lê env,
+/// `tauri::AppHandle::path()`, e o filesystem. Não spawna
+/// nada.
+///
+/// **Precedência** (delegada ao `resolve_document_worker_runtime`):
+/// 1. `FREDERICO_DOCUMENT_WORKER_RUNTIME` (env var) — overrides
+///    pra testes e setups não-padrão.
+/// 2. `app.path().resolve("document-worker", Resource)` —
+///    bundle.resources do Tauri. Em dev, o Tauri pode
+///    retornar um path que não existe; em produção, depois
+///    da Fase 9 do PROMPT MESTRE, vai retornar o path
+///    empacotado.
+/// 3. `CARGO_MANIFEST_DIR/../workers/document-worker/runtime`
+///    — caminho de dev no repositório. Só existe se o
+///    `bootstrap.ps1` rodou.
+///
+/// **Por que essa função é separada:** o `frederico-app` é
+/// puro (sem `tauri`), então a lógica de construir o
+/// `RuntimeContext` (que precisa de `AppHandle`) mora aqui
+/// na casca. O `frederico-app` recebe o `RuntimeContext` já
+/// materializado e só itera sobre os 3 candidatos.
+fn resolve_runtime_context(app: &tauri::AppHandle) -> frederico_app::runtime::RuntimeContext {
+    // Opção 1: env var.
+    let env_override = std::env::var("FREDERICO_DOCUMENT_WORKER_RUNTIME")
+        .ok()
+        .map(PathBuf::from);
+
+    // Opção 2: recursos do app (bundle.resources do Tauri).
+    // Em dev, `Resource` pode apontar pra um diretório que
+    // não existe; nesse caso, `try_exists` no resolvedor
+    // rejeita silenciosamente e cai pra próxima opção. Por
+    // isso usamos `Option` em vez de `Result` aqui.
+    let app_resources = app
+        .path()
+        .resolve("document-worker", tauri::path::BaseDirectory::Resource)
+        .ok();
+
+    // Opção 3: caminho de dev no repositório. Em produção
+    // (`.exe` instalado), `CARGO_MANIFEST_DIR` aponta pro
+    // diretório de instalação, não pro repo — nesse caso o
+    // caminho `<manifest>/../workers/document-worker/runtime`
+    // não existe, e o resolvedor rejeita.
+    //
+    // **Atenção:** `CARGO_MANIFEST_DIR` é o diretório do
+    // `Cargo.toml` do crate `frederico-desktop`, que é
+    // `apps/desktop/src-tauri/`. O caminho
+    // `<...>/../workers/document-worker/runtime` é relativo
+    // ao `apps/desktop/src-tauri/`, que é
+    // `apps/desktop/src-tauri/../workers/...` = `apps/workers/...`.
+    // **Errado.** O correto é subir mais um nível:
+    // `<...>/../../workers/document-worker/runtime` =
+    // `apps/../../workers/...` = `workers/...` (correto, raiz
+    // do repo).
+    let dev_repo = std::env::var("CARGO_MANIFEST_DIR").ok().map(|d| {
+        PathBuf::from(d)
+            .parent() // apps/desktop/src-tauri → apps/desktop
+            .and_then(|p| p.parent()) // apps/desktop → apps
+            .and_then(|p| p.parent()) // apps → repo root
+            .map(|p| p.join("workers").join("document-worker").join("runtime"))
+    });
+    let dev_repo = dev_repo.flatten();
+
+    frederico_app::runtime::RuntimeContext {
+        env_override,
+        app_resources,
+        dev_repo,
+    }
 }
 
 /// Constrói o `ProviderMap` com adapters pré-registrados. O
@@ -219,12 +307,61 @@ fn main() {
             let jail_resolver: Arc<dyn frederico_tool_registry::JailResolver> = Arc::new(
                 frederico_app::jail::FileSystemJailResolver::new(workspaces_root),
             );
+
+            // ADR-0023 §D1+D2 — Etapa 2.A da fase-ligação.
+            // Resolve o runtime do `document-worker` e instancia
+            // o `DocumentWorkerLauncher` (lazy + restart on
+            // death + kill tree no app exit). **Degradação
+            // declarada**: se nenhum dos 3 candidatos do
+            // `RuntimeContext` (env, app_resources, dev_repo)
+            // tem o runtime completo, `document_worker` fica
+            // `None` e a UI mostra "indisponível" via
+            // `DocumentWorkerStatus`. Sem fallback pro
+            // `FakeWorker` (que retornaria `handler_stub` —
+            // "documento falso entregue como verdadeiro" é a
+            // falha mais cara).
+            let runtime_ctx = resolve_runtime_context(app.handle());
+            let document_worker =
+                match frederico_app::runtime::resolve_document_worker_runtime(&runtime_ctx) {
+                    Some(location) => {
+                        tracing::info!(
+                            runtime_root = %location.root.display(),
+                            source = ?location.source,
+                            "document-worker runtime resolvido — DocumentWorkerLauncher disponível"
+                        );
+                        Some(Arc::new(DocumentWorkerLauncher::new(
+                            location,
+                            frederico_app::launcher::LauncherConfig::default(),
+                        )))
+                    }
+                    None => {
+                        tracing::warn!(
+                            "document-worker runtime indisponível: \
+                         docs.generate/docs.inspect NÃO estarão acessíveis. \
+                         Para habilitar: execute workers/document-worker/bootstrap.ps1 (dev) \
+                         ou popule bundle.resources do Tauri (produção — Fase 9)."
+                        );
+                        None
+                    }
+                };
+
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem hardcoded o
             // `FilesReadTool` (a única ferramenta do catálogo
             // inicial). A partir do commit 4a, o `FilesReadTool::new()`
             // não recebe jail — o jail vem do `ToolContext` por
             // chamada (resolvido pelo `JailResolver`).
+            //
+            // **Etapa 2.A:** os 2 tools do `document-worker`
+            // (`DocsGenerateTool`, `DocsInspectTool`) NÃO
+            // entram no `Vec` ainda — a integração com o
+            // `ToolRegistry` (bump atômico do `documents: Full`
+            // + tools no schema do modelo) é Etapa 2.B. Aqui
+            // o launcher existe, mas o caminho do modelo
+            // continua passando por `FilesReadTool` apenas.
+            // O frontend React pode chamar `docs.generate` via
+            // `DocumentWorkerInvoke` (caminho de invoke
+            // direto), e checar status via `DocumentWorkerStatus`.
             let files_read: Arc<dyn Tool> = Arc::new(frederico_tool_registry::FilesReadTool::new());
             let tools: Vec<Arc<dyn Tool>> = vec![files_read];
             let allowed_for_run: Vec<ToolId> = vec![ToolId::new("files.read")];
@@ -290,11 +427,18 @@ fn main() {
                 db,
                 orch,
                 credentials,
+                document_worker,
             });
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ipc_dispatch, app_version])
+        .invoke_handler(tauri::generate_handler![
+            ipc_dispatch,
+            app_version,
+            document_worker_status,
+            document_worker_invoke,
+            document_worker_reset,
+        ])
         .run(tauri::generate_context!())
         .expect("falha ao rodar app Tauri");
 }
@@ -827,4 +971,78 @@ fn input_view_to_input(
         user_confirmed: false,
         user_pinned: false,
     })
+}
+
+// --- Etapa 2.A da Fase de Ligação (ADR-0023) ---
+
+/// `tauri::command` que devolve o status do launcher do
+/// `document-worker`. UI consome pra mostrar "document-worker:
+/// disponível/indisponível, caminho resolvido" no diagnóstico
+/// (ADR-0023 §D2 — degradação declarada). Retorna
+/// `LauncherStatus::message` PT-BR (regra do projeto).
+///
+/// **Quando o launcher é `None`** (runtime indisponível em
+/// produção sem `bundle.resources`, ou em dev sem
+/// `bootstrap.ps1`), devolve um `LauncherStatus` com
+/// `alive: false` e `message` explicando o que fazer. A UI
+/// mostra a mensagem diretamente — não tem que traduzir.
+#[tauri::command]
+async fn document_worker_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    match state.document_worker.as_ref() {
+        Some(launcher) => {
+            let s = launcher.status().await;
+            Ok(serde_json::json!({
+                "available": s.alive,
+                "runtime_source": s.runtime_source,
+                "runtime_path": s.runtime_path,
+                "message": s.message,
+            }))
+        }
+        None => Ok(serde_json::json!({
+            "available": false,
+            "runtime_source": null,
+            "runtime_path": null,
+            "message": "document-worker indisponível: nenhum dos 3 candidatos do \
+                        RuntimeContext (env, app_resources, dev_repo) tem runtime \
+                        completo. Execute workers/document-worker/bootstrap.ps1 (dev) \
+                        ou popule bundle.resources do Tauri (produção — Fase 9 do \
+                        PROMPT MESTRE)."
+        })),
+    }
+}
+
+/// `tauri::command` que invoca o launcher do `document-worker`
+/// com um payload JSON. **Caminho de invoke direto**, sem
+/// passar pelo `ChatOrchestrator` / `ToolRegistry` (essa
+/// integração é Etapa 2.B). Frontend React usa isso quando o
+/// usuário clica em "gerar documento" no botão da UI.
+///
+/// Devolve o resultado do `invoke` (JSON arbitrário — o
+/// `document-worker` define o schema por capability) ou uma
+/// mensagem de erro PT-BR (regra do projeto) em caso de
+/// `RuntimeUnavailable` / `PermanentlyDead` / `InvokeFailed`.
+#[tauri::command]
+async fn document_worker_invoke(
+    payload: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let launcher = state.document_worker.as_ref().ok_or_else(|| {
+        "document-worker indisponível: execute workers/document-worker/bootstrap.ps1 \
+             (dev) ou popule bundle.resources do Tauri (produção)."
+            .to_string()
+    })?;
+    launcher.invoke(payload).await.map_err(|e| e.to_string())
+}
+
+/// `tauri::command` que reseta o state do launcher (botão
+/// "tentar reiniciar" no diagnóstico após `PermanentlyDead`).
+/// Não faz nada se o launcher é `None` (idempotente).
+#[tauri::command]
+async fn document_worker_reset(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    if let Some(launcher) = state.document_worker.as_ref() {
+        launcher.reset().await;
+        Ok(serde_json::json!({ "ok": true, "message": "launcher resetado" }))
+    } else {
+        Ok(serde_json::json!({ "ok": false, "message": "launcher indisponível" }))
+    }
 }
