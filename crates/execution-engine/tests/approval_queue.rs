@@ -141,7 +141,7 @@ async fn approval_required_enqueues_to_queue() {
 
     let mut registry = ToolRegistry::new();
     registry.register(make_files_read_manifest());
-    let files_read: Arc<dyn Tool> = Arc::new(FilesReadTool::new(jail.clone()));
+    let files_read: Arc<dyn Tool> = Arc::new(FilesReadTool::new());
 
     let conv = ConversationRepo::new(&db)
         .create(&ProviderId::new("scripted"), &ModelId::new("fake"), None)
@@ -163,7 +163,7 @@ async fn approval_required_enqueues_to_queue() {
     let mut executor = RunExecutor::new(
         adapter,
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         perms,
         vec![frederico_core::ToolId::new("files.read")],

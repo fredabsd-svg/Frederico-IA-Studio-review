@@ -87,9 +87,12 @@ fn build_orchestrator(
         clock,
         catalog,
         ToolRegistry::new(),
-        Jail::new(std::env::temp_dir().as_path()).unwrap(),
+        frederico_tool_registry::static_jail_resolver(
+            Jail::new(std::env::temp_dir().as_path()).unwrap(),
+        ),
         vec![],
         vec![],
+        frederico_tool_registry::PermissionSet::default(),
         None, // memory_extractor (Etapa 5 da Fase 4)
     ))
 }

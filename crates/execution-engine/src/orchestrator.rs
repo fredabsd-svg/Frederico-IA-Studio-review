@@ -77,7 +77,7 @@ use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
 use frederico_security::Clock;
 use frederico_storage::{Database, RunStatus};
-use frederico_tool_registry::{Jail, PermissionSet, Tool, ToolRegistry};
+use frederico_tool_registry::{JailResolver, PermissionSet, Tool, ToolRegistry};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -136,9 +136,13 @@ pub struct ChatOrchestrator {
     /// pra validar `tool_call`s e construir o `tools:` do
     /// `ChatRequest`.
     pub tool_registry: ToolRegistry,
-    /// Jail do workspace atual. O `RunExecutor` passa pro
-    /// `validate_tool_call` (Passo 7).
-    pub jail: Jail,
+    /// Resolvedor de jail por `ConversationId` (Etapa 1 da Fase de
+    /// Ligação, ADR-0022 §D3). O `RunExecutor` resolve o `Jail`
+    /// efetivo uma vez por run (não por tool_call) e cacheia.
+    /// Substitui o campo `jail: Jail` direto das Etapas
+    /// anteriores — a fronteira de isolamento agora é a conversa,
+    /// não o cwd do processo.
+    pub jail_resolver: Arc<dyn JailResolver>,
     /// Tools concretas (`FilesReadTool` etc.). O `RunExecutor`
     /// consulta pelo `ToolId` no `HashMap` interno.
     pub tools: Vec<Arc<dyn Tool>>,
@@ -146,6 +150,14 @@ pub struct ChatOrchestrator {
     /// de aprovação) carrega o `PermissionSet` real; aqui
     /// passamos um `default()` deny.
     pub allowed_for_run: Vec<ToolId>,
+    /// `PermissionSet` carregado de configuração fixa
+    /// (Etapa 1 da Fase de Ligação, ADR-0022 §D4). Substitui
+    /// o `PermissionSet::default()` deny-all hardcoded que
+    /// bloqueava o Passo 5 do `validate_tool_call` antes
+    /// desta fase. O `frederico_app::initial_permission_set()`
+    /// constrói o mínimo da Etapa 1; a Etapa 6 (UI) carrega o
+    /// real do `assistant`/`project`/`user`.
+    pub permissions: PermissionSet,
     /// Handle opcional pro `MemoryExtractor` (Fase 4, Etapa 5).
     /// Quando `Some`, o `send_message` enfileira um
     /// `MemoryExtractionJob` após o run finalizar (Completed
@@ -167,9 +179,10 @@ impl ChatOrchestrator {
         clock: Arc<dyn Clock>,
         catalog: Arc<Catalog>,
         tool_registry: ToolRegistry,
-        jail: Jail,
+        jail_resolver: Arc<dyn JailResolver>,
         tools: Vec<Arc<dyn Tool>>,
         allowed_for_run: Vec<ToolId>,
+        permission_set: PermissionSet,
         memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
     ) -> Self {
         Self {
@@ -180,12 +193,16 @@ impl ChatOrchestrator {
             clock,
             catalog,
             tool_registry,
-            jail,
+            permissions: permission_set,
+            jail_resolver,
             tools,
             allowed_for_run,
             memory_extractor,
         }
     }
+
+    // Helper para criar ChatOrchestrator a partir de `ChatOrchestratorParts`.
+    // Movido para o final do arquivo via macro impl-block.
 
     /// Persiste a mensagem do usuário, cria a assistant e o run, e
     /// dispara o stream em background (delegando pro
@@ -257,17 +274,17 @@ impl ChatOrchestrator {
         let asst_id = asst_msg.id;
         let this_for_err = Arc::clone(&this);
         tokio::spawn(async move {
-            let permissions = PermissionSet::default(); // Etapa 6 carrega o real
-                                                        // `DbAuditSink` (Etapa 5.x, Passo 10) — grava cada
-                                                        // tool_call em `tool_audit` (SQLite). A UI da Fase 5/6
-                                                        // consome via `ToolAuditRepo::list_for_run`.
+            let permissions = this.permissions.clone();
+            // `DbAuditSink` (Etapa 5.x, Passo 10) — grava cada
+            // tool_call em `tool_audit` (SQLite). A UI da Fase 5/6
+            // consome via `ToolAuditRepo::list_for_run`.
             let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> = Arc::new(
                 crate::audit_sink::DbAuditSink::new((*this.db).clone(), run_id),
             );
             let mut executor = RunExecutor::new(
                 adapter,
                 this.tool_registry.clone(),
-                this.jail.clone(),
+                this.jail_resolver.clone(),
                 (*this.db).clone(),
                 permissions,
                 this.allowed_for_run.clone(),

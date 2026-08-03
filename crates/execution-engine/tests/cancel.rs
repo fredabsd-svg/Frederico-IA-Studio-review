@@ -203,11 +203,11 @@ async fn cancel_via_provider_cancelled_event() {
     let adapter = Arc::new(CancelableAdapter::new("simulated"));
     let cancel_token = CancellationToken::new();
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         Perms::default(),
         vec![],
@@ -256,7 +256,7 @@ async fn cancel_via_provider_cancelled_event() {
 /// sem processar nenhum evento.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_via_token_before_first_tick() {
-    let (db, registry, jail, _message_id, _run_id) = setup().await;
+    let (db, registry, jail, message_id, run_id) = setup().await;
 
     /// Adapter que devolve 1 round: Delta + Done. O cancel vai
     /// chegar **antes** do `executor.run()` ser chamado, então o
@@ -310,7 +310,7 @@ async fn cancel_via_token_before_first_tick() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        frederico_tool_registry::static_jail_resolver(jail.clone()),
         db.clone(),
         Perms::default(),
         vec![],
@@ -321,8 +321,8 @@ async fn cancel_via_token_before_first_tick() {
 
     let outcome = executor
         .run(
-            MessageId::new(),
-            RunId::new(),
+            message_id,
+            run_id,
             ModelId::new("fake"),
             vec![ChatMessage::user("oi")],
         )

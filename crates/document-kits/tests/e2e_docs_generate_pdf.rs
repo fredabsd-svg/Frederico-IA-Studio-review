@@ -419,11 +419,14 @@ async fn e2e_docs_generate_pdf_full_vertical() {
 
         // 5. Executa.
         let result = tool
-            .execute(&json!({
-                "spec": spec_json,
-                "output_path": pdf_path.to_string_lossy(),
-                "format": "pdf",
-            }))
+            .execute(
+                &dummy_ctx(),
+                &json!({
+                    "spec": spec_json,
+                    "output_path": pdf_path.to_string_lossy(),
+                    "format": "pdf",
+                }),
+            )
             .await;
         assert!(result.ok, "execute falhou: {:?}", result.error_message);
         assert_eq!(
@@ -501,11 +504,14 @@ async fn e2e_docs_generate_pdf_missing_glyph_blocks() {
             let pdf_path = out_dir.join("relatorio_glifo_faltando.pdf");
 
             let result = tool
-                .execute(&json!({
-                    "spec": spec_json,
-                    "output_path": pdf_path.to_string_lossy(),
-                    "format": "pdf",
-                }))
+                .execute(
+                    &dummy_ctx(),
+                    &json!({
+                        "spec": spec_json,
+                        "output_path": pdf_path.to_string_lossy(),
+                        "format": "pdf",
+                    }),
+                )
                 .await;
             assert!(
                 !result.ok,
@@ -574,11 +580,14 @@ async fn e2e_docs_generate_pdf_watermark_opt_in() {
             let pdf_path = out_dir.join("relatorio_watermark.pdf");
 
             let result = tool
-                .execute(&json!({
-                    "spec": spec_json,
-                    "output_path": pdf_path.to_string_lossy(),
-                    "format": "pdf",
-                }))
+                .execute(
+                    &dummy_ctx(),
+                    &json!({
+                        "spec": spec_json,
+                        "output_path": pdf_path.to_string_lossy(),
+                        "format": "pdf",
+                    }),
+                )
                 .await;
             assert!(result.ok, "execute falhou: {:?}", result.error_message);
             assert!(pdf_path.is_file(), ".pdf nao foi criado");
@@ -594,4 +603,28 @@ async fn e2e_docs_generate_pdf_watermark_opt_in() {
     )
     .await
     .expect("e2e_docs_generate_pdf_watermark_opt_in nao deve travar");
+}
+
+/// Constrói um `ToolContext` dummy para testes E2E do PDFPro
+/// que não dependem do jail. Mesmo helper usado em
+/// `e2e_docs_generate.rs` (Etapa 1 da Fase de Ligação
+/// commit 4a quebrou `Tool::execute` em `&ctx, &args`).
+#[allow(dead_code)]
+fn dummy_ctx() -> frederico_tool_registry::ToolContext {
+    use frederico_core::{ConversationId, MessageId, RunId};
+    use frederico_tool_registry::{Jail, ToolContext};
+    use uuid::Uuid;
+    let workspace = std::env::temp_dir().join(format!(
+        "frederico-document-kits-pdfpro-dummy-{}-{}",
+        std::process::id(),
+        Uuid::new_v4(),
+    ));
+    std::fs::create_dir_all(&workspace).expect("dummy_ctx: mkdir");
+    let jail = Jail::new(&workspace).expect("dummy_ctx: Jail::new");
+    ToolContext::new(
+        ConversationId(Uuid::nil()),
+        RunId(Uuid::nil()),
+        MessageId(Uuid::nil()),
+        jail,
+    )
 }

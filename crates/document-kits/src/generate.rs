@@ -33,8 +33,8 @@ use frederico_document_engine::{
     validate_against_schema, validate_semantic, DocumentError, DocumentSpec,
 };
 use frederico_tool_registry::{
-    DispatchError, JsonSchema, RiskLevel, Tool, ToolCategory, ToolManifest, ToolManifestBuilder,
-    ToolResult, WorkerToolDispatcher,
+    DispatchError, JsonSchema, RiskLevel, Tool, ToolCategory, ToolContext, ToolManifest,
+    ToolManifestBuilder, ToolResult, WorkerToolDispatcher,
 };
 use serde_json::{json, Value};
 
@@ -213,7 +213,7 @@ impl Tool for DocsGenerateTool {
         &self.manifest
     }
 
-    async fn execute(&self, arguments: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, arguments: &Value) -> ToolResult {
         // 1. Parse básico dos args. Não usa `?` porque o
         // erro aqui é `ToolResult` e a função também
         // retorna `ToolResult` — `?` exigiria
@@ -530,11 +530,14 @@ mod tests {
     async fn rejects_unknown_format_in_args() {
         let (tool, _manager) = build_tool_with_wordpro().await;
         let r = tool
-            .execute(&json!({
-                "spec": {},
-                "output_path": "C:\\temp\\out.docx",
-                "format": "xyz"
-            }))
+            .execute(
+                &dummy_ctx(),
+                &json!({
+                    "spec": {},
+                    "output_path": "C:\\temp\\out.docx",
+                    "format": "xyz"
+                }),
+            )
             .await;
         assert!(!r.ok, "esperava erro, veio {:?}", r);
         assert!(r.error_message.unwrap().contains("não é um DocumentFormat"));
@@ -544,10 +547,13 @@ mod tests {
     async fn rejects_missing_output_path() {
         let (tool, _manager) = build_tool_with_wordpro().await;
         let r = tool
-            .execute(&json!({
-                "spec": {},
-                "format": "docx"
-            }))
+            .execute(
+                &dummy_ctx(),
+                &json!({
+                    "spec": {},
+                    "format": "docx"
+                }),
+            )
             .await;
         assert!(!r.ok);
     }
@@ -557,12 +563,38 @@ mod tests {
         let (tool, _manager) = build_tool_with_wordpro().await;
         // Spec sem `spec_version` falha no schema.
         let r = tool
-            .execute(&json!({
-                "spec": { "doc_type": "report" }, // falta spec_version, blocks
-                "output_path": "C:\\temp\\out.docx",
-                "format": "docx"
-            }))
+            .execute(
+                &dummy_ctx(),
+                &json!({
+                    "spec": { "doc_type": "report" }, // falta spec_version, blocks
+                    "output_path": "C:\\temp\\out.docx",
+                    "format": "docx"
+                }),
+            )
             .await;
         assert!(!r.ok);
+    }
+    /// Constrói um `ToolContext` dummy para testes que não dependem
+    /// do jail. Usado quando o test chama `tool.execute(&ctx, &args)`
+    /// direto (sem passar pelo `RunExecutor`). O jail é construído
+    /// sobre o `temp_dir` do sistema.
+    #[allow(dead_code)]
+    fn dummy_ctx() -> frederico_tool_registry::ToolContext {
+        use frederico_core::{ConversationId, MessageId, RunId};
+        use frederico_tool_registry::{Jail, ToolContext};
+        use uuid::Uuid;
+        let workspace = std::env::temp_dir().join(format!(
+            "frederico-document-kits-dummy-{}-{}",
+            std::process::id(),
+            Uuid::new_v4(),
+        ));
+        std::fs::create_dir_all(&workspace).expect("dummy_ctx: mkdir");
+        let jail = Jail::new(&workspace).expect("dummy_ctx: Jail::new");
+        ToolContext::new(
+            ConversationId(Uuid::nil()),
+            RunId(Uuid::nil()),
+            MessageId(Uuid::nil()),
+            jail,
+        )
     }
 }

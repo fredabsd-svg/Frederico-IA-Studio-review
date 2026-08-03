@@ -1,12 +1,29 @@
+<!--
+Estado: implementado
+Verificado contra o código em: 2026-08-03
+Fase correspondente: 3 (Etapa 4 + 4.x + 4.x.y) + Fase de Ligação (Etapa 1)
+-->
+
 # `frederico-execution-engine` — RunExecutor
 
-> **Fase 3, Etapa 4** (jul/2026). O coração do "Fluxo vertical 1"
-> do `PROMPT MESTRE` §33: fecha o loop `tool_call` consumindo o
-> stream do `ProviderAdapter`, validando a `ToolCall` no
-> `ToolRegistry`, executando a `Tool` concreta, emitindo o
-> `ToolResult` pro modelo e persistindo tudo no SQLite — tudo
-> dentro da máquina de estados de 22 arestas definida no
-> `frederico-agent-engine`.
+> **Fase 3, Etapa 4** (jul/2026) + **Fase de Ligação, Etapa 1**
+> (ago/2026). O coração do "Fluxo vertical 1" do `PROMPT MESTRE`
+> §33: fecha o loop `tool_call` consumindo o stream do
+> `ProviderAdapter`, validando a `ToolCall` no `ToolRegistry`,
+> executando a `Tool` concreta, emitindo o `ToolResult` pro
+> modelo e persistindo tudo no SQLite — tudo dentro da máquina
+> de estados de 22 arestas definida no `frederico-agent-engine`.
+
+**Mudança da Etapa 1 da Fase de Ligação (ADR-0022 §D3):** o
+`RunExecutor` recebe `Arc<dyn JailResolver>` em vez de `Jail`
+direto. O `Jail` efetivo é resolvido uma vez por run (no
+início do `run()` via `RunRepo::get(run_id)` para extrair o
+`conversation_id` + `JailResolver::resolve(&cid)`), e cacheado
+para uso pela validação (Passo 7 do `validate_tool_call`) e
+pelo `ToolContext` entregue a `Tool::execute` por tool_call.
+**Breaking change** em `RunExecutor::new` (substitui `jail:
+Jail` por `jail_resolver: Arc<dyn JailResolver>`) — registrado
+no `CHANGELOG.md` da Etapa 1.
 
 ## O que este módulo faz
 

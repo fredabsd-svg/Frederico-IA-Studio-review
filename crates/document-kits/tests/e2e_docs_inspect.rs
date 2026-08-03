@@ -212,7 +212,7 @@ async fn e2e_docs_inspect_docx_roundtrip() {
 
         // 3. Generate (.docx).
         let generate_result = generate_tool
-            .execute(&json!({
+            .execute(&dummy_ctx(), &json!({
                 "spec": spec_json,
                 "output_path": docx_path.to_string_lossy(),
                 "format": "docx",
@@ -228,7 +228,7 @@ async fn e2e_docs_inspect_docx_roundtrip() {
         // 4. Inspect (mesmo arquivo, mesmo tool, mesmo
         //    worker).
         let inspect_result = inspect_tool
-            .execute(&json!({
+            .execute(&dummy_ctx(), &json!({
                 "path": docx_path.to_string_lossy(),
             }))
             .await;
@@ -378,4 +378,28 @@ async fn e2e_docs_inspect_docx_roundtrip() {
     })
     .await
     .expect("e2e_docs_inspect_docx_roundtrip nao deve travar");
+}
+
+/// Constrói um `ToolContext` dummy para testes que não dependem
+/// do jail. Usado quando o test chama `tool.execute(&ctx, &args)`
+/// direto (sem passar pelo `RunExecutor`). O jail é construído
+/// sobre o `temp_dir` do sistema, que é re-canonicalizado.
+#[allow(dead_code)]
+fn dummy_ctx() -> frederico_tool_registry::ToolContext {
+    use frederico_core::{ConversationId, MessageId, RunId};
+    use frederico_tool_registry::{Jail, ToolContext};
+    use uuid::Uuid;
+    let workspace = std::env::temp_dir().join(format!(
+        "frederico-document-kits-dummy-{}-{}",
+        std::process::id(),
+        Uuid::new_v4(),
+    ));
+    std::fs::create_dir_all(&workspace).expect("dummy_ctx: mkdir");
+    let jail = Jail::new(&workspace).expect("dummy_ctx: Jail::new");
+    ToolContext::new(
+        ConversationId(Uuid::nil()),
+        RunId(Uuid::nil()),
+        MessageId(Uuid::nil()),
+        jail,
+    )
 }

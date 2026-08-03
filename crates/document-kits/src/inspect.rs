@@ -43,8 +43,8 @@ use async_trait::async_trait;
 use frederico_core::ToolId;
 use frederico_document_engine::{DocumentBlock, DocumentSpec, DocumentType, SpecVersion};
 use frederico_tool_registry::{
-    DispatchError, JsonSchema, RiskLevel, Tool, ToolCategory, ToolManifest, ToolManifestBuilder,
-    ToolResult, WorkerToolDispatcher,
+    DispatchError, JsonSchema, RiskLevel, Tool, ToolCategory, ToolContext, ToolManifest,
+    ToolManifestBuilder, ToolResult, WorkerToolDispatcher,
 };
 use serde_json::{json, Value};
 
@@ -569,7 +569,7 @@ impl Tool for DocsInspectTool {
         &self.manifest
     }
 
-    async fn execute(&self, arguments: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, arguments: &Value) -> ToolResult {
         // 1. Parse dos args.
         let args = match InspectArgs::from_value(arguments) {
             Ok(a) => a,

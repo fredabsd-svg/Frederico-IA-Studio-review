@@ -33,7 +33,7 @@ use frederico_shared_contracts::{
     ProviderConfigView, ScoreBreakdownView,
 };
 use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
-use frederico_tool_registry::{Jail, Tool, ToolRegistry};
+use frederico_tool_registry::Tool;
 use tauri::{Manager, State};
 
 mod sink;
@@ -51,12 +51,19 @@ struct AppState {
     credentials: Arc<WindowsCredentialStore>,
 }
 
+/// Diretório local de dados do aplicativo (Windows: `%LOCALAPPDATA%\studio\frederico\ia`).
+/// Resolvido uma vez por chamada — `ProjectDirs::from` é barato,
+/// mas é guard de invariante (`expect` em vez de `unwrap_or`).
+fn data_local_dir() -> PathBuf {
+    directories::ProjectDirs::from("studio", "frederico", "ia")
+        .expect("diretórios do projeto resolvem em Windows")
+        .data_local_dir()
+        .to_path_buf()
+}
+
 /// Resolve o caminho do banco de dados.
 fn resolve_db_path() -> PathBuf {
-    let proj = directories::ProjectDirs::from("studio", "frederico", "ia")
-        .expect("diretórios do projeto resolvem em Windows");
-    let dir = proj.data_local_dir();
-    dir.join("frederico.db")
+    data_local_dir().join("frederico.db")
 }
 
 /// Constrói o `ProviderMap` com adapters pré-registrados. O
@@ -195,22 +202,30 @@ fn main() {
             // Tooling (Etapa 4.x.y): `ToolRegistry` + Jail + tools
             // concretas. A Etapa 6 carrega o `PermissionSet` real do
             // assistente/projeto. Aqui o catálogo inicial tem só
-            // `FilesReadTool` (in-process, sem worker sidecar).
-            let tool_registry = ToolRegistry::new();
-            // Jail do workspace. Por enquanto aponta pro diretório
-            // atual do processo; a Etapa 7 (modo desenvolvedor) vai
-            // resolver o workspace via `frederico-security`.
-            let jail = match std::env::current_dir() {
-                Ok(p) => Jail::new(p.as_path())
-                    .unwrap_or_else(|_| Jail::new(std::env::temp_dir().as_path()).unwrap()),
-                Err(_) => Jail::new(std::env::temp_dir().as_path()).unwrap(),
-            };
+            // `FilesReadTool` (in-process, sem worker sidecar). O
+            // `ToolRegistry` é construído a partir das tools
+            // concretas em `frederico_app::build_tool_registry`
+            // (commit 4b) — não há mais `ToolRegistry::new()` solto.
+            // `JailResolver` para workspace per-conversa
+            // (Etapa 1 da Fase de Ligação, ADR-0022 §D2/D3). Cria
+            // `<data_local_dir>/workspaces/<conversation_id>/` sob
+            // demanda. **Erro duro**: se o `mkdir` falhar, o app
+            // aborta o startup com mensagem legível. A Etapa 7
+            // (modo desenvolvedor) substitui por `SecurityJailResolver`
+            // via `frederico-security`. O `ToolRegistry` (acima)
+            // ainda é vazio nesta Etapa 1; o registro dos
+            // manifestos entra no commit 4b (`build_tool_registry`).
+            let workspaces_root = data_local_dir().join("workspaces");
+            let jail_resolver: Arc<dyn frederico_tool_registry::JailResolver> = Arc::new(
+                frederico_app::jail::FileSystemJailResolver::new(workspaces_root),
+            );
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem hardcoded o
             // `FilesReadTool` (a única ferramenta do catálogo
-            // inicial).
-            let files_read: Arc<dyn Tool> =
-                Arc::new(frederico_tool_registry::FilesReadTool::new(jail.clone()));
+            // inicial). A partir do commit 4a, o `FilesReadTool::new()`
+            // não recebe jail — o jail vem do `ToolContext` por
+            // chamada (resolvido pelo `JailResolver`).
+            let files_read: Arc<dyn Tool> = Arc::new(frederico_tool_registry::FilesReadTool::new());
             let tools: Vec<Arc<dyn Tool>> = vec![files_read];
             let allowed_for_run: Vec<ToolId> = vec![ToolId::new("files.read")];
 
@@ -231,20 +246,26 @@ fn main() {
                 std::sync::Arc::new(extractor.handle())
             };
 
-            let orch = ChatOrchestrator::new(
-                providers,
-                runs,
-                sink,
-                db.clone(),
-                clock,
-                catalog,
-                tool_registry,
-                jail,
+            // Composição centralizada no `frederico-app` (Etapa 1
+            // da Fase de Ligação, ADR-0022 §D4). Esta é a
+            // **mesma função** que os E2E da raiz chamam
+            // (`tests/e2e/`, Etapa 5 da fase). O `ChatOrchestratorParts`
+            // agrupa os 12 args que antes eram posicionais.
+            let parts = frederico_app::composition::ChatOrchestratorParts {
+                providers: providers.clone(),
+                runs: runs.clone(),
+                sink: sink.clone(),
+                db: db.clone(),
+                clock: clock.clone(),
+                catalog: catalog.clone(),
+                tool_registry: frederico_app::composition::build_tool_registry(&tools),
+                jail_resolver: jail_resolver.clone(),
                 tools,
                 allowed_for_run,
-                Some(memory_extractor_handle),
-            );
-            let orch = Arc::new(orch);
+                permission_set: frederico_app::composition::initial_permission_set(),
+                memory_extractor: Some(memory_extractor_handle),
+            };
+            let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 
             // Recovery de crash (Etapa 5.x). Spawna uma task em
             // background que lista runs não-terminais com

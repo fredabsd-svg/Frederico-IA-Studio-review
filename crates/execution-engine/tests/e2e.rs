@@ -34,6 +34,7 @@ use frederico_tool_registry::{
     FilesReadTool, Jail, PermissionSet, Tool, ToolCategory, ToolManifest, ToolManifestBuilder,
     ToolRegistry,
 };
+
 use futures::stream::{self, BoxStream, StreamExt};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -205,12 +206,20 @@ fn make_files_read_manifest() -> ToolManifest {
         .expect("manifesto bem-formado")
 }
 
-async fn setup_executor() -> (Fixture, Database, ToolRegistry, Jail, MessageId, RunId) {
+async fn setup_executor() -> (
+    Fixture,
+    Database,
+    ToolRegistry,
+    Arc<dyn frederico_tool_registry::JailResolver>,
+    MessageId,
+    RunId,
+) {
     let fx = setup_workspace().await;
     let db = Database::open(&fx.db_path).await.expect("abre db");
     let mut registry = ToolRegistry::new();
     registry.register(make_files_read_manifest());
     let jail = Jail::new(fx._workspace.path()).expect("jail");
+    let jail_resolver = frederico_tool_registry::static_jail_resolver(jail);
     let conv = ConversationRepo::new(&db)
         .create(
             &ProviderId::new("simulated"),
@@ -224,7 +233,7 @@ async fn setup_executor() -> (Fixture, Database, ToolRegistry, Jail, MessageId, 
         .await
         .unwrap();
     let run = RunRepo::new(&db).create(&conv.id, &asst.id).await.unwrap();
-    (fx, db, registry, jail, asst.id, run.id)
+    (fx, db, registry, jail_resolver, asst.id, run.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +256,7 @@ async fn setup_executor() -> (Fixture, Database, ToolRegistry, Jail, MessageId, 
 async fn executor_closes_tool_call_loop_with_files_read() {
     use frederico_tool_registry::{FileReadPermission, PermissionSet as Perms};
 
-    let (_fx, db, registry, jail, message_id, run_id) = setup_executor().await;
+    let (_fx, db, registry, jail_resolver, message_id, run_id) = setup_executor().await;
 
     // Round 1: Delta + ToolCall + Done{ToolCalls}
     // Round 2: Delta + Done{Stop}
@@ -278,7 +287,7 @@ async fn executor_closes_tool_call_loop_with_files_read() {
         ],
     ));
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
 
     let permissions = Perms {
         file_read: FileReadPermission::WorkspaceOnly,
@@ -288,7 +297,7 @@ async fn executor_closes_tool_call_loop_with_files_read() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        jail_resolver.clone(),
         db.clone(),
         permissions,
         vec![ToolId::new("files.read")],
@@ -373,7 +382,7 @@ async fn executor_closes_tool_call_loop_with_files_read() {
 /// `ok: false` e `TOOL_NOT_IN_INVENTORY` — o modelo recebe o erro.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_emits_tool_result_with_error_when_rejected() {
-    let (_fx, db, registry, jail, message_id, run_id) = setup_executor().await;
+    let (_fx, db, registry, jail_resolver, message_id, run_id) = setup_executor().await;
 
     // Uma única chamada: ToolCall + Done{ToolCalls}. O executor
     // valida, rejeita (Passo 4), emite ToolResult, mas como o
@@ -400,12 +409,12 @@ async fn executor_emits_tool_result_with_error_when_rejected() {
 
     // allowed_for_run vazio → Passo 4 rejeita com
     // `TOOL_NOT_IN_INVENTORY`.
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
 
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        jail_resolver.clone(),
         db.clone(),
         PermissionSet::default(),
         vec![], // <-- allowed_for_run vazio rejeita o files.read
@@ -459,7 +468,7 @@ async fn executor_emits_tool_result_with_error_when_rejected() {
 /// `MessageStatus::Completed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_completes_when_no_tool_call() {
-    let (_fx, db, registry, jail, message_id, run_id) = setup_executor().await;
+    let (_fx, db, registry, jail_resolver, message_id, run_id) = setup_executor().await;
 
     let adapter = Arc::new(ScriptedAdapter::new(
         "simulated",
@@ -473,12 +482,12 @@ async fn executor_completes_when_no_tool_call() {
         ]],
     ));
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
 
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        jail_resolver.clone(),
         db.clone(),
         PermissionSet::default(),
         vec![ToolId::new("files.read")],
@@ -521,19 +530,19 @@ async fn executor_completes_when_no_tool_call() {
 /// na mensagem.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_fails_on_provider_error() {
-    let (_fx, db, registry, jail, message_id, run_id) = setup_executor().await;
+    let (_fx, db, registry, jail_resolver, message_id, run_id) = setup_executor().await;
 
     let adapter = Arc::new(ScriptedAdapter::new(
         "simulated",
         vec![vec![StreamEvent::Error(ProviderError::auth())]],
     ));
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
 
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        jail_resolver.clone(),
         db.clone(),
         PermissionSet::default(),
         vec![ToolId::new("files.read")],
@@ -576,7 +585,7 @@ async fn executor_fails_on_provider_error() {
 async fn executor_rejects_path_traversal_in_tool_call() {
     use frederico_tool_registry::{FileReadPermission, PermissionSet as Perms};
 
-    let (_fx, db, registry, jail, message_id, run_id) = setup_executor().await;
+    let (_fx, db, registry, jail_resolver, message_id, run_id) = setup_executor().await;
 
     let adapter = Arc::new(ScriptedAdapter::new(
         "simulated",
@@ -597,7 +606,7 @@ async fn executor_rejects_path_traversal_in_tool_call() {
         ],
     ));
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new(jail.clone()))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
 
     let permissions = Perms {
         file_read: FileReadPermission::WorkspaceOnly,
@@ -607,7 +616,7 @@ async fn executor_rejects_path_traversal_in_tool_call() {
     let mut executor = RunExecutor::new(
         adapter.clone(),
         registry,
-        jail,
+        jail_resolver.clone(),
         db.clone(),
         permissions,
         vec![ToolId::new("files.read")],

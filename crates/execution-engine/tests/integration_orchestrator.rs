@@ -64,6 +64,7 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
     // estão no `tests/recovery.rs` do execution-engine.
     let tool_registry = ToolRegistry::new();
     let jail = Jail::new(std::env::temp_dir().as_path()).unwrap();
+    let jail_resolver = frederico_tool_registry::static_jail_resolver(jail);
     let orch = ChatOrchestrator::new(
         providers,
         runs,
@@ -72,9 +73,10 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         clock,
         catalog,
         tool_registry,
-        jail,
+        jail_resolver,
         vec![],
         vec![],
+        frederico_tool_registry::PermissionSet::default(),
         None, // memory_extractor (Etapa 5 da Fase 4)
     );
     (Arc::new(orch), dir, sink)

@@ -26,6 +26,7 @@ frederico-shared-contracts = { workspace = true }
 frederico-execution-engine = { workspace = true }
 frederico-tool-registry = { workspace = true }
 frederico-memory = { workspace = true }
+frederico-app = { workspace = true }
 tokio = { workspace = true }
 directories = { workspace = true }
 tracing = { workspace = true }
