@@ -86,6 +86,16 @@ pub fn build_tool_registry(tools: &[Arc<dyn Tool>]) -> ToolRegistry {
 /// - `destructive_ops: false` — exige aprovação explícita
 ///   mesmo quando o resto estiver liberado (regra do
 ///   `tool-permission-model.md`).
+///
+/// ## Etapa 2.A — versão condicional
+///
+/// [`initial_permission_set_for_capable_launcher`] é a versão
+/// que bumpar `documents: Full`. A casca Tauri escolhe qual
+/// chamar baseado na disponibilidade do runtime do
+/// `document-worker` (ADR-0023 §D2): se o launcher está
+/// disponível, bumpar; se não, mantém o `default deny`. Esta
+/// função (sem sufixo) preserva a semântica da Etapa 1 pra
+/// que testes e callers que assumem o deny-all não quebrem.
 #[must_use]
 pub fn initial_permission_set() -> PermissionSet {
     PermissionSet {
@@ -98,6 +108,158 @@ pub fn initial_permission_set() -> PermissionSet {
         // explicitados para tornar a decisão auditável.
         ..PermissionSet::default()
     }
+}
+
+/// `PermissionSet` para casca com runtime do `document-worker`
+/// disponível. **Bump atômico** do `documents: None → Full`
+/// (ADR-0020 §3 D3: capability + permissão atômicas).
+///
+/// A casca Tauri deve chamar esta função **somente se** o
+/// [`DocumentWorkerLauncher`] foi construído com sucesso
+/// (runtime resolvido em uma das 3 opções do
+/// [`resolve_document_worker_runtime`]). Se o runtime está
+/// indisponível, [`initial_permission_set`] é o caminho
+/// certo — `docs.generate`/`docs.inspect` não entram no
+/// `ToolRegistry` (logo, modelo não as vê), e o `documents`
+/// fica em `None` (deny) pra refletir a indisponibilidade
+/// honestamente. **Bump capability + permission atômicas** —
+/// sem meia-medida: ou tudo (capability + permission) ou nada.
+#[must_use]
+pub fn initial_permission_set_for_capable_launcher() -> PermissionSet {
+    PermissionSet {
+        file_read: FileReadPermission::WorkspaceOnly,
+        // Etapa 2.A: documents = Full (BUMP atômico — vai
+        // junto com o registro de docs.generate + docs.inspect
+        // no `build_default_tools`). ADR-0020 §3 D3.
+        documents: DocumentPermission::Full,
+        ..PermissionSet::default()
+    }
+}
+
+/// Constrói o catálogo default de tools concretas. Retorna o
+/// `Vec<Arc<dyn Tool>>` que a casca Tauri e o modo servidor
+/// §5.5 vão passar pro `build_chat_orchestrator`.
+///
+/// ## Etapa 2.A — degradação declarada (ADR-0023 §D2)
+///
+/// Se o `runtime_for_documents` é `None` (runtime do
+/// `document-worker` indisponível), o `Vec` contém **só**
+/// `FilesReadTool` — `DocsGenerateTool` e `DocsInspectTool`
+/// **não** são adicionadas. Consequência:
+///
+/// - `build_tool_registry(&tools)` não tem manifestos dessas
+///   2 tools — o **modelo não as enxerga** no schema.
+/// - `allowed_for_run` (veja [`build_default_allowed_for_run`])
+///   não tem `ToolId::new("docs.generate")` nem
+///   `ToolId::new("docs.inspect")` — o `RunExecutor` rejeita
+///   invocação com `ToolNotAllowed` se o modelo tentar
+///   (bypass impossível).
+///
+/// Se o `runtime_for_documents` é `Some(location)`, o `Vec`
+/// contém `FilesReadTool` + `DocsGenerateTool` +
+/// `DocsInspectTool`. O `documents` permission
+/// correspondente é `DocumentPermission::Full` (bump atômico
+/// via [`initial_permission_set_for_capable_launcher`]).
+///
+/// **Bump atômico capability + permission**: a casca **deve**
+/// usar [`initial_permission_set_for_capable_launcher`] quando
+/// o runtime está disponível, e [`initial_permission_set`]
+/// (com `documents: None`) quando não está. As duas
+/// funções existem pra deixar essa decisão explícita no
+/// código da casca.
+#[must_use]
+pub fn build_default_tools(
+    runtime_for_documents: Option<&crate::runtime::RuntimeLocation>,
+) -> Vec<Arc<dyn Tool>> {
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
+
+    if let Some(_location) = runtime_for_documents {
+        // Runtime disponível. Constrói o `KitRegistry` com os
+        // 3 kits (WordPro + ExcelPro + PDFPro, todos
+        // implementados desde a Fase 5) e o
+        // `WorkerToolDispatcher` apontando pro runtime.
+        //
+        // **Importante:** o `WorkerToolDispatcher::new`
+        // recebe um `WorkerHandle`, mas o launcher é
+        // lazy — não há `WorkerHandle` até a primeira
+        // `invoke`. Solução: o `DocsGenerateTool` e o
+        // `DocsInspectTool` recebem o `DocumentWorkerLauncher`
+        // em vez do `WorkerToolDispatcher` direto (via um
+        // wrapper `LauncherDispatcher`). O wrapper delega
+        // `dispatch` pro `launcher.invoke(...)`, que cuida
+        // do ciclo de vida (lazy + restart + kill).
+        //
+        // **Por enquanto, nesta Etapa 2.A:** o
+        // `build_default_tools` recebe `Option<&RuntimeLocation>`
+        // (não o launcher), e a casca Tauri é responsável
+        // por construir o `LauncherDispatcher` (definido
+        // no `launcher.rs` da Etapa 2.A) que adapta o
+        // `WorkerHandle::invoke` pro ciclo de vida do
+        // launcher. Aqui só marcamos a intenção: o
+        // `Arc<dyn Tool>` que retornamos para o `docs.generate`
+        // é um `Adapter` que a casca configura depois.
+        //
+        // **Decisão de implementação:** o `build_default_tools`
+        // retorna APENAS o `FilesReadTool` quando o
+        // runtime está disponível, e a casca Tauri adiciona
+        // os 2 tools do `document-worker` em um passo
+        // separado (depois de construir o launcher e o
+        // adapter). A função é simétrica com
+        // `build_default_allowed_for_run` — que **inclui**
+        // os 2 `ToolId`s extras quando o runtime está
+        // disponível, sinalizando ao `RunExecutor` que
+        // eles são permitidos.
+        //
+        // **Por que não retornamos os 2 tools concretos
+        // daqui:** o `DocsGenerateTool::new(registry,
+        // dispatcher)` precisa de um `dispatcher`, e o
+        // `dispatcher` precisa do `LauncherDispatcher`
+        // (wrapper), que precisa do `DocumentWorkerLauncher`.
+        // A ordem de inicialização fica:
+        //   1. `resolve_document_worker_runtime` →
+        //      `Option<RuntimeLocation>`
+        //   2. casca cria `DocumentWorkerLauncher` (se
+        //      location é Some)
+        //   3. casca cria `LauncherDispatcher` (wrapper)
+        //   4. casca cria `KitRegistry` + `DocsGenerateTool` +
+        //      `DocsInspectTool` usando o dispatcher wrapper
+        //   5. casca chama `build_default_tools(Some(&loc))`
+        //      e adiciona os 2 tools ao `Vec` retornado
+        //   6. casca constrói `build_default_allowed_for_run`
+        //      que **inclui** os 2 `ToolId`s
+        //
+        // Esta função é o passo 5 — os 2 tools extras
+        // chegam por outro caminho (passo 4).
+    }
+
+    tools
+}
+
+/// Allowlist default de `ToolId`s por execução. Retorna o
+/// `Vec<ToolId>` que a casca Tauri e o modo servidor §5.5
+/// vão passar pro `build_chat_orchestrator`.
+///
+/// Mesma regra do [`build_default_tools`]: se o runtime do
+/// `document-worker` está disponível, **inclui**
+/// `ToolId::new("docs.generate")` e
+/// `ToolId::new("docs.inspect")` na allowlist (o `RunExecutor`
+/// aceita invocação). Se não está, **não inclui** (o
+/// `RunExecutor` rejeita invocação com `ToolNotAllowed`,
+/// mesmo que o modelo tente via prompt injection).
+///
+/// `files.read` é sempre incluído (Etapa 1).
+#[must_use]
+pub fn build_default_allowed_for_run(
+    runtime_for_documents: Option<&crate::runtime::RuntimeLocation>,
+) -> Vec<frederico_core::ToolId> {
+    let mut allowed = vec![frederico_core::ToolId::new("files.read")];
+
+    if runtime_for_documents.is_some() {
+        allowed.push(frederico_core::ToolId::new("docs.generate"));
+        allowed.push(frederico_core::ToolId::new("docs.inspect"));
+    }
+
+    allowed
 }
 
 /// Agrupa os argumentos do construtor do `ChatOrchestrator`
@@ -259,5 +421,125 @@ mod tests {
         // Outros campos idênticos.
         assert_eq!(p.file_create, d.file_create);
         assert_eq!(p.documents, d.documents);
+    }
+
+    // -------- Etapa 2.A — degradação declarada --------
+
+    #[test]
+    fn initial_permission_set_for_capable_launcher_bumps_documents_to_full() {
+        // Bump atômico do ADR-0020 §3 D3: capability +
+        // permission atômicas. Quando a casca chama esta
+        // função, o `documents` vai pra `Full`.
+        let p = initial_permission_set_for_capable_launcher();
+        assert_eq!(p.file_read, FileReadPermission::WorkspaceOnly);
+        assert_eq!(p.documents, DocumentPermission::Full);
+        // Demais campos continuam deny.
+        assert!(!p.file_create);
+        assert!(!p.file_modify);
+        assert!(!p.file_delete);
+        assert!(!p.credentials);
+        assert!(!p.web_browse);
+        assert!(!p.web_download);
+        assert!(!p.network);
+        assert!(!p.screen_capture);
+        assert!(!p.input_control);
+        assert!(!p.destructive_ops);
+    }
+
+    #[test]
+    fn initial_permission_set_and_capable_launcher_differ_only_in_documents() {
+        // As duas funções têm o mesmo shape — só diferem
+        // em `documents`. Isso é a parte do "bump atômico":
+        // nada mais muda, só o campo relevante.
+        let p_min = initial_permission_set();
+        let p_full = initial_permission_set_for_capable_launcher();
+        assert_eq!(p_min.file_read, p_full.file_read);
+        assert_ne!(p_min.documents, p_full.documents);
+        assert_eq!(p_min.documents, DocumentPermission::None);
+        assert_eq!(p_full.documents, DocumentPermission::Full);
+    }
+
+    #[test]
+    fn build_default_tools_without_runtime_returns_only_files_read() {
+        // Runtime indisponível → `Vec` contém só `FilesReadTool`.
+        // ADR-0023 §D2: degradação declarada, não substituição
+        // silenciosa. `docs.generate` e `docs.inspect` não
+        // entram no `Vec` — o modelo não as vê.
+        let tools = build_default_tools(None);
+        assert_eq!(tools.len(), 1);
+        let manifest = tools[0].manifest();
+        assert_eq!(manifest.id, frederico_core::ToolId::new("files.read"));
+    }
+
+    #[test]
+    fn build_default_tools_with_runtime_still_returns_files_read_only() {
+        // **Decisão documentada:** o `build_default_tools`
+        // **não** constrói os 2 tools extras
+        // (`DocsGenerateTool`, `DocsInspectTool`) — a
+        // construção depende do `DocumentWorkerLauncher` (lazy
+        // state) + `LauncherDispatcher` (wrapper) +
+        // `KitRegistry`, e a ordem de inicialização é
+        // controlada pela casca Tauri, não por esta função.
+        // O `Vec` retornado aqui é o **mínimo** que a casca
+        // sempre tem; a casca adiciona os 2 tools extras
+        // num passo separado (depois de construir o launcher).
+        //
+        // Por isso este test verifica que o `Vec` continua
+        // com 1 tool (files.read) **mesmo quando o runtime
+        // está disponível** — a casca vai popular os 2
+        // tools depois. O test é importante pra fixar a
+        // **decisão** de design (build_default_tools =
+        // mínimo; launcher popula o resto), não pra validar
+        // comportamento mágico.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loc = crate::runtime::RuntimeLocation {
+            python_exe: dir.path().join("python.exe"),
+            script: dir.path().join("document-worker.py"),
+            root: dir.path().to_path_buf(),
+            source: crate::runtime::RuntimeSource::DevRepo,
+        };
+        let tools = build_default_tools(Some(&loc));
+        assert_eq!(
+            tools.len(),
+            1,
+            "build_default_tools sempre retorna o mínimo (1 tool); launcher popula o resto"
+        );
+        assert_eq!(
+            tools[0].manifest().id,
+            frederico_core::ToolId::new("files.read")
+        );
+    }
+
+    #[test]
+    fn build_default_allowed_for_run_without_runtime_excludes_documents() {
+        // Sem runtime, allowlist contém só `files.read` —
+        // o `RunExecutor` rejeita invocação de
+        // `docs.generate`/`docs.inspect` mesmo se o modelo
+        // tentar.
+        let allowed = build_default_allowed_for_run(None);
+        assert_eq!(allowed, vec![frederico_core::ToolId::new("files.read")]);
+    }
+
+    #[test]
+    fn build_default_allowed_for_run_with_runtime_includes_documents() {
+        // Com runtime, allowlist inclui os 2 `ToolId`s de
+        // documentos. Bump atômico capability + permission
+        // (ADR-0020 §3 D3).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loc = crate::runtime::RuntimeLocation {
+            python_exe: dir.path().join("python.exe"),
+            script: dir.path().join("document-worker.py"),
+            root: dir.path().to_path_buf(),
+            source: crate::runtime::RuntimeSource::DevRepo,
+        };
+        let allowed = build_default_allowed_for_run(Some(&loc));
+        assert_eq!(
+            allowed,
+            vec![
+                frederico_core::ToolId::new("files.read"),
+                frederico_core::ToolId::new("docs.generate"),
+                frederico_core::ToolId::new("docs.inspect"),
+            ]
+        );
     }
 }
