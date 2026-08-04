@@ -141,5 +141,30 @@ Invoke-Step "E2E docs.generate (caminho do produto, frederico-e2e)" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
+# Step 8 - Teste E2E de memória real (Fase de Ligação, Etapa 3,
+# 2026-08-04). Classificador LLM + embedding real via OpenRouter;
+# salva um facto, recupera por paráfrase com `HybridRetriever`.
+# **Esse é o teste que prova "memória real funciona ponta a
+# ponta"** — sem ele, a Etapa 3 fecha com `cargo test
+# --workspace` verde mas o classificador fica em `Noop` e o
+# retrieval lexical-only (mesma armadilha que a Etapa 5.X
+# da Fase de Ligação documentou no PR #25: mecanismo que
+# nunca roda no caminho real parece funcionar até o dia
+# que precisa). Marcado `#[ignore]` no source;
+# `--include-ignored` ativa.
+#
+# Requer `OPENROUTER_API_KEY` em runtime — o helper
+# `memory_real_providers_or_skip!` faz panic com mensagem
+# clara se faltar. Em CI, a env é setada como secret do
+# repositório (ver `.github/workflows/ci.yml` `env:` block).
+#
+# Ver `crates/e2e/tests/e2e_memory_real_embeddings.rs` e
+# `docs/architecture/testing-strategy.md` §3 "Fronteira do
+# que os E2E cobrem".
+Invoke-Step "E2E memory real (classificador LLM + embedding, caminho do produto)" {
+    cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
 Write-Host ""
-Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect + memory real (LLM + embedding) - TODOS OS TESTES PASSARAM" -ForegroundColor Green
