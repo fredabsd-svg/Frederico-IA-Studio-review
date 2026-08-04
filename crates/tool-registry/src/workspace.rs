@@ -73,6 +73,26 @@ impl Jail {
         &self.root
     }
 
+    /// Raiz **canonicalizada** (resolvida via `Path::canonicalize`
+    /// no [`Jail::new`]). Diferente de [`Jail::root`], que devolve
+    /// a raiz como foi passada (case original do caller). Use este
+    /// getter pra **comparações** com outros paths canonicalizados
+    /// (ex.: `validate_against_allowlist` recebe o canônico do
+    /// output e a allowlist `&[root_canonical()]` — assim os dois
+    /// lados da comparação vêm da **mesma** canonicalização e o
+    /// `Path::starts_with` component-wise é confiável mesmo com
+    /// case misto do Windows).
+    ///
+    /// **Não usar** este path como argumento pra criar arquivos
+    /// — o `root` (não canônico) é o que o caller passou, e é
+    /// semanticamente mais limpo pra logs e mensagens de erro.
+    /// Pra I/O, use o resultado de [`Jail::resolve`] ou
+    /// [`Jail::resolve_allowing_nonexistent`].
+    #[must_use]
+    pub fn root_canonical(&self) -> &Path {
+        &self.root_canonical
+    }
+
     /// Resolve um caminho pedido, devolvendo o caminho **canonicalizado
     /// e dentro do jail**. Falha com `ToolError::JailViolation`
     /// (código `TOOL_JAIL_VIOLATION`) se:

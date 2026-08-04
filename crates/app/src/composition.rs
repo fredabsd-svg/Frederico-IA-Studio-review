@@ -210,18 +210,17 @@ pub fn build_default_tools(
         registry.register(pdfpro);
         let registry = Arc::new(registry);
 
-        // `allowed_paths` vazio por enquanto: o
-        // `docs.generate` valida o `output_path` contra a
-        // allowlist do `ToolManifest` (Etapa 3 da Fase 5),
-        // não a do dispatcher. O `Tool::execute` do
-        // `docs.generate` (em `document-kits/src/generate.rs`)
-        // chama `dispatcher.check_path()` antes de tocar
-        // o disco. Por enquanto, sem `allowed_paths`, o
-        // check é no-op — a allowlist do `ToolManifest` é
-        // quem protege. A Etapa 6 da fase-ligação (UI de
-        // configuração) ou a Fase 9 (empacotamento) podem
-        // popular esse vetor.
-        let dispatcher = frederico_tool_registry::WorkerToolDispatcher::new(invoker, vec![]);
+        // **Bump atômico do path safety (Fase de Ligação Etapa
+        // 5.X — patch-allowed-paths):** a Etapa 3 da Fase 5
+        // deixou o `WorkerToolDispatcher::allowed_paths` vazio
+        // e a barreira de path safety desligada. A correção
+        // (commit `feat: dispatcher recebe allowlist por
+        // chamada; docs.generate valida contra o jail da
+        // conversa`) mudou a API: a allowlist é passada por
+        // chamada a partir do `ctx.jail.root_canonical()` no
+        // `Tool::execute` do `docs.generate`. Aqui só
+        // construímos o dispatcher — sem allowlist.
+        let dispatcher = frederico_tool_registry::WorkerToolDispatcher::new(invoker);
 
         tools.push(Arc::new(frederico_document_kits::DocsGenerateTool::new(
             registry.clone(),

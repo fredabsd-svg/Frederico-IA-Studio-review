@@ -256,23 +256,81 @@ async fn docs_generate_with_real_worker_produces_valid_docx() {
         .and_then(|p| p.as_str())
         .expect("path no output");
 
-    // 7b. O arquivo `.docx` existe no disco. **Aqui a fronteira
-    //     dos E2E é atravessada** — o documento foi gerado
-    //     pelo Python de verdade, não pelo fake.
+    // 7b. O arquivo `.docx` existe no disco. **Aqui a
+    //     fronteira dos E2E é atravessada** — o documento
+    //     foi gerado pelo Python de verdade, não pelo fake.
+    //
+    // **Fase de Ligação Etapa 5.X (patch-allowed-paths):**
+    // este teste é o ÚNICO que sustenta o cenário 1 do
+    // `path_safety` (o cenário "allow relativo" perdeu a
+    // asserção `is_file()` porque `FakeWorker` não toca no
+    // FS — o teste aqui é a única prova de que o arquivo
+    // real é criado dentro do jail da conversa, não no
+    // CWD do Python). Asserção extra: o `path` retornado
+    // pelo worker bate com o canônico que o
+    // `Jail::resolve_allowing_nonexistent` produz (path
+    // com `\\?\` no Windows, sem verbatim no Linux). Se
+    // um dia o worker devolver um path fora do jail ou
+    // o `kit.render` receber um path diferente do canônico
+    // (e.g. alguém reescrever o `output_path` antes do
+    // `kit.render`), este assert quebra.
     let docx_path = std::path::Path::new(path_str);
-    if !docx_path.is_absolute() {
-        // O `output_path` veio relativo ao workspace da conversa;
-        // junta com o `<workspaces_root>/<cid>/` pra ter o
-        // path absoluto.
-        let abs = h
-            .workspace
+    let abs = if !docx_path.is_absolute() {
+        // **Comentário aspiracional consertado (Fase de
+        // Ligação Etapa 5.X):** a Etapa 5 escreveu isto
+        // como "O `output_path` veio relativo ao workspace
+        // da conversa; junta com o `<workspaces_root>/<cid>/`
+        // pra ter o path absoluto". Antes do bump atômico
+        // (commit 2), o path **não** era relativo ao
+        // workspace — vinha do literal `output_path_str`
+        // (`real_minimal.docx`) sem resolução, e o Python
+        // escrevia no CWD (`workers/document-worker/`).
+        // Agora a barreira primária
+        // (`Jail::resolve_allowing_nonexistent` em
+        // `document-kits/src/generate.rs`) produz o canônico
+        // dentro do jail, e o `kit.render` recebe esse
+        // canônico — o path devolvido pelo worker **é** o
+        // canônico do jail, e juntar com o
+        // `<workspaces_root>/<cid>/` reproduz o mesmo
+        // arquivo. O assert abaixo prova isso de fato
+        // (não aspiracional).
+        h.workspace
             .workspaces_root()
             .join(conv.id.as_uuid().to_string())
-            .join(path_str);
-        assert!(abs.is_file(), ".docx não existe em {abs:?}");
+            .join(path_str)
     } else {
-        assert!(docx_path.is_file(), ".docx não existe em {docx_path:?}");
-    }
+        docx_path.to_path_buf()
+    };
+    assert!(abs.is_file(), ".docx não existe em {abs:?}");
+
+    // **Asserção extra do Etapa 5.X:** o canônico retornado
+    // pelo `Jail::resolve_allowing_nonexistent` (que tem
+    // prefixo verbatim `\\?\` no Windows) é exatamente o
+    // mesmo path que o `kit.render` abriu. Confirma que a
+    // barreira primária produz o path que o worker Python
+    // efetivamente usa, sem desvio intermediário. Roda o
+    // canonicalize do path **esperado** e compara com o
+    // `path_str` que o worker devolveu (canônico também).
+    let expected_canonical = h
+        .workspace
+        .workspaces_root()
+        .join(conv.id.as_uuid().to_string())
+        .join("real_minimal.docx")
+        .canonicalize()
+        .expect("canonicalize do path esperado do jail");
+    let actual_canonical = docx_path
+        .canonicalize()
+        .expect("canonicalize do path devolvido pelo worker");
+    assert_eq!(
+        actual_canonical, expected_canonical,
+        "path devolvido pelo worker diverge do canonico esperado do jail.\n\
+         Esperado: {expected_canonical:?}\n\
+         Atual:    {actual_canonical:?}\n\
+         Possiveis causas: (a) worker abriu um path diferente do que o\n\
+         Jail::resolve_allowing_nonexistent produziu, (b) o kit.render\n\
+         recebeu um path que nao e' o canonico, (c) o worker escreveu\n\
+         em CWD em vez do path canônico (regressão do Etapa 5)."
+    );
 
     // 7c. O `sections_written` é > 0 (significa que o
     //     `docx.write` realmente escreveu seções, não retornou

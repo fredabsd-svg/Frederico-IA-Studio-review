@@ -213,7 +213,7 @@ impl Tool for DocsGenerateTool {
         &self.manifest
     }
 
-    async fn execute(&self, _ctx: &ToolContext, arguments: &Value) -> ToolResult {
+    async fn execute(&self, ctx: &ToolContext, arguments: &Value) -> ToolResult {
         // 1. Parse básico dos args. Não usa `?` porque o
         // erro aqui é `ToolResult` e a função também
         // retorna `ToolResult` — `?` exigiria
@@ -238,12 +238,95 @@ impl Tool for DocsGenerateTool {
             }
         };
 
-        // 2. Valida o `output_path` contra a allowlist.
-        // O `WorkerToolDispatcher` faz isso no `dispatch`,
-        // mas como o `render` do kit não passa por ele
-        // (cada kit chama o worker direto), validamos
-        // aqui. Defesa em profundidade.
-        if let Err(e) = self.dispatcher.check_path(output_path_str) {
+        // 2. **Barreira primária** (Fase de Ligação Etapa 5.X —
+        // patch-allowed-paths): resolve `output_path` contra o
+        // `Jail` da conversa (Etapa 1 da Fase de Ligação,
+        // `tool-registry/src/workspace.rs`). O Jail é a peça
+        // de segurança central do `files.read` desde a Etapa 1;
+        // aqui a gente reusa a abstração em vez de
+        // reimplementar checagem de `..` / absoluto / UNC /
+        // symlink (que é exatamente o tipo de reimplementação
+        // que fica pra trás — uma das barreiras paralelas
+        // acaba divergindo).
+        //
+        // `resolve_allowing_nonexistent` é a versão feita sob
+        // medida pra escrita: canonicaliza o **pai** (que
+        // existe — é o workspace da conversa) e compõe com o
+        // `file_name()` do output (que não existe — é o que
+        // vamos criar). Cobre:
+        // - `..` (rejeitado no loop de componentes);
+        // - caminho absoluto (rejeitado via `Component::Prefix`
+        //   e `RootDir`);
+        // - UNC (`\\server\share`, rejeitado via
+        //   `Prefix::UNC`);
+        // - symlink (canonicalize do **pai** resolve e o
+        //   `starts_with(root_canonical)` rejeita — mas isso
+        //   só pega se o symlink está no **pai**, não no
+        //   filename; vide passo 3 abaixo).
+        //
+        // **Por que `resolve_allowing_nonexistent` e não
+        // `resolve`:** o arquivo de saída não existe ainda
+        // (é o que vamos criar); `resolve` exige existência
+        // (canonicalize do path inteiro falha).
+        let output_path_resolved: PathBuf = match ctx
+            .jail
+            .resolve_allowing_nonexistent(std::path::Path::new(output_path_str))
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolResult::err(
+                    self.tool_id.clone(),
+                    format!("output_path '{output_path_str}' fora do workspace da conversa: {e}"),
+                );
+            }
+        };
+
+        // 3. **Mitigação parcial contra symlink-on-output.**
+        // O passo 2 canonicaliza o **pai** mas não o
+        // `file_name()` (que não existe). Cenário bypass: o
+        // workspace contém `link.txt` → symlink pra
+        // `/etc/hosts` (Unix) ou `C:\Windows\...` (Windows);
+        // o passo 2 aceita `output_path: "link.txt"` (o pai é
+        // o workspace, ok); o `kit.render` depois abre o
+        // `link.txt` e o Python segue o symlink — **bypass do
+        // jail**. Esta checagem pega o caso **ingênuo**
+        // (symlink já existe) e tem **TOCTOU** (entre o
+        // `symlink_metadata` e a escrita pelo worker, o alvo
+        // pode ser trocado). **Não é barreira** — barreira de
+        // verdade exige `O_NOFOLLOW` / `O_CREAT|O_EXCL` no
+        // `open` do Python. Pendência nomeada em
+        // `docs/modules/process-architecture.md` item 5
+        // (escrita segura no worker). Rótulo aqui é
+        // intencional: é o tipo de defesa que não devemos
+        // chamar de barreira sem ser.
+        if let Ok(meta) = std::fs::symlink_metadata(&output_path_resolved) {
+            if meta.file_type().is_symlink() {
+                return ToolResult::err(
+                    self.tool_id.clone(),
+                    format!(
+                        "output_path '{}' é um symlink; jail não permite",
+                        output_path_resolved.display()
+                    ),
+                );
+            }
+        }
+
+        // 4. **Defesa em profundidade** (fail-closed): o
+        // `dispatcher.check_path` com a allowlist do
+        // `root_canonical()` do jail. Em produção
+        // falha-praticamente-nunca (passo 2 já validou), mas
+        // se alguém bypassar o passo 2 no futuro (refactor,
+        // atalho, novo Tool::execute), o check_path com
+        // allowlist fail-closed **ainda barra**. Os dois lados
+        // da comparação (`output_path_resolved` e
+        // `root_canonical`) vêm da **mesma** canonicalização
+        // do `Jail::new` — então `Path::starts_with`
+        // component-wise é confiável mesmo com case misto do
+        // Windows.
+        if let Err(e) = self.dispatcher.check_path(
+            output_path_resolved.to_str().unwrap_or(output_path_str),
+            &[ctx.jail.root_canonical().to_path_buf()],
+        ) {
             return match e {
                 DispatchError::PathNotAllowed { path, allowed } => ToolResult::err(
                     self.tool_id.clone(),
@@ -296,8 +379,14 @@ impl Tool for DocsGenerateTool {
             }
         };
 
-        // 6. Chama o kit.
-        let output_path = PathBuf::from(output_path_str);
+        // 6. Chama o kit com o path **canônico e validado**
+        // (passos 2-4 acima). Antes da Etapa 5.X o `output_path`
+        // vinha de `PathBuf::from(output_path_str)` (literal, sem
+        // resolução), e o Python escrevia no CWD do worker — o
+        // que produzia o `real_minimal.docx` solto na árvore do
+        // repo. Agora o path vem do `Jail::resolve_allowing_nonexistent`
+        // e o `kit.render` recebe o absoluto dentro do jail.
+        let output_path = output_path_resolved;
         let kit_output = match kit.render(&spec, &output_path).await {
             Ok(o) => o,
             Err(KitError::NotImplemented { id, format, etapa }) => {
@@ -424,7 +513,7 @@ mod tests {
         registry.register(wordpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         (tool, manager)
@@ -452,7 +541,7 @@ mod tests {
         registry.register(excelpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         (tool, manager)
@@ -493,7 +582,7 @@ mod tests {
         .await
         .expect("spawn fake");
         let registry = Arc::new(KitRegistry::new());
-        let dispatcher = WorkerToolDispatcher::new(Arc::new(handle.clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new(handle.clone()));
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         let schema = tool.manifest().input_schema.0.clone();
@@ -534,7 +623,7 @@ mod tests {
                 &dummy_ctx(),
                 &json!({
                     "spec": {},
-                    "output_path": "C:\\temp\\out.docx",
+                    "output_path": "out.docx",
                     "format": "xyz"
                 }),
             )
@@ -567,7 +656,7 @@ mod tests {
                 &dummy_ctx(),
                 &json!({
                     "spec": { "doc_type": "report" }, // falta spec_version, blocks
-                    "output_path": "C:\\temp\\out.docx",
+                    "output_path": "out.docx",
                     "format": "docx"
                 }),
             )

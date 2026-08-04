@@ -37,7 +37,7 @@
 //! modo resumo; `range` opcional pra detalhe).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use frederico_core::ToolId;
@@ -254,6 +254,7 @@ impl DocsInspectTool {
         sheet: Option<&str>,
         sample_rows: usize,
         range: Option<&str>,
+        allowed: &[PathBuf],
     ) -> Result<Value, DispatchError> {
         let mut args = json!({
             "capability": match format {
@@ -278,7 +279,7 @@ impl DocsInspectTool {
         if let Some(r) = range {
             args["range"] = json!(r);
         }
-        self.dispatcher.dispatch(args, &["path"]).await
+        self.dispatcher.dispatch(args, &["path"], allowed).await
     }
 
     /// Reconstrói um `DocumentSpec` parcial a partir
@@ -569,25 +570,58 @@ impl Tool for DocsInspectTool {
         &self.manifest
     }
 
-    async fn execute(&self, _ctx: &ToolContext, arguments: &Value) -> ToolResult {
+    async fn execute(&self, ctx: &ToolContext, arguments: &Value) -> ToolResult {
         // 1. Parse dos args.
         let args = match InspectArgs::from_value(arguments) {
             Ok(a) => a,
             Err(msg) => return ToolResult::err(self.tool_id.clone(), msg),
         };
 
-        // 2. Resolve formato.
+        // 2. **Barreira primária** (Fase de Ligação Etapa 5.X —
+        // patch-allowed-paths): resolve `path` contra o `Jail`
+        // da conversa. O `docs.inspect` **lê** arquivo
+        // existente, então usa [`Jail::resolve`] (canonicalize
+        // do path inteiro, exige existência) — não o
+        // `resolve_allowing_nonexistent` do `docs.generate`.
+        // Cobre `..`, absoluto, UNC e symlink (canonicalize
+        // resolve o symlink e o `starts_with(root_canonical)`
+        // rejeita se o destino é fora do jail). Falha aqui é
+        // barreira primária; o check_path do passo 4 é defesa
+        // em profundidade.
+        let path_resolved: PathBuf = match ctx.jail.resolve(std::path::Path::new(&args.path)) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolResult::err(
+                    self.tool_id.clone(),
+                    format!("path '{}' fora do workspace da conversa: {e}", args.path),
+                );
+            }
+        };
+
+        // 3. Resolve formato (usa o canônico retornado pelo
+        // Jail, não o literal do chamador — coerente com a
+        // barreira primária).
         let format = match args.format {
             Some(f) => f,
-            None => match Self::infer_format(&args.path) {
+            None => match Self::infer_format(path_resolved.to_str().unwrap_or(&args.path)) {
                 Ok(f) => f,
                 Err(msg) => return ToolResult::err(self.tool_id.clone(), msg),
             },
         };
 
-        // 3. Valida path contra allowlist (defesa em
-        //    profundidade).
-        if let Err(e) = self.dispatcher.check_path(&args.path) {
+        // 4. **Defesa em profundidade** (fail-closed): o
+        // `dispatcher.check_path` com a allowlist do
+        // `root_canonical()` do jail. Mesma lógica do
+        // `docs.generate` (vide lá): os dois lados da
+        // comparação vêm da mesma canonicalização do
+        // `Jail::new`, então `Path::starts_with`
+        // component-wise é confiável mesmo com case misto
+        // do Windows.
+        let allowed = [ctx.jail.root_canonical().to_path_buf()];
+        if let Err(e) = self
+            .dispatcher
+            .check_path(path_resolved.to_str().unwrap_or(&args.path), &allowed)
+        {
             return match e {
                 DispatchError::PathNotAllowed { path, allowed } => ToolResult::err(
                     self.tool_id.clone(),
@@ -608,15 +642,22 @@ impl Tool for DocsInspectTool {
             };
         }
 
-        // 4. Chama o worker (docx.read ou xlsx.read).
+        // 5. Chama o worker (docx.read ou xlsx.read) com o path
+        // **canônico e validado** (passos 2-4 acima). Antes da
+        // Etapa 5.X o `&args.path` ia cru (string literal do
+        // chamador); o Python abria o path literal e o jail
+        // podia ser bypassado por path traversal. Agora o
+        // `invoke_read` recebe o canônico validado e a allowlist
+        // (passada por chamada, vide Etapa 5.X).
         let sample_rows = args.sample_rows.unwrap_or(5).clamp(1, 20);
         let response = match self
             .invoke_read(
-                &args.path,
+                path_resolved.to_str().unwrap_or(&args.path),
                 format,
                 args.sheet.as_deref(),
                 sample_rows,
                 args.range.as_deref(),
+                &allowed,
             )
             .await
         {

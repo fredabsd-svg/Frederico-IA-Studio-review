@@ -85,13 +85,6 @@ fn worker_script() -> PathBuf {
         .join("document-worker.py")
 }
 
-fn temp_out_dir() -> PathBuf {
-    let mut d = std::env::temp_dir();
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    d.push(format!("frederico_docs_generate_pdf_e2e_{nonce}"));
-    d
-}
-
 // ---------------------------------------------------------------------------
 // Budget
 // ---------------------------------------------------------------------------
@@ -405,25 +398,30 @@ async fn e2e_docs_generate_pdf_full_vertical() {
         //    sem validacao (o `output_path` vem do
         //    chamador no teste; em prod, o ToolRegistry
         //    popula com o workspace do usuario).
-        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         // 3. Spec DoD.
         let spec = spec_do_etapa_5_pdf();
         let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-        // 4. Output path.
-        let out_dir = temp_out_dir();
-        std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-        let pdf_path = out_dir.join("relatorio_etapa_5.pdf");
+        // 4. Output path. **Fase de Ligação Etapa 5.X
+        // (patch-allowed-paths):** path precisa estar dentro
+        // do jail do `dummy_ctx` (relativo resolve pro
+        // canônico via `Jail::resolve_allowing_nonexistent`).
+        // Antes do bump atômico, `temp_out_dir()` retornava
+        // path absoluto e `check_path` era no-op — o teste
+        // passava, mas o jail estava desligado.
+        let ctx = dummy_ctx();
+        let pdf_path = ctx.jail.root().join("relatorio_etapa_5.pdf");
 
         // 5. Executa.
         let result = tool
             .execute(
-                &dummy_ctx(),
+                &ctx,
                 &json!({
                     "spec": spec_json,
-                    "output_path": pdf_path.to_string_lossy(),
+                    "output_path": "relatorio_etapa_5.pdf",
                     "format": "pdf",
                 }),
             )
@@ -493,22 +491,28 @@ async fn e2e_docs_generate_pdf_missing_glyph_blocks() {
             let mut registry = KitRegistry::new();
             registry.register(pdfpro);
             let registry = Arc::new(registry);
-            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
             let tool = DocsGenerateTool::new(registry, dispatcher);
 
             let spec = spec_com_glifo_faltando();
             let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-            let out_dir = temp_out_dir();
-            std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-            let pdf_path = out_dir.join("relatorio_glifo_faltando.pdf");
+            // Path dentro do jail do dummy_ctx (mesma justificativa
+            // do teste anterior). Aqui o teste ESPERA `!result.ok`
+            // (falha por glifo faltando) — antes do bump atômico,
+            // o path absoluto + check_path no-op fazia a chamada
+            // chegar no Python e o erro de glifo subir; agora o
+            // Jail::resolve_allowing_nonexistent aceita (path
+            // dentro do jail) e o Python devolve o erro de glifo.
+            let ctx = dummy_ctx();
+            let pdf_path = ctx.jail.root().join("relatorio_glifo_faltando.pdf");
 
             let result = tool
                 .execute(
-                    &dummy_ctx(),
+                    &ctx,
                     &json!({
                         "spec": spec_json,
-                        "output_path": pdf_path.to_string_lossy(),
+                        "output_path": "relatorio_glifo_faltando.pdf",
                         "format": "pdf",
                     }),
                 )
@@ -569,22 +573,23 @@ async fn e2e_docs_generate_pdf_watermark_opt_in() {
             let mut registry = KitRegistry::new();
             registry.register(pdfpro);
             let registry = Arc::new(registry);
-            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+            let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
             let tool = DocsGenerateTool::new(registry, dispatcher);
 
             let spec = spec_com_watermark();
             let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-            let out_dir = temp_out_dir();
-            std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-            let pdf_path = out_dir.join("relatorio_watermark.pdf");
+            // Path dentro do jail do dummy_ctx (mesma justificativa
+            // dos testes anteriores).
+            let ctx = dummy_ctx();
+            let pdf_path = ctx.jail.root().join("relatorio_watermark.pdf");
 
             let result = tool
                 .execute(
-                    &dummy_ctx(),
+                    &ctx,
                     &json!({
                         "spec": spec_json,
-                        "output_path": pdf_path.to_string_lossy(),
+                        "output_path": "relatorio_watermark.pdf",
                         "format": "pdf",
                     }),
                 )

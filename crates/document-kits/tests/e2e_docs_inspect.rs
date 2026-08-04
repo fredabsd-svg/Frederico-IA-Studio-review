@@ -78,13 +78,6 @@ fn worker_script() -> PathBuf {
         .join("document-worker.py")
 }
 
-fn temp_out_dir() -> PathBuf {
-    let mut d = std::env::temp_dir();
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    d.push(format!("frederico_docs_inspect_e2e_{nonce}"));
-    d
-}
-
 // ---------------------------------------------------------------------------
 // Budget
 // ---------------------------------------------------------------------------
@@ -197,7 +190,7 @@ async fn e2e_docs_inspect_docx_roundtrip() {
         registry.register(wordpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
         let generate_tool = DocsGenerateTool::new(registry, dispatcher.clone());
         let inspect_tool = DocsInspectTool::new(dispatcher);
 
@@ -205,16 +198,25 @@ async fn e2e_docs_inspect_docx_roundtrip() {
         let spec = spec_do_etapa_4_inspect();
         let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-        // 2. Output path.
-        let out_dir = temp_out_dir();
-        std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-        let docx_path = out_dir.join("relatorio_inspect.docx");
+        // 2. Jail único pros 2 execute. **Fase de Ligação
+        //    Etapa 5.X (patch-allowed-paths):** generate
+        //    E inspect precisam compartilhar o mesmo jail
+        //    (antes do bump atômico, `check_path` era no-op
+        //    e o path absoluto em `temp_out_dir()` passava
+        //    — agora o `Jail::resolve_allowing_nonexistent`
+        //    do generate + o `Jail::resolve` do inspect
+        //    exigem path dentro do jail). Usar o mesmo
+        //    `dummy_ctx()` 2x dá jails diferentes (UUID
+        //    novo a cada chamada), então o inspect não
+        //    enxergaria o arquivo gerado.
+        let ctx = dummy_ctx();
+        let docx_path = ctx.jail.root().join("relatorio_inspect.docx");
 
         // 3. Generate (.docx).
         let generate_result = generate_tool
-            .execute(&dummy_ctx(), &json!({
+            .execute(&ctx, &json!({
                 "spec": spec_json,
-                "output_path": docx_path.to_string_lossy(),
+                "output_path": "relatorio_inspect.docx",
                 "format": "docx",
             }))
             .await;
@@ -226,10 +228,14 @@ async fn e2e_docs_inspect_docx_roundtrip() {
         assert!(docx_path.is_file(), ".docx nao foi criado");
 
         // 4. Inspect (mesmo arquivo, mesmo tool, mesmo
-        //    worker).
+        //    worker). `path` relativo — `Jail::resolve`
+        //    rejeita `Component::Prefix` (caminho absoluto)
+        //    antes do canonicalize, então path relativo é o
+        //    caminho certo. O arquivo existe (generate
+        //    criou), então o resolve passa.
         let inspect_result = inspect_tool
-            .execute(&dummy_ctx(), &json!({
-                "path": docx_path.to_string_lossy(),
+            .execute(&ctx, &json!({
+                "path": "relatorio_inspect.docx",
             }))
             .await;
         assert!(
