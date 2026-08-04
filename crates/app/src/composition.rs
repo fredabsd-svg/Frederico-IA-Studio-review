@@ -185,10 +185,9 @@ pub fn build_memory_extractor(
         return None;
     }
     let completion = build_completion_provider(cfg, api_key);
-    let classifier: Arc<dyn frederico_memory::classifier::MemoryClassifier> =
-        Arc::new(frederico_memory::classifier::LlmMemoryClassifier::new(
-            completion,
-        ));
+    let classifier: Arc<dyn frederico_memory::classifier::MemoryClassifier> = Arc::new(
+        frederico_memory::classifier::LlmMemoryClassifier::new(completion),
+    );
     let extractor = frederico_memory::worker::MemoryExtractor::start(db.pool(), classifier);
     Some(Arc::new(extractor.handle()))
 }

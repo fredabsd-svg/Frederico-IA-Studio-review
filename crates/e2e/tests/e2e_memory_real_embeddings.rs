@@ -115,7 +115,7 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
     // 5. Cria uma conversa de teste (precisa existir pra
     //    satisfazer a FK; o LLM pode emitir o `conversation_id`
     //    que o classificador vai usar como scope).
-    let conv_repo = ConversationRepo::new(&*db);
+    let conv_repo = ConversationRepo::new(&db);
     let conv = conv_repo
         .create(
             &ProviderId::new("openai"),
@@ -165,7 +165,7 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
     // 9. Constrói o retriever com o embedding provider real
     //    e faz retrieval por paráfrase.
     let retriever = HybridRetriever::new(
-        &*db,
+        &db,
         embedding.clone(),
         frederico_memory::config::ScoringWeights::default(),
     );

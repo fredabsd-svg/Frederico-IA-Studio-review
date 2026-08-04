@@ -324,9 +324,7 @@ impl CompletionProvider for OpenRouterCompletionProvider {
             .into_iter()
             .next()
             .map(|c| c.message.content)
-            .ok_or_else(|| {
-                ClassifierError::InvalidOutput("resposta sem choices".to_string())
-            })?;
+            .ok_or_else(|| ClassifierError::InvalidOutput("resposta sem choices".to_string()))?;
 
         Ok(content)
     }

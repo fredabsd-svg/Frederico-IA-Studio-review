@@ -1159,10 +1159,7 @@ async fn lookup_openrouter_key(
 
     // 1. DPAPI (mesmo `ProviderId` que `build_provider_map` usa
     //    pra registrar o `OpenAiCompatAdapter` OpenRouter).
-    if let Ok(Some(secret)) = credentials
-        .get(&ProviderId::new("openrouter"))
-        .await
-    {
+    if let Ok(Some(secret)) = credentials.get(&ProviderId::new("openrouter")).await {
         return Some(secret);
     }
 
