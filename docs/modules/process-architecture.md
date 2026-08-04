@@ -177,14 +177,20 @@ do teste em 5s.
 
 ## Pendências para a próxima sessão
 
-1. **Etapa 3 (ToolRegistry + kits DocumentSpec):**
-   `ToolManifest::allowed_paths` para path safety forte (a
-   barreira atual no Python é rejeitar `..`; a forte é
-   allowlist de diretórios por tool, validada no manager
-   Rust antes do `invoke`). Os 7 handlers da v0.3.0 do
-   `document-worker` sobrevivem à Etapa 3 sem reescrita
-   (handler = primitiva, kit = renderer do DocumentSpec,
-   conforme [ADR-0018](../decisions/0018-document-worker-handlers-primitive.md) §Decisão 1).
+1. ~~**Etapa 3 (ToolRegistry + kits DocumentSpec):**
+   `ToolManifest::allowed_paths` para path safety forte~~ —
+   **fechada na Etapa 5.X (PR #25)**. `WorkerToolDispatcher::new(invoker)`
+   agora recebe allowlist **por chamada** (resolve do
+   `ctx.jail.root_canonical()`); `Jail::root_canonical` getter
+   exposto; `DocsGenerateTool::execute` usa
+   `Jail::resolve_allowing_nonexistent` como barreira primária;
+   `check_path` com allowlist fail-closed como defesa em
+   profundidade. Bug latente do `validate_against_allowlist` em
+   `use_canonical=false` (verbatim `\\?\` não strippado do
+   `canonical`, só do `allowed` — `starts_with` falhava mesmo
+   path dentro do jail) consertado no mesmo commit (regressão
+   coberta por `path_with_verbatim_prefix_and_nonexistent_strips_correctly`).
+   6 cenários de path_safety no `document-kits/tests/path_safety.rs`.
 2. **Revogação de token por lista negra** (hardening) — o
    `WorkerAuth` é `String` opaco; revogação por lista negra
    é a próxima peça. **Decisão de arquitetura:** o que a
@@ -223,6 +229,25 @@ do teste em 5s.
    necessária (decisão de modelagem que afeta
    `protocol`, `manager`, `launcher`, e qualquer outro
    consumer de `health_snapshot`).
+5. **Escrita segura no worker Python** (encontrada pela
+   Etapa 5.X) — a mitigação symlink no `DocsGenerateTool::execute`
+   (passo 2, `symlink_metadata`) é **parcial** (TOCTOU entre
+   o check e a escrita do Python; não cobre o caso do arquivo
+   não existir, que é o caso normal). **Barreira de verdade:**
+   os handlers do `document-worker.py` (`docx.write`,
+   `xlsx.write`, `pdf.write`, futuros) precisam abrir o
+   arquivo com `O_CREAT | O_NOFOLLOW` (e idealmente `O_EXCL`
+   quando o caller pedir "fail if exists"). Sem isso, um
+   symlink válido pré-existente no workspace da conversa
+   apontando pra `/etc/passwd` (Unix) ou
+   `C:\Windows\System32\...` (Windows) escapa do jail —
+   o `Jail::resolve_allowing_nonexistent` aceita (pai é o
+   workspace), a mitigação Rust é TOCTOU, e o Python segue
+   o symlink na hora do `open`. ADR nova necessária
+   (decisão de plataforma: como abrir com `O_NOFOLLOW`
+   em Python — `os.open(path, flags)` com `os.O_NOFOLLOW`
+   vs. `pathlib.Path.open` que não suporta; cobertura
+   de `O_EXCL` no handler de "fail if exists").
 
 > **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
 > integration tests com named pipes reais em

@@ -139,6 +139,59 @@
   o path `crates/e2e/tests/` está fixado. Mover o diretório
   sem ADR quebra o gate.
 
+### Fechado — Fase de Ligação, Etapa 5.X (patch-allowed-paths — path safety do `docs.generate` ligado) (2026-08-04)
+
+- **Patch de segurança no caminho de produção.** A Etapa 3
+  da Fase 5 (set/2025) deixou a barreira de path safety do
+  `docs.generate` **desligada E quebrada** desde então:
+  `WorkerToolDispatcher::new` recebia `allowed_paths: Vec<PathBuf>`
+  no construtor, a composição passava `vec![]`, e
+  `validate_against_allowlist` retornava `Ok(())` com allowlist
+  vazia (fail-open). O `output_path` mal formado pelo modelo
+  apontava pra qualquer path absoluto do disco; a única
+  barreira era o `document-worker.py` rejeitar `..`, que não
+  cobre caminho absoluto (`C:\Windows\System32\out.docx`).
+- **Mudança visível pro usuário — `docs.inspect` agora recusa
+  arquivo fora do workspace da conversa.** Antes a barreira
+  era no-op; agora o `Jail::resolve` rejeita com `JailViolation`.
+  Inspeção sem jail seria porta lateral pra ler qualquer
+  arquivo do disco (`C:\Users\conta\.ssh\id_rsa`,
+  `C:\Windows\System32\config\SAM`, etc.). Quando as "Pastas
+  do PC" chegarem (Etapa 6 / Fase 9), elas entram na allowlist;
+  até lá, o limite é o workspace da conversa.
+- **Bump atômico em 1 commit (precedente `WorkerInvoker` /
+  `DocumentFormat::Pdf`):** `WorkerToolDispatcher::new(invoker)`
+  recebe allowlist por chamada (resolve do
+  `ctx.jail.root_canonical()`); `Jail::resolve_allowing_nonexistent`
+  como barreira primária; mitigação symlink explícita (rótulo
+  "parcial", TOCTOU documentado — barreira de verdade é
+  `O_NOFOLLOW` no `open` do Python, pendência 5 do
+  `process-architecture.md`); `check_path` com allowlist
+  fail-closed como defesa em profundidade; `Jail::root_canonical`
+  getter exposto; `DocsInspectTool::execute` mesma estrutura
+  com `Jail::resolve` (lê arquivo existente). **Bug colateral
+  consertado:** `validate_against_allowlist` em `use_canonical=false`
+  strippava verbatim `\\?\` do `allowed` mas não do `canonical`
+  — `starts_with` falhava mesmo path dentro do jail. Latente
+  desde a Etapa 3 (bypassado pelo fail-open). 6 cenários de
+  `path_safety` em `crates/document-kits/tests/path_safety.rs`
+  (allow relativo, reject absoluto, reject traversal, allow
+  mixed-case, reject symlink, fail-closed).
+- **Lição registrada** (`docs/releases/fase-ligacao/pr-fase-ligacao-patch-allowed-paths.md`):
+  defaults fail-open **não só** deixam passar — **escondem
+  que o mecanismo nunca foi exercitado**. Mecanismos de
+  validação que nunca rodaram parecem funcionar até o dia que
+  precisam; quando precisam, é tarde. Daí a regra cross-project:
+  default de validação = fail-closed; "sem restrição" é opt-in
+  explícito.
+- **Pendência 1 do `process-architecture.md` fechada**; pendência
+  5 nova (escrita segura no worker Python — `O_NOFOLLOW` /
+  `O_CREAT|O_EXCL` no `open` dos handlers). **5 de 6 etapas
+  da Fase de Ligação fechadas.** Suíte workspace **476/476
+  verde**; `cargo fmt --check` limpo; `cargo clippy --workspace
+  --all-targets -- -D warnings -D clippy::await_holding_lock`
+  limpo.
+
 ### Fechado — Fase de Ligação, Etapa 2.B (integração dos kits com o ToolRegistry via `WorkerInvoker`) (2026-08-03)
 
 - **Trait `WorkerInvoker` no `frederico-core` + `InvokeError` próprio**
