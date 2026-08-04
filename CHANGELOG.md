@@ -159,6 +159,16 @@
   `C:\Windows\System32\config\SAM`, etc.). Quando as "Pastas
   do PC" chegarem (Etapa 6 / Fase 9), elas entram na allowlist;
   até lá, o limite é o workspace da conversa.
+- **Mudança visível pro usuário — `docs.generate` agora recusa
+  `output_path` absoluto.** Antes a barreira era no-op; agora
+  o `Jail::resolve_allowing_nonexistent` rejeita path que
+  começa com `C:\` (Windows) ou `/` (Unix) com `JailViolation`.
+  Se o modelo emitir `output_path: "C:\Users\conta\out.docx"`,
+  o tool devolve `ToolResult::err` em vez de escrever no CWD
+  do Python. Path relativo (`output_path: "out.docx"`) resolve
+  pro workspace da conversa — comportamento esperado. Quando
+  as "Pastas do PC" chegarem (Etapa 6 / Fase 9), elas entram
+  na allowlist; até lá, o limite é o workspace da conversa.
 - **Bump atômico em 1 commit (precedente `WorkerInvoker` /
   `DocumentFormat::Pdf`):** `WorkerToolDispatcher::new(invoker)`
   recebe allowlist por chamada (resolve do

@@ -27,11 +27,16 @@ fail-open não só deixou passar — ele escondeu que o mecanismo
 nunca funcionou. O bug do verbatim (latente no `validate_against_allowlist`)
 só não foi pego porque o fail-open bypassava a função inteira.
 
-Este PR é o argumento definitivo contra defaults fail-open:
-**eles não só deixam passar, eles escondem que o mecanismo
-nunca funcionou.** Quando a barreira foi ligada (commit 2),
-o bug do verbatim apareceu imediatamente (cenário 2 do
-`path_safety`).
+**Placar do PR:** dois defeitos empilhados, **defesa desligada
+(fail-open por omissão no construtor + no `validate`) + defesa
+quebrada (verbatim `\\?\` não strippado do `canonical` desde
+a Etapa 3)**. Os dois se escondiam mutuamente — fail-open
+bypassava a função inteira, então ninguém via o verbatim
+falhar; e o verbatim quebrado, mesmo se rodasse, deixava
+passar (fail-open). É o argumento mais forte contra defaults
+permissivos: defaults permissivos escondem o que nunca
+funcionou. Este PR é o argumento mais forte que o projeto
+tem contra defaults fail-open.
 
 ## O que mudou
 
@@ -216,7 +221,105 @@ A lição: **a barreira certa mora no lugar certo**;
 reimplementar por "mais simples" cria dois lugares e um deles
 fica desatualizado.
 
+### 4. `cargo test --workspace --lib` não roda integration tests
+
+Validação local deste PR: rodei `cargo test --workspace --lib`
+476/476 verde, `cargo fmt --check` limpo, `cargo clippy --all-targets`
+limpo. Achei que estava pronto. **Não estava.** O `--lib` só
+executa alvos de **biblioteca** (e módulos de binary com
+`#[cfg(test)]`). Os 4 tests do `document-kits/tests/e2e_*.rs`
+(com Python real, integração) e os 5 tests do
+`crates/e2e/tests/` (com `FakeWorker` in-process, integração)
+e os 6 do `path_safety` (integração) **não rodam com `--lib`** —
+só rodam com `cargo test --workspace` (sem `--lib`). E a
+mudança de assinatura do construtor (commits 2 e 4) **quebrou
+4 desses integration tests** (todos com `output_path` absoluto
+em `temp_out_dir()` que o `Jail::resolve_allowing_nonexistent`
+passou a rejeitar). Sem o `cargo test --workspace` completo,
+o PR teria sido aberto com 4 testes quebrados — `cargo build`
++ `cargo clippy --all-targets` passam, `cargo test --lib` passa,
+mas os integration tests falham em runtime.
+
+**Gate correto antes de PR com mudança de assinatura:** sempre
+`cargo test --workspace` (sem `--lib`) local, **antes** de
+`gh pr create`. O CI já roda `cargo test --workspace` completo
+(no `verify-external.ps1` step 7 do PR #24), então o buraco
+era só na validação local — a lição fica na narrativa, não
+vira regra nova (até o padrão aparecer 3 vezes).
+
+## Cobertura migrou para `path_safety::scenario_2` (não evaporou)
+
+Cinco arquivos de teste tiveram o `output_path` ajustado de
+**absoluto** pra **relativo** neste PR, e cada ajuste desses é
+isoladamente "remoção de um caso que agora falha" (o
+`Jail::resolve_allowing_nonexistent` rejeita absoluto). Sem
+a migração explícita da cobertura, daqui a seis meses isso
+parece "ajuste de teste pra passar" — então a conferência:
+
+| # | Arquivo | Teste | O que cobria ANTES (absoluto + check_path no-op) | Onde a cobertura foi |
+|---|---------|-------|---------------------------------------------------|----------------------|
+| 1 | `crates/document-kits/src/generate.rs` | `rejects_unknown_format_in_args` | erro de format desconhecido (passava pelo check_path no-op) | continua testando erro de format (Jail aceita relativo) |
+| 2 | `crates/document-kits/src/generate.rs` | `rejects_invalid_spec` | erro de spec inválido (passava pelo check_path no-op) | continua testando erro de spec (Jail aceita relativo) |
+| 3 | `crates/document-kits/tests/e2e_docs_generate.rs` | `e2e_docs_generate_docx_full_vertical` | gerar `.docx` com Python real (path absoluto passava pelo check_path no-op) | continua gerando `.docx` com Python real (path relativo dentro do jail) |
+| 4 | `crates/document-kits/tests/e2e_docs_generate_pdf.rs` | 3 tests (`pdf_full_vertical` + 2 variantes) | gerar `.pdf` com Python real | continua gerando `.pdf` com Python real (path relativo) |
+| 5 | `crates/document-kits/tests/e2e_docs_generate_xlsx.rs` | 1 test (xlsx full_vertical) | gerar `.xlsx` com Python real | continua gerando `.xlsx` com Python real (path relativo) |
+| 6 | `crates/document-kits/tests/e2e_docs_inspect.rs` | `e2e_docs_inspect_docx_roundtrip` | roundtrip generate→inspect com Python real (2 jails diferentes, path absoluto passava pelo check_path no-op) | continua roundtrip (mesmo jail nos 2 execute, path relativo) |
+
+**A cobertura do "absoluto fora do jail é rejeitado"** que esses
+5 testes tinham (via check_path no-op) **migrou pro
+`crates/document-kits/tests/path_safety.rs::scenario_2_reject_absolute_path_outside_jail`**.
+Lá a asserção é focada em `JailViolation` (não no erro de
+format/spec/Python que ficava em segundo plano antes). O
+comentário no `path_safety.rs` explicita a matriz:
+"ajustar o teste ao comportamento novo é legítimo aqui, mas
+o que não pode acontecer é a cobertura do caso absoluto fora
+do jail desaparecer no caminho. O cenário 2 deste arquivo
+cobre exatamente isso, com asserção focada em `JailViolation`
+(não no erro de format/spec que ficava em segundo plano
+antes)."
+
+A regra: ao mover um teste de absoluto pra relativo (ou de
+"passava com barreira desligada" pra "passa com barreira
+ligada"), a cobertura do "absoluto/quebra é rejeitado" tem
+que ir pra algum lugar — e o lugar é o `path_safety`. Sem
+essa migração explícita, o PR **parece** que removeu teste.
+
+### 4. `cargo test --workspace --lib` não roda integration tests
+
+Validação local deste PR: rodei `cargo test --workspace --lib`
+476/476 verde, `cargo fmt --check` limpo, `cargo clippy --all-targets`
+limpo. Achei que estava pronto. **Não estava.** O `--lib` só
+executa alvos de **biblioteca** (e módulos de binary com
+`#[cfg(test)]`). Os 4 tests do `document-kits/tests/e2e_*.rs`
+(com Python real, integração) e os 5 tests do
+`crates/e2e/tests/` (com `FakeWorker` in-process, integração)
+e os 6 do `path_safety` (integração) **não rodam com `--lib`** —
+só rodam com `cargo test --workspace` (sem `--lib`). E a
+mudança de assinatura do construtor (commits 2 e 4) **quebrou
+4 desses integration tests** (todos com `output_path` absoluto
+em `temp_out_dir()` que o `Jail::resolve_allowing_nonexistent`
+passou a rejeitar). Sem o `cargo test --workspace` completo,
+o PR teria sido aberto com 4 testes quebrados — `cargo build`
++ `cargo clippy --all-targets` passam, `cargo test --lib` passa,
+mas os integration tests falham em runtime.
+
+**Gate correto antes de PR com mudança de assinatura:** sempre
+`cargo test --workspace` (sem `--lib`) local, **antes** de
+`gh pr create`. O CI já roda `cargo test --workspace` completo
+(no `verify-external.ps1` step 7 do PR #24), então o buraco
+era só na validação local — a lição fica na narrativa, não
+vira regra nova (até o padrão aparecer 3 vezes).
+
 ## Comportamento visível que mudou
+
+**`docs.generate` agora recusa `output_path` absoluto.** Antes
+a barreira era no-op; agora o `Jail::resolve_allowing_nonexistent`
+rejeita path que começa com `C:\` (Windows) ou `/` (Unix). Se
+o modelo emitir `output_path: "C:\Users\conta\out.docx"`, o
+tool devolve `ToolResult::err` com `JailViolation` em vez de
+escrever no CWD do Python. Restrição nova é correta
+(limita escrita ao workspace da conversa), mas é visível pra
+quem usa.
 
 **`docs.inspect` agora recusa inspecionar arquivo fora do
 workspace da conversa.** Antes a barreira era no-op; agora o
@@ -248,11 +351,19 @@ limite é o workspace da conversa.
 ## Validações
 
 - `cargo build --workspace` verde
-- `cargo test --workspace --lib` 476/476 verde
+- `cargo test --workspace` (sem `--lib`, **34 test results**) todos verde:
+  - 5 E2E com `FakeWorker` (`crates/e2e/tests/`)
+  - `e2e_docs_generate_with_real_worker` (Python real, 1.03s) — asserção extra do path canônico dentro do jail passa
+  - `e2e_docs_generate_docx_full_vertical` (Python real, 1.45s)
+  - 3 `e2e_docs_generate_pdf_*` (Python real, 1.43s + 1.68s + 1.11s)
+  - `e2e_docs_generate_xlsx` (Python real)
+  - `e2e_docs_inspect_docx_roundtrip` (Python real, 1.06s)
+  - 6 `path_safety` (`FakeWorker`, 0.03s)
+  - 476 dos `--lib`
 - `cargo test -p frederico-document-kits --test path_safety` 6/6 verde
 - `cargo fmt --all -- --check` limpo
 - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock` limpo
-
-(Validação do E2E real com Python — `e2e_docs_generate_with_real_worker`
-— depende de `bootstrap.ps1`. CI noturno via `verify-external.ps1`
-step 7.)
+- `check-core-purity.ps1` OK
+- `check-fase-5-untouched.ps1` OK
+- `check-docs.mjs` OK
+- Python **não** engasgou com path canônico `\\?\` (preocupação inicial: reportlab/python-docx lidando com verbatim — na prática o `python.exe` e o `python-docx` no Windows lidam bem). Se algum dia reclamar, conserto é tirar o verbatim na fronteira com o worker (handler do `document-worker.py` ou no `WorkerInvoker`), **não** afrouxar a barreira.
