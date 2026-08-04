@@ -27,12 +27,14 @@
 //! ## API
 //!
 //! ```ignore
-//! let dispatcher = WorkerToolDispatcher::new(
-//!     worker_handle.clone(),
-//!     vec![workspace_root.to_path_buf()],
-//! );
+//! let dispatcher = WorkerToolDispatcher::new(worker_handle.clone());
+//! let allowed = vec![workspace_root.to_path_buf()];
 //! let result = dispatcher
-//!     .dispatch(json!({"output_path": "C:\\Users\\me\\out.docx"}), &["output_path"])
+//!     .dispatch(
+//!         json!({"output_path": "C:\\Users\\me\\out.docx"}),
+//!         &["output_path"],
+//!         &allowed,
+//!     )
 //!     .await?;
 //! ```
 //!
@@ -86,35 +88,41 @@ pub enum DispatchError {
 }
 
 /// Ponte `Tool::execute` → `WorkerHandle::invoke` com
-/// allowlist. Clonável (o `WorkerHandle` interno é `Arc`-ed).
+/// allowlist por chamada. Clonável (o `WorkerHandle` interno
+/// é `Arc`-ed).
 ///
 /// `Debug` **não** é derivado: o `Arc<dyn WorkerInvoker>`
 /// interno carrega um trait object (não implementa `Debug` —
 /// decisão herdada do `WorkerHandle` que carregava `Arc<WorkerState>`
 /// sem `Debug`).
+///
+/// ## Por que a allowlist não é do struct
+///
+/// A base varia por conversa (`workspaces/<conversation_id>/`).
+/// O dispatcher é compartilhado entre tool_calls e entre
+/// conversas (built uma vez em `composition.rs` e passado pra
+/// todas as `DocsGenerateTool` / `DocsInspectTool`). Logo a
+/// allowlist é **por chamada**, resolvida pelo `Tool::execute`
+/// a partir do `ctx.jail.root_canonical()`. Versão anterior
+/// (Etapa 3 da Fase 5) carregava a allowlist no struct e
+/// populava com vetor vazio na composição, deixando a
+/// barreira desligada no caminho de produção.
 #[derive(Clone)]
 pub struct WorkerToolDispatcher {
     invoker: Arc<dyn frederico_core::WorkerInvoker>,
-    allowed_paths: Vec<PathBuf>,
 }
 
 impl WorkerToolDispatcher {
     /// Cria o dispatcher. `invoker` é o contrato genérico de
     /// invocação de worker (ADR-0024) — pode ser um
     /// `WorkerHandle` (Fase 5) ou um `DocumentWorkerLauncher`
-    /// (Etapa 2.A, lazy + restart on death). `allowed_paths`
-    /// é a allowlist canonicalizada em runtime (não precisa
-    /// ser absoluta na entrada — `validate_against_allowlist`
-    /// cuida).
+    /// (Etapa 2.A, lazy + restart on death). **Não recebe
+    /// allowlist** — ela é passada por chamada em
+    /// [`dispatch`](Self::dispatch) ou
+    /// [`check_path`](Self::check_path).
     #[must_use]
-    pub fn new(
-        invoker: Arc<dyn frederico_core::WorkerInvoker>,
-        allowed_paths: Vec<PathBuf>,
-    ) -> Self {
-        Self {
-            invoker,
-            allowed_paths,
-        }
+    pub fn new(invoker: Arc<dyn frederico_core::WorkerInvoker>) -> Self {
+        Self { invoker }
     }
 
     /// `WorkerInvoker` interno. Útil pra ping/health antes
@@ -124,31 +132,26 @@ impl WorkerToolDispatcher {
         &self.invoker
     }
 
-    /// Allowlist atual (paths **não** canonicalizados — eles
-    /// são canonicalizados em cada validação; manter o
-    /// original permite mover o diretório sem re-cadastrar).
-    #[must_use]
-    pub fn allowed_paths(&self) -> &[PathBuf] {
-        &self.allowed_paths
-    }
-
     /// Dispatcha `args` ao worker. `path_fields` lista os
     /// campos do JSON que carregam um path a ser validado
-    /// contra a allowlist. Os campos são validados na ordem;
-    /// o primeiro que falhar aborta o dispatch.
+    /// contra a allowlist passada em `allowed`. Os campos
+    /// são validados na ordem; o primeiro que falhar aborta
+    /// o dispatch.
     ///
     /// **Sempre valida** (fail-closed, vide
-    /// [`validate_against_allowlist`]). O caller é responsável
-    /// por passar uma `allowed` adequada — vetor vazio é
-    /// "nega tudo", não "passa sem validar". A composição
-    /// (`app/src/composition.rs`) popula `allowed` por chamada
-    /// a partir do `Jail` da conversa (Etapa 1 da Fase de
-    /// Ligação).
+    /// [`validate_against_allowlist`]). `allowed` vazio é
+    /// "nega tudo", não "passa sem validar". O caller (o
+    /// `Tool::execute` do `docs.generate`) resolve `allowed`
+    /// a partir do `ctx.jail.root_canonical()` — assim a
+    /// allowlist **é** o workspace da conversa, e a barreira
+    /// `Jail::resolve_allowing_nonexistent` (chamada antes
+    /// no `execute`) e esta defesa em profundidade operam
+    /// em série.
     ///
     /// # Erros
     /// - `DispatchError::PathNotAllowed` se algum `path_field`
-    ///   aponta pra fora da allowlist (ou se a allowlist é
-    ///   vazia — fail-closed).
+    ///   aponta pra fora da allowlist (ou se `allowed` é
+    ///   vazio — fail-closed).
     /// - `DispatchError::NotAString` se o campo não é string.
     /// - `DispatchError::Process` se o `WorkerHandle::invoke`
     ///   falha (transporte/timeout/protocolo).
@@ -156,12 +159,13 @@ impl WorkerToolDispatcher {
         &self,
         args: Value,
         path_fields: &[&str],
+        allowed: &[PathBuf],
     ) -> Result<Value, DispatchError> {
         // 1. Valida os paths ANTES de tocar no handle.
         for field in path_fields {
             if let Some(v) = args.get(*field) {
                 if let Some(s) = v.as_str() {
-                    validate_against_allowlist(s, &self.allowed_paths)?;
+                    validate_against_allowlist(s, allowed)?;
                 } else {
                     return Err(DispatchError::NotAString {
                         field: (*field).to_string(),
@@ -183,10 +187,16 @@ impl WorkerToolDispatcher {
         Ok(result)
     }
 
-    /// Valida um path string contra a allowlist do dispatcher
-    /// (atalho pra `validate_against_allowlist`).
-    pub fn check_path(&self, path_str: &str) -> Result<(), DispatchError> {
-        validate_against_allowlist(path_str, &self.allowed_paths)?;
+    /// Valida um path string contra a allowlist passada
+    /// (atalho pra [`validate_against_allowlist`]). `allowed`
+    /// é resolvido pelo caller — tipicamente
+    /// `&[ctx.jail.root_canonical().to_path_buf()]` no
+    /// `Tool::execute` que tem o `ctx` em mãos.
+    ///
+    /// **Fail-closed:** `allowed` vazio nega tudo. Veja a
+    /// documentação de [`validate_against_allowlist`].
+    pub fn check_path(&self, path_str: &str, allowed: &[PathBuf]) -> Result<(), DispatchError> {
+        validate_against_allowlist(path_str, allowed)?;
         Ok(())
     }
 }
@@ -256,7 +266,7 @@ pub fn validate_against_allowlist(
     let path_canonical = Path::new(path_str).canonicalize().ok();
     let use_canonical = path_canonical.is_some();
     let canonical = path_canonical.map_or_else(
-        || normalize_lexically(Path::new(path_str)),
+        || strip_windows_verbatim(&normalize_lexically(Path::new(path_str))),
         |c| strip_windows_verbatim(&c),
     );
 
@@ -473,6 +483,27 @@ mod tests {
         let deep = dir.join("a").join("b").join("file.docx");
         let allowed = vec![dir.clone()];
         validate_against_allowlist(deep.to_str().unwrap(), &allowed).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn path_with_verbatim_prefix_and_nonexistent_strips_correctly() {
+        // Regressão (Fase de Ligação Etapa 5.X — patch-allowed-paths):
+        // o `Jail::resolve_allowing_nonexistent` devolve path com
+        // prefixo verbatim `\\?\` (o `parent.canonicalize()`
+        // adiciona). O `validate_against_allowlist` precisa
+        // strippar o verbatim **dos dois lados** (path E allowed)
+        // antes do `starts_with`, senão falha mesmo o path
+        // estando dentro do jail. Bug latente desde a Etapa 3 da
+        // Fase 5 — não foi pego antes porque a composição passava
+        // `&[]` (fail-open bypassava a validação inteira).
+        let dir = tempdir();
+        // Path com verbatim + filename inexistente
+        // (`will_be_created.docx`). Simula o que o Jail devolve.
+        let with_verbatim = format!(r"\\?\{}\will_be_created.docx", dir.display());
+        let allowed = vec![format!(r"\\?\{}", dir.display()).into()];
+        validate_against_allowlist(&with_verbatim, &allowed)
+            .expect("verbatim + path inexistente + dentro do allowed deve passar");
     }
 
     #[test]

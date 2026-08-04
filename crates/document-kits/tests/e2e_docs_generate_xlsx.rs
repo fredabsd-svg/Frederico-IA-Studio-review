@@ -417,7 +417,7 @@ async fn e2e_docs_generate_xlsx_full_vertical() {
         //    sem validacao (o `output_path` vem do
         //    chamador no teste; em prod, o ToolRegistry
         //    popula com o workspace do usuario).
-        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()));
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         // 3. Spec DoD.
