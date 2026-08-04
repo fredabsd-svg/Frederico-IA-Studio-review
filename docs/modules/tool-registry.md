@@ -1,7 +1,7 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-03
-Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3) + Fase de Ligação (Etapa 1)
+Verificado contra o código em: 2026-08-04
+Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3) + Fase de Ligação (Etapas 1 e 4)
 -->
 
 # `frederico-tool-registry`
@@ -181,9 +181,8 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 - `frederico-core` — `ToolId` (Etapa 1), `AssistantId` (Etapa 1),
   `RunId` (não usado ainda).
-- `frederico-agent-engine` — não é usado ainda (a integração com
-  a máquina de estados é Etapa 4). Listado como dependência
-  preditiva.
+- `frederico-process-architecture` — `ProcessError` (convertido
+  em `InvokeError` no caminho do `WorkerInvoker`).
 - `serde`, `serde_json`, `chrono`, `thiserror`, `tracing` —
   utilitários.
 - `jsonschema = "0.18"` (default-features = false) — a biblioteca
@@ -191,17 +190,22 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 **Quem depende dele (hoje):**
 
-- Ninguém ainda. A Etapa 4 (integração) vai fazer
-  `frederico-provider-engine` depender dele para o `RunExecutor`
-  construir a interseção de inventário (`effective_tools`) que
-  vira o `tools:` enviado ao provedor.
+- `frederico-app` (camada de composição) — consome
+  `build_tool_registry` + `build_default_tools` +
+  `WorkerToolDispatcher::new` no `setup` da casca Tauri.
+- `frederico-document-kits` — consome `Tool`, `ToolContext`,
+  `validate_tool_call`, `WorkerToolDispatcher` (via path
+  no `Cargo.toml`, declarado no ADR-0024).
+- `frederico-e2e` (testes de caminho de produção) — consome
+  `ToolRegistry` indiretamente via `frederico_app::build_chat_orchestrator`.
 
 **Quem vai depender dele (próximas etapas):**
 
-- `frederico-agent-engine` (Etapa 4) — o executor traduz
-  `ApprovalRequired` em `RunState::WaitingUserApproval`.
-- Casca Tauri (Etapa 6) — a UI consome `ApprovalRequest` e
-  `PermissionSet` no modal de aprovação.
+- A integração com a máquina de estados do `agent-engine`
+  (que o `apply_transition` ainda não cobre no produto —
+  ver ADR-0025) é trabalho da Fase 6. O `tool-registry` não
+  tem dependência preditiva no `agent-engine` desde 2026-08-04
+  (PR da Etapa 4 da Fase de Ligação).
 - Casca Tauri (Etapa 6) — `ToolManifest.all()` lista ferramentas
   no painel de configuração.
 
