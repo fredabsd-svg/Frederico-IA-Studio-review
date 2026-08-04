@@ -182,6 +182,151 @@ gerado um documento.
   Ligação, é a próxima fase intermediária ou a Fase 9 com
   a máquina limpa do `testing-strategy.md` §5.
 
+## Achado do primeiro CI (o que valeu a fase)
+
+A primeira execução do `verify (Windows)` no PR #24
+**deu vermelho em 0.74s** — exatamente o que a Fase de
+Ligação existe para detectar. Antes da Etapa 5, os testes
+em `crates/document-kits/tests/e2e_*` e em
+`crates/process-architecture/tests/external_doc_worker.rs`
+exercitavam o kit + IPC direto, **não** atravessavam o
+`DocumentWorkerLauncher` que a casca Tauri usa. A Etapa 5
+construiu o caminho completo (`build_orchestrator` →
+`ChatOrchestrator` → `ToolRegistry` → kit →
+`WorkerToolDispatcher` → `DocumentWorkerLauncher` →
+Python worker) — e o primeiro run real encontrou um
+defeito de modelagem que estava latente desde a Fase 5
+Etapa 2.A (PR #22).
+
+### O defeito
+
+O `DocumentWorkerLauncher::invoke` checa
+`health_snapshot()` antes do `invoke` real:
+
+```rust
+let health = handle_clone.health_snapshot().await;
+if matches!(health.health, WorkerHealth::Unhealthy) {
+    return Err(WorkerError::InvokeFailed(ProcessError::Unhealthy { ... }));
+}
+```
+
+Mas o `WorkerHealth::Unhealthy` é o `#[default]` do enum
+E o valor inicial de `fresh_health_snapshot()`. O snapshot
+só vira `Ok` no primeiro `Pong` recebido pelo ator
+(`manager.rs:839`); o handshake `worker.hello`/`app.ack`
+do `spawn_external` **não** emite `Pong`. Resultado: a
+primeira `invoke` via `DocumentWorkerLauncher` via
+`DocumentWorkerLauncher::invoke` via caminho do produto
+sempre rejeitava com `Unhealthy`, mesmo com worker vivo e
+respondedor. **A Fase 5 inteira fechou verde sem tocar
+nesse caminho** — Etapas 1, 2.A, 2.B, 2.B+X, 2.B+Y, 3, 4
+e 5 PR 1/2/3 testavam o `WorkerHandle::invoke` direto (que
+bypassa a checagem de saúde) ou usavam o `FakeWorker`
+in-process (que tem o ator já pingado).
+
+### O fix
+
+`crates/app/src/launcher.rs`:
+
+1. Helper `pub(crate) async fn ensure_first_pong(handle: &WorkerHandle) -> Result<(), ProcessError>` —
+   se a saúde é stale (`Unhealthy`), faz um `ping`; o
+   `Pong` que volta atualiza o snapshot para `Ok`. Falha
+   do `ping` é propagada (worker realmente morto — a
+   checagem `Unhealthy` subsequente trata).
+2. `DocumentWorkerLauncher::invoke` chama
+   `let _ = ensure_first_pong(&handle_clone).await;`
+   **antes** da checagem de saúde.
+3. Teste de regressão em
+   `crates/app/src/launcher.rs::tests::ensure_first_pong_initializes_stale_health_snapshot`:
+   usa o `FakeWorker` in-process (barato, roda no CI
+   comum, não exige runtime Python) e prova que (1) o
+   snapshot começa `Unhealthy` (stale), (2) o helper
+   atualiza para `Ok`, (3) é idempotente. Se a modelagem
+   do `WorkerHealth` mudar, este teste quebra — é o sinal
+   pra revisar a pendência.
+
+### A pendência (não só o sintoma)
+
+O defeito real **não** é "falta um ping" — é que
+`WorkerHealth::Unhealthy` é usado como estado inicial,
+confundindo "nunca observei" com "observei e está ruim".
+Qualquer outro consumidor que chame `health_snapshot()`
+antes do primeiro `Pong` recebe a mesma resposta falsa.
+A modelagem deveria ter um `WorkerHealth::Unknown`
+(nunca observado) distinto de `Unhealthy` (observado e
+ruim), e a guarda deveria recusar só em `Unhealthy`.
+**O `ensure_first_pong` é o trabalho que a modelagem
+deveria fazer sozinha.** Pendência nomeada em
+`docs/modules/process-architecture.md` §"Pendências para
+a próxima sessão" item 4 — quando o `process-architecture`
+for reaberto, introduzir o `Unknown` e fazer o helper
+sumir.
+
+### Outro achado: `ToolManifest::allowed_paths` não-populado
+
+Investigação durante o fix (condição 4 do user): o
+`ToolManifest::allowed_paths` E o
+`WorkerToolDispatcher::allowed_paths` estão **vazios**
+no `docs.generate`:
+
+- `crates/app/src/composition.rs:224` —
+  `WorkerToolDispatcher::new(invoker, vec![])` com
+  comentário "A Etapa 6 da fase-ligação (UI de
+  configuração) ou a Fase 9 (empacotamento) podem
+  popular esse vetor".
+- `crates/document-kits/src/generate.rs:124-144` — o
+  `ToolManifestBuilder` do `docs.generate` **não**
+  chama `.allowed_path(...)` na chain. O
+  `manifest.allowed_paths` fica `vec![]` (default).
+
+Consequência: o `validate_against_allowlist` em
+`worker_dispatch.rs:232-234` retorna `Ok(())` quando a
+allowlist é vazia (sem validação — `caller decide`). E o
+`DocsGenerateTool::execute` (generate.rs:246) chama
+`self.dispatcher.check_path(output_path_str)` que é
+no-op com vetor vazio. **A barreira de path que o
+ADR-0018 §Decisão 4 documentou como "a forte entra na
+Etapa 3 com `ToolManifest::allowed_paths`" não está
+ligada no caminho de produção.** O `output_path` do
+`docs.generate` passa direto pro Python worker, que
+aplica a barreira fraca do `validate_path`
+(rejeitar `..` + path absoluto ou relativo-ao-`cwd` +
+diretório pai gravável). Resultado prático: o
+`output_path: "C:\Users\conta\Documents\qualquer.docx"`
+(absoluto, sem `..`, diretório gravável) **passa** —
+o `docs.generate` pode escrever em qualquer path
+absoluto do disco do usuário, não só no workspace da
+conversa.
+
+A Etapa 3 da Fase 5 documentou em
+`composition.rs:213-223` que "A Etapa 6 da
+fase-ligação (UI de configuração) ou a Fase 9
+(empacotamento) podem popular esse vetor". **Nenhuma
+das duas foi implementada** — é a pendência 1 do
+`process-architecture.md` ("Etapa 3 (ToolRegistry +
+kits DocumentSpec): ToolManifest::allowed_paths para
+path safety forte"). O fix correto é popular a allowlist
+no `build_default_tools` com o `<workspaces_root>`
+(que o `WorkspaceTempdir` já conhece) — **mesma
+filosofia do `ensure_first_pong`**: muda o caminho de
+produção, não afrouxa validação. Fora do escopo da
+Etapa 5 (a Etapa 5 fechou o gap de teste; o gap de
+segurança é uma Etapa própria).
+
+### O placar
+
+A Fase de Ligação encontrou, no primeiro CI real, um
+defeito que impedia qualquer geração de documento no
+`.exe` do usuário. A Fase 5 inteira fechou verde sem
+tocar nesse caminho (Etapas 1, 2.A, 2.B, 2.B+X, 2.B+Y,
+3, 4, 5 PR 1/2/3 somam ~7 PRs e 0 exercícios do
+`DocumentWorkerLauncher` com worker vivo via caminho
+do produto). É exatamente o argumento de existência da
+fase, agora com evidência: **a Fase de Ligação existe
+porque os testes das fases anteriores não atravessam
+o caminho do produto** — e a Etapa 5 provou que
+afirmação.
+
 ## Aviso importante ao user (registrado em `docs/modules/e2e.md`)
 
 > "Vale lembrar que a decisão de fundo (o provedor falso,

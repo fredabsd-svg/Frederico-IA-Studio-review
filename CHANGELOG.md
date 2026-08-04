@@ -45,7 +45,56 @@
     `document-worker.py`, gera `.docx` de verdade. Sem ele,
     a Etapa 5 fecha com `cargo test --workspace` verde mas
     sem nunca ter gerado um documento pelo caminho do
-    produto.
+    produto. **Achado do primeiro CI:** o
+    `DocumentWorkerLauncher::invoke` checava
+    `health_snapshot()` antes do `invoke` real, mas o
+    `WorkerHealth::Unhealthy` é o `#[default]` E o valor
+    inicial de `fresh_health_snapshot()`. O snapshot só
+    vira `Ok` no primeiro `Pong`; o handshake
+    `worker.hello`/`app.ack` **não** emite `Pong`. A
+    primeira `invoke` via `DocumentWorkerLauncher`
+    rejeitava sempre com `Unhealthy`, mesmo com worker
+    vivo — defeito de modelagem latente desde a Fase 5
+    Etapa 2.A (PR #22). **Fix:** `ensure_first_pong`
+    (`crates/app/src/launcher.rs`) faz um `ping` se a
+    saúde é stale antes da checagem. **Regressão:**
+    `crates/app/src/launcher.rs::tests::ensure_first_pong_initializes_stale_health_snapshot`
+    (FakeWorker in-process, roda no CI comum). **Pendência
+    nomeada:** `docs/modules/process-architecture.md` item
+    4 — introduzir `WorkerHealth::Unknown` (nunca
+    observado) distinto de `Unhealthy` (observado e ruim);
+    o `ensure_first_pong` é o trabalho que a modelagem
+    deveria fazer sozinha.
+
+### Pendência nomeada (achado do primeiro CI — fora do escopo da Etapa 5)
+
+- **`ToolManifest::allowed_paths` e `WorkerToolDispatcher::allowed_paths`
+  vazios no `docs.generate`.** Investigação durante o fix
+  acima (condição 4 do user). O `validate_against_allowlist`
+  em `worker_dispatch.rs:232-234` retorna `Ok(())` quando a
+  allowlist é vazia (sem validação), e o
+  `DocsGenerateTool::execute` chama
+  `self.dispatcher.check_path()` que é no-op com vetor
+  vazio. **A barreira de path que o ADR-0018 §Decisão 4
+  documentou como "a forte entra na Etapa 3 com
+  `ToolManifest::allowed_paths`" não está ligada no caminho
+  de produção.** O `output_path` do `docs.generate` passa
+  direto pro Python worker, que aplica só a barreira fraca
+  do `validate_path` (rejeitar `..` + path absoluto ou
+  relativo-ao-`cwd` + diretório pai gravável).
+  **Consequência:** `output_path: "C:\Users\conta\Documents\qualquer.docx"`
+  (absoluto, sem `..`, gravável) **passa** — o
+  `docs.generate` pode escrever em qualquer path absoluto
+  do disco do usuário, não só no workspace da conversa. A
+  Etapa 3 da Fase 5 documentou em `composition.rs:213-223`
+  que "A Etapa 6 da fase-ligação (UI de configuração) ou a
+  Fase 9 (empacotamento) podem popular esse vetor"; nenhuma
+  das duas foi implementada (é a pendência 1 do
+  `process-architecture.md`). **Fix correto (Etapa futura):**
+  popular a allowlist no `build_default_tools` com o
+  `<workspaces_root>` que o `WorkspaceTempdir` já
+  conhece — mesma filosofia do `ensure_first_pong`: muda o
+  caminho de produção, não afrouxa validação.
 - **Helper `build_orchestrator` em `tests/common/mod.rs`** é
   o **ponto único de montagem** (regra do ADR-0022 §D4): mesma
   função que a casca Tauri chama. Os testes E2E **importam**
