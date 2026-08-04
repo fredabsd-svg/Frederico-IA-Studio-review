@@ -225,7 +225,30 @@ async fn docs_generate_with_real_worker_produces_valid_docx() {
         .find(|e| e.kind == "tool_result")
         .expect("esperava tool_result no journal");
     let data = &tool_result_event.data;
-    assert_eq!(data.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+    // **DIAGNÓSTICO** (Etapa 5 PR #24 — primeiro CI vermelho):
+    // a asserção original `assert_eq!(data.get("ok"), Some(true))`
+    // colapsava a informação útil — o worker Python devolve
+    // `{ok: false, code, message, ...}` quando falha, mas o panic
+    // só dizia `Some(false) != Some(true)`. Aqui imprimimos o JSON
+    // inteiro pra ver o motivo real (path não existe? spec
+    // rejeitado? capability não implementada?) na primeira execução
+    // que falhar. Próximo passo: substituir por uma asserção
+    // focada depois que soubermos a causa.
+    if data.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        panic!(
+            "tool_result.ok != true. JSON completo do tool_result:\n\
+             \n\
+             {}\n\
+             \n\
+             Campos típicos em caso de falha:\n\
+             - code:    categoria do erro (path_not_found, capability_unknown, ...)\n\
+             - message: mensagem legível do Python\n\
+             - path:    path que o worker tentou usar\n",
+            serde_json::to_string_pretty(&tool_result_event)
+                .unwrap_or_else(|e| { format!("<falha ao serializar tool_result_event: {e}>") }),
+        );
+    }
 
     let output = data.get("output").expect("output no tool_result");
     let path_str = output
