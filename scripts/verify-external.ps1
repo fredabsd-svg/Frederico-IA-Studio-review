@@ -125,5 +125,21 @@ Invoke-Step "E2E docs.generate pdf" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
+# Step 7 - Teste E2E do `docs.generate` com `DocumentWorkerLauncher`
+# real (Fase de Ligação, Etapa 5, 2026-08-04). Gera um .docx
+# via Python e reabre validando a hierarquia. **Esse é o teste
+# que prova "a Fase de Ligação fechou"** — sem ele, a Etapa 5
+# fecha com `cargo test --workspace` verde mas sem nunca ter
+# gerado um documento pelo caminho do produto. Marcado
+# `#[ignore]` no source; `--include-ignored` ativa.
+#
+# Ver `crates/e2e/tests/e2e_docs_generate_with_real_worker.rs`
+# e `docs/architecture/testing-strategy.md` §3 "Fronteira do
+# que os E2E cobrem".
+Invoke-Step "E2E docs.generate (caminho do produto, frederico-e2e)" {
+    cargo test -p frederico-e2e --test e2e_docs_generate_with_real_worker -- --include-ignored
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
 Write-Host ""
 Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
