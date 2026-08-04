@@ -49,9 +49,16 @@ desktop.ini
 # --- OneDrive (artefatos locais) ---
 *.tmp
 *.bak
-# Padrão tmp_* usado pelos E2E do document-kits (cria tmp_*/out.docx
-# em testes, Etapa 3 da Fase 5). O helper do teste usa tempdir com
-# nome tmp_* mas a árvore de fora não vaza.
+# Classe recorrente de subproduto de teste que escapa pro FS local
+# (não pro tempdir do sistema). Já aconteceu com:
+#   - `real_minimal.docx` em workers/document-worker/ (PR #24, antes
+#     do bump atomico da Etapa 5.X escrever dentro do jail)
+#   - outros `tmp_<nonce>/` que helpers de teste podem criar
+# Padrão profilático — quando aparecer um novo tmp_*, a regra
+# **nao** deve ser "adiciona entrada especifica pro nome"; a regra
+# e' consertar a origem (teste deve escrever em tempdir) e deixar
+# o `tmp_*` apanhar. O comentario do commit de docs da Etapa 5.X
+# detalha.
 tmp_*
 *_tmp/
 
