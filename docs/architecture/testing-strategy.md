@@ -1,6 +1,6 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-08-04
 Fase correspondente: 1-9
 -->
 
@@ -27,7 +27,7 @@ Cinco camadas (`PROMPT MESTRE` §28). Cada invariante declarada nos specs de `do
 
 - Roda o app Tauri em modo headless (`tauri-driver`), contra workers reais ou simulados conforme o teste.
 - Cobertura: **fluxos verticais do `PROMPT MESTRE` §33** (mensagem → execução → tool call → persistência → recuperação; planilha → revisão multimodelo); medições de desempenho (`PROMPT MESTRE` §23.7); recarga de janela durante execução (`PROMPT MESTRE` §12.6); LGPD (exportar e excluir conta).
-- Localização: `tests/e2e/`.
+- Localização: **`crates/e2e/tests/`** (Etapa 5 da Fase de Ligação, 2026-08-04 — crate dedicada `frederico-e2e` no workspace; o spec original dizia `tests/e2e/`, mas o Cargo só reconhece `tests/` dentro de um package — um diretório `tests/e2e/` na raiz do workspace não é compilado). Caminho fixado aqui pra Etapa 6 poder fazer o gate "E2E que atravessa a casca" por fase. **Não mudar sem ADR.**
 
 ### 4. Caos e recuperação (`PROMPT MESTRE` §28.4)
 
@@ -110,6 +110,104 @@ Nenhuma nova nesta versão. Decisões a tomar na Fase 1 (com ADR próprio):
 - Stack de E2E: `tauri-driver` vs. Playwright vs. custom.
 - Provedor simulado: replay de fita (golden files) vs. gerador determinístico (estado em memória).
 - Onde rodar testes de "máquina limpa": runner self-hosted, GitHub Actions, Buildkite, ou outro.
+
+## Fronteira do que os E2E cobrem (Etapa 5 da Fase de Ligação, 2026-08-04)
+
+A Etapa 5 da Fase de Ligação fechou `tests/e2e/` na raiz do
+repositório, com o objetivo explícito de provar que o **caminho
+de produção do Frederico** (modelo → `ChatOrchestrator` →
+`ToolRegistry` → kit → `WorkerToolDispatcher` → `WorkerInvoker` →
+`document-worker` → arquivo) atravessa o motor e a casca
+corretamente, sem subir a casca Tauri (a decisão de não subir o
+binário está em ADR-0022 §D4 — a casca e os E2E consomem a mesma
+função de composição, `frederico_app::build_chat_orchestrator`).
+
+A escolha de stack (Rust, consumindo `frederico-app` direto) e de
+provedor simulado (trait-level fake, ADR-0008) foi a aplicação
+das duas decisões já tomadas acima, não decisões novas. **Esta
+seção documenta o que os E2E atuais cobrem e o que
+deliberadamente fica fora** — pra próxima sessão não ler "E2E
+verde" como "documento gerado de verdade" sem checar a fronteira.
+
+### O que os E2E cobrem (a maioria)
+
+A maioria dos testes em `tests/e2e/` consome o `FakeWorker`
+in-process (definido em `crates/process-architecture/src/fake.rs`,
+spawnado por `WorkerManager::spawn_in_process`). O `FakeWorker`
+implementa o envelope IPC sobre `tokio::sync::mpsc` — sem pipes
+reais, sem Python, sem `document-worker`. **Ele exercita o
+contrato do `WorkerInvoker`** (ADR-0024) e o caminho do motor
+(modelo → `ChatOrchestrator` → `ToolRegistry` → kit → dispatcher
+→ invoker), mas **para antes do Python**: o que volta do
+`invoke` é o que o `FakeWorker` devolve (`{ok: true, echo:
+<args>, env_received: ...}`), não é um arquivo gerado de
+verdade.
+
+Isso **prova que o motor e a casca estão bem ligados** —
+exercita o bump atômico do `documents: None → Full` (ADR-0020
+§3 D3), o `Arc<dyn WorkerInvoker>` no `setup`, o
+`ToolRegistry` com 3 manifestos, a allowlist, o `PermissionSet`,
+o `JailResolver` por conversa, o `RecordingEventSink`, a
+persistência de `Message` e `Run` no SQLite, o journal
+de eventos. **O que NÃO prova** é que o `document-worker`
+Python real gera um `.docx` válido — isso é a próxima fronteira.
+
+### O que 1 teste cobre (o "até o fim")
+
+**Um único teste** em `tests/e2e/` (E2E-5, marcado
+`#[ignore]` com mensagem explícita) **vai até o fim do
+caminho de produção**: usa o `DocumentWorkerLauncher` real
+(Etapa 2.A, ADR-0023) com o `document-worker` Python real
+(`workers/document-worker/document-worker.py`), e gera um
+arquivo `.docx` de verdade. Esse teste é `#[ignore]` por
+default — **não roda em todo PR**. Ele é ativado pelo
+`scripts/verify-external.ps1` (que garante o
+`bootstrap.ps1` antes) e conta como a evidência "a Fase de
+Ligação fechou" — sem ele, a Etapa 5 fecha com
+`cargo test --workspace` verde, mas sem nunca ter gerado
+um documento pelo caminho do produto.
+
+A próxima evolução dessa fronteira está em duas direções
+(pendências nomeadas, não nesta fase):
+
+- **Mais 1 E2E com worker real por kit** (Fase 5 fechou
+  `docx`/`xlsx`/`pdf` separadamente; a Etapa 5 só testa
+  `docx` ponta-a-ponta — a Fase 6 ou uma Etapa 6 da fase-
+  ligação cobre `xlsx` e `pdf`).
+- **Subir o binário Tauri** (decidir `tauri-driver` vs.
+  Playwright vs. custom) — sai do escopo da Fase de
+  Ligação, é a próxima fase intermediária ou a Fase 9.
+
+### Regra da composição compartilhada (o invariante que impede a divergência)
+
+**Os E2E chamam a mesma função que a casca Tauri chama.** O
+`apps/desktop/src-tauri/src/main.rs` constrói o
+`ChatOrchestrator` via
+`frederico_app::build_chat_orchestrator(parts)`; os E2E
+fazem o mesmo. As funções de composição
+(`build_tool_registry`, `build_default_tools`,
+`build_default_allowed_for_run`,
+`initial_permission_set`,
+`initial_permission_set_for_capable_launcher`) são
+**as mesmas** — uma diverge, ambas divergem. Isso é o
+que torna o "E2E verde" significativo: não estamos
+testando um código que a casca não usa.
+
+A regra é mecânica:
+
+- Toda função de composição que a casca Tauri consome
+  mora em `frederico-app`, **nunca** em `apps/desktop`.
+- Os E2E importam de `frederico-app`, **nunca** tentam
+  `use` em `apps/desktop/src-tauri` (que é binário).
+- O `check-core-purity.ps1` garante que `frederico-app`
+  continua puro (sem `tauri`, sem `windows`) — o gate
+  pega qualquer regressão nessa fronteira.
+
+Próxima sessão que mexer em composição: ler o ADR-0022
+§D4 e o `composition.rs:18-24` antes de mover código
+pra casca. O §1.3 da `REGRAS-DO-PROJETO.md` exige
+atualizar este spec **no mesmo commit** se a fronteira
+mudar.
 
 ## Referências
 

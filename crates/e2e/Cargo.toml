@@ -1,0 +1,45 @@
+[package]
+name = "frederico-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Testes E2E do Frederico IA Studio atravessando o caminho de produção (modelo → casca → worker → arquivo). Sem subir a casca Tauri — consome frederico_app::build_chat_orchestrator direto. Ver docs/architecture/testing-strategy.md §3 e docs/modules/e2e.md."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dev-dependencies]
+# Núcleo e composição (Etapa 5)
+frederico-app = { workspace = true }
+frederico-core = { workspace = true }
+frederico-tool-registry = { workspace = true }
+frederico-provider-engine = { workspace = true }
+frederico-storage = { workspace = true }
+frederico-security = { workspace = true }
+frederico-model-catalog = { workspace = true }
+frederico-execution-engine = { workspace = true }
+frederico-process-architecture = { workspace = true }
+frederico-document-kits = { workspace = true }
+frederico-document-engine = { workspace = true }
+frederico-test-support = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Utilitários
+tempfile = "3"
+uuid = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+# Python embedding — usado só pelo teste e2e_docs_generate_with_real_worker
+# (#[ignore]). Roda `python.exe` do workers/document-worker/runtime/ via
+# std::process::Command pra validar que o `DocumentWorkerLauncher` produz
+# um .docx real.

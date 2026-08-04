@@ -37,6 +37,15 @@ if (-not (Test-Path $cratesDir)) {
 # `frederico-security`).
 $allowedPlatformCrates = @('security', 'process-architecture')
 
+# Crates de teste (não-núcleo). O check-core-purity é sobre
+# **produção** (crates que vão pro binário distribuído);
+# crates com `publish = false` e só `[dev-dependencies]` não
+# entram no binário. `e2e` é o exemplo canônico (Fase de
+# Ligação, Etapa 5) — crate dedicado pros E2E que consomem
+# `frederico-app` sem ser núcleo. **Não** adicionar crates
+# "úteis em produção" aqui — o gate perde sentido.
+$testOnlyCrates = @('e2e')
+
 $violations = New-Object System.Collections.Generic.List[string]
 
 # ---- Regra 1: deps proibidas em Cargo.toml --------------------------------
@@ -52,17 +61,21 @@ foreach ($toml in $tomlFiles) {
     if ($content -match '(?m)^\s*name\s*=\s*"([^"]+)"') {
         $crateName = $Matches[1]
     }
+    $crateFolder = if ($crateName) { $crateName -replace '^frederico-', '' } else { '' }
+    # Crates só de teste (publish = false, só [dev-dependencies])
+    # ficam fora do check de produção.
+    $isTestOnly = $crateFolder -in $testOnlyCrates
+    if ($isTestOnly) { continue }
     foreach ($pattern in $forbiddenDeps) {
-        if ($content -match $pattern) {
+        # Casa só linhas de dep (`tauri = { ... }`, `tauri-runtime = ...`),
+        # não palavras em comentários/descrições (ex.: "casca Tauri" no
+        # description do `frederico-e2e`).
+        if ($content -match "(?m)^\s*tauri[\w-]*\s*=") {
             $violations.Add("$($toml.FullName) contém dep proibida: $pattern")
         }
     }
     foreach ($pattern in $forbiddenWindowsDeps) {
-        if ($content -match $pattern) {
-            # $crateName é o nome do crate (ex.: `frederico-security`),
-            # $allowedPlatformCrates contém o nome da pasta (ex.: `security`).
-            # Comparamos o nome da pasta.
-            $crateFolder = $crateName -replace '^frederico-', ''
+        if ($content -match "(?m)^\s*$($pattern -replace '\\b', '')\s*=") {
             if ($crateFolder -notin $allowedPlatformCrates) {
                 $violations.Add("$($toml.FullName) contém dep 'windows' proibida (permitida só em pastas $allowedPlatformCrates): $pattern")
             }

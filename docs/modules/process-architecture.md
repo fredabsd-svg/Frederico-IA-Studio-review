@@ -195,6 +195,34 @@ do teste em 5s.
    que tools dinâmicas (do `ToolRegistry`) sejam roteáveis.
    Pode entrar via `op = "tool.invoke"` com `capability` no
    payload (como o `document-worker` já faz).
+4. **`WorkerHealth::Unknown` (nunca observado) distinto de
+   `Unhealthy` (observado e ruim)** — encontrada pela
+   regressão do PR #24 (Etapa 5 da Fase de Ligação).
+   O `WorkerHealth::Unhealthy` é o `#[default]` do enum
+   (`src/protocol.rs`) E o valor inicial de
+   `fresh_health_snapshot()` (`src/manager.rs`). O snapshot
+   só vira `Ok` no primeiro `Pong` recebido pelo ator
+   (`manager.rs:839`); o handshake `worker.hello`/`app.ack`
+   do `spawn_external` NÃO emite `Pong`. Resultado:
+   qualquer consumidor que chame `health_snapshot()` antes
+   do primeiro `Pong` recebe `Unhealthy` indistinguível
+   de "worker está ruim de verdade" — e age errado
+   (recusa invoke, transita pra Restarting, etc.).
+   **Workaround atual (Etapa 5):** o
+   `DocumentWorkerLauncher::invoke` chama
+   `ensure_first_pong(handle)` antes da checagem, fazendo
+   um `ping` se a saúde for stale. **Correção de
+   modelagem:** introduzir `WorkerHealth::Unknown`
+   (nunca observado) e fazer a guarda recusar só em
+   `Unhealthy` (observado). Aí o helper some — o
+   `Unknown` é informação útil, não uma falha. Cuidado
+   de migração: o default do enum muda; testes que
+   comparam `== Unhealthy` precisam virar
+   `== Unhealthy || == Unknown` durante a transição, ou
+   rodar o `ensure_first_pong` no setup. ADR nova
+   necessária (decisão de modelagem que afeta
+   `protocol`, `manager`, `launcher`, e qualquer outro
+   consumer de `health_snapshot`).
 
 > **Resolvido na Etapa 2B continuação** (2026-07-29): os 2
 > integration tests com named pipes reais em

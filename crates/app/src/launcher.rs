@@ -333,6 +333,28 @@ impl DocumentWorkerLauncher {
         let handle_clone = handle.clone();
         drop(state); // solta o lock antes do await
 
+        // **Inicializa a saúde se está stale** (PR #24
+        // Etapa 5 — regressão encontrada pelo primeiro CI
+        // E2E real). O `WorkerHealth::Unhealthy` é o valor
+        // default do enum (protocol.rs) E o inicial de
+        // `fresh_health_snapshot()` (manager.rs). O snapshot
+        // só vira `Ok` no primeiro `Pong` recebido
+        // (manager.rs:839); o handshake `worker.hello`/
+        // `app.ack` do `spawn_external` não emite `Pong`.
+        // Resultado: a primeira `invoke` veria stale
+        // `Unhealthy` e seria rejeitada antes de chegar no
+        // Python, mesmo com worker vivo. `ensure_first_pong`
+        // faz um `ping` se a saúde é stale; falha é engolida
+        // — a checagem `Unhealthy` abaixo já trata worker
+        // morto.
+        //
+        // Pendência nomeada em
+        // `docs/modules/process-architecture.md`: modelar
+        // `WorkerHealth::Unknown` (nunca observado) distinto
+        // de `Unhealthy` (observado e ruim). Esse helper é
+        // o trabalho que a modelagem deveria fazer sozinha.
+        let _ = ensure_first_pong(&handle_clone).await;
+
         // Checagem de saúde antes do invoke. Se morto, vai
         // pra próxima invoke (que vai detectar `Alive` mas
         // com `health == Unhealthy` e vai tentar recriar).
@@ -500,6 +522,54 @@ impl Drop for DocumentWorkerLauncher {
 // `process_to_invoke_error` helper inline converte 1:1
 // (espelhado em `process-architecture/src/worker_invoker_impl.rs`).
 
+/// Garante que o snapshot de saúde do worker foi
+/// inicializado com pelo menos um Pong.
+///
+/// **Contexto (regressão PR #24, Etapa 5 da Fase de
+/// Ligação):** o `WorkerHealth::Unhealthy` é o `#[default]`
+/// de `WorkerHealth` (`process-architecture/src/protocol.rs`)
+/// E o valor inicial de `fresh_health_snapshot()`
+/// (`process-architecture/src/manager.rs`). O snapshot só
+/// vira `Ok` no primeiro `Pong` recebido pelo ator
+/// (`manager.rs:839`). O handshake `worker.hello`/`app.ack`
+/// do `spawn_external` NÃO emite `Pong` — então a primeira
+/// `invoke` do launcher via `DocumentWorkerLauncher`
+/// veria o snapshot stale `Unhealthy` e seria rejeitada
+/// antes de chegar no Python, mesmo com worker vivo.
+///
+/// **O que este helper faz:** se a saúde observada é
+/// diferente de `Unhealthy` (já foi inicializada por um
+/// Pong anterior — `Ok` ou `Degraded`), retorna `Ok`
+/// sem fazer nada. Se é `Unhealthy` (stale), faz um
+/// `ping` — o `Pong` que volta atualiza o snapshot pra
+/// `Ok`. Falha do `ping` é propagada (worker realmente
+/// morto — a checagem `Unhealthy` subsequente no
+/// `DocumentWorkerLauncher::invoke` trata e transita pra
+/// `Restarting`).
+///
+/// **Pendência (Etapa futura, `process-architecture`):**
+/// introduzir `WorkerHealth::Unknown` (nunca observado)
+/// distinto de `Unhealthy` (observado e ruim). A modelagem
+/// atual confunde os dois no mesmo `Unhealthy`, e este
+/// helper é o trabalho que a modelagem deveria fazer
+/// sozinha. A guarda "ping-if-stale" deixa de ser
+/// necessária quando o estado inicial é `Unknown` e só
+/// `Unhealthy` (observado) recusa a invoke. Ver pendência
+/// nomeada em
+/// `docs/modules/process-architecture.md` §"Pendências
+/// para a próxima sessão".
+pub(crate) async fn ensure_first_pong(handle: &WorkerHandle) -> Result<(), ProcessError> {
+    let snapshot = handle.health_snapshot().await;
+    if !matches!(snapshot.health, WorkerHealth::Unhealthy) {
+        // Já foi observada (`Ok` ou `Degraded`). `Degraded`
+        // NÃO bloqueia — coerente com a checagem de saúde
+        // existente (worker reportou problema mas ainda
+        // responde).
+        return Ok(());
+    }
+    handle.ping().await.map(|_| ())
+}
+
 /// Converte `ProcessError` em `InvokeError` (1:1, exceto
 /// categorização). Duplicado intencionalmente em
 /// `process-architecture/src/worker_invoker_impl.rs` —
@@ -628,5 +698,85 @@ mod tests {
         let status = launcher.status().await;
         assert!(!status.alive);
         assert!(status.message.contains("ainda não inicializado"));
+    }
+
+    /// **Regressão PR #24 (Etapa 5 da Fase de Ligação):**
+    /// `DocumentWorkerLauncher::invoke` falhava em toda
+    /// primeira chamada com `WorkerHealth::Unhealthy` mesmo
+    /// com worker vivo, porque o snapshot começa como
+    /// `Unhealthy` (default) e só vira `Ok` no primeiro
+    /// `Pong`, que nunca chega (handshake hello/ack não
+    /// emite Pong). O `e2e_docs_generate_with_real_worker`
+    /// (CI) foi o primeiro a exercitar esse caminho
+    /// completo.
+    ///
+    /// O fix em [`ensure_first_pong`] faz um `ping` se a
+    /// saúde é stale. Aqui provamos que:
+    ///
+    /// 1. O snapshot do `WorkerHandle` fake começa stale
+    ///    (`Unhealthy`) — comportamento documentado em
+    ///    `fresh_health_snapshot`.
+    /// 2. O helper `ensure_first_pong` (do `launcher.rs`)
+    ///    faz o ping e o snapshot vai pra `Ok` depois.
+    /// 3. Idempotente: chamar o helper de novo é no-op
+    ///    (saúde já é `Ok`).
+    ///
+    /// **Por que testar o helper e não o launcher inteiro:**
+    /// o `DocumentWorkerLauncher` só aceita `RuntimeLocation`
+    /// (Windows + named pipes + python.exe); o caminho fake
+    /// in-process exige injetar um `WorkerHandle` no state —
+    /// adicionaria API pública só pra teste. O helper é o
+    /// coração do fix: se ele funciona, o launcher
+    /// funciona, e o teste do `e2e_docs_generate_with_real_worker`
+    /// (CI) cobre o caminho completo. O `e2e` não roda sem
+    /// runtime Python; este teste roda sempre no CI comum.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_first_pong_initializes_stale_health_snapshot() {
+        use frederico_process_architecture::{
+            FakeWorkerConfig, WorkerHealth, WorkerManager, WorkerSpawnConfig,
+        };
+
+        let (manager, handle) = WorkerManager::spawn_in_process(
+            FakeWorkerConfig::default(),
+            WorkerSpawnConfig::default(),
+        )
+        .await
+        .expect("spawn fake in-process");
+
+        // 1. Confirma que o snapshot começa stale
+        //    (`Unhealthy` é o `#[default]` do enum + valor
+        //    inicial de `fresh_health_snapshot()`). Se
+        //    algum dia mudar, este teste falha — é o sinal
+        //    pra revisar a pendência nomeada
+        //    `WorkerHealth::Unknown` no
+        //    `process-architecture.md`.
+        let initial = handle.health_snapshot().await;
+        assert_eq!(
+            initial.health,
+            WorkerHealth::Unhealthy,
+            "fresh_health_snapshot() deve comecar Unhealthy (stale) — \
+             se este assert falhar, a modelagem mudou e a \
+             pendencia WorkerHealth::Unknown pode ser revisada"
+        );
+
+        // 2. Helper do fix: faz o ping, snapshot vira `Ok`.
+        super::ensure_first_pong(&handle)
+            .await
+            .expect("ping inicial deve succeed (fake worker esta vivo)");
+
+        let after_ping = handle.health_snapshot().await;
+        assert_eq!(
+            after_ping.health,
+            WorkerHealth::Ok,
+            "apos ping, saude deve ser Ok (Pong foi recebido pelo ator)"
+        );
+
+        // 3. Idempotente: chamar de novo é no-op.
+        super::ensure_first_pong(&handle)
+            .await
+            .expect("segundo ping (saude ja Ok) deve succeed sem efeitos");
+
+        // Cleanup
+        manager.shutdown().await.expect("shutdown do fake");
     }
 }
