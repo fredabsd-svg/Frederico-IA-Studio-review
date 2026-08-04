@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-03
-Fase correspondente: Fase de Ligação (entre Fase 5 e Fase 6)
+Verificado contra o código em: 2026-08-04
+Fase correspondente: Fase de Ligação (Etapas 1, 2.A, 2.B, 3, 4 e 5) + 4 (bump de default memória)
 -->
 
 # `frederico-app`
@@ -169,6 +169,75 @@ cargo test -p frederico-app
 # Verificação completa
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
+
+## 5.5 Memória (Etapa 3 da Fase de Ligação)
+
+A Etapa 3 da Fase de Ligação (PR #28) introduziu 4 itens novos
+na composição:
+
+### `MemoryConfig` (struct)
+
+Default sensato:
+- `classifier_enabled = true`
+- `classifier_model = "openai/gpt-4o-mini"`
+- `embedding_model = "openai/text-embedding-3-small"`
+  (1536 dim)
+- `base_url = "https://openrouter.ai/api/v1"`
+
+A UI de configuração (Settings → Memória) é Fase 6 do plano
+mestre; até lá, **a casca e o modo servidor §5.5 usam o
+mesmo default**.
+
+### `build_completion_provider(cfg, api_key)`
+
+Retorna `Arc<dyn CompletionProvider>`:
+
+- `Some(key)` → `OpenRouterCompletionProvider` real
+  (gpt-4o-mini via OpenRouter, POST `/chat/completions`).
+- `None` → `NoopCompletionProvider` com **warning
+  explícito** via `tracing::warn!` (degradação declarada).
+
+A casca Tauri busca a key do `WindowsCredentialStore` (DPAPI)
+**ou** da env var `OPENROUTER_API_KEY` e passa. O `app` é
+puro, sem `windows`/`tauri` (regra do ADR-0003 +
+`scripts/check-core-purity.ps1`).
+
+### `build_embedding_provider(cfg, api_key)`
+
+Análogo: `Some(key)` → `OpenRouterEmbeddingAdapter` real;
+`None` → `NoopEmbeddingAdapter` com warning.
+
+### `build_memory_extractor(db, cfg, api_key)`
+
+Retorna `Option<Arc<MemoryExtractorHandle>>`:
+
+- `cfg.classifier_enabled = false` → `None` (memória
+  desabilitada).
+- Senão → monta o `LlmMemoryClassifier` com o completion
+  provider real/noop e inicia o worker em background via
+  `tokio::spawn`.
+
+**Custo por run concluído:** 1 chamada LLM (cota 5/min
+default, regra do ADR-0012 §2). O controle de ligar/desligar
++ modelo via UI chega na Fase 6.
+
+### Por que a casca passa a key, não busca
+
+Mesma divisão do resto da composição: o `app` é puro, sem
+dep Windows; a casca é Windows, tem DPAPI. A casca busca, o
+`app` recebe. **A regra "composição pura do `app` + casca
+injeta o que é específico de plataforma"** (Etapa 1, ADR-0022
+§D4) é a mesma.
+
+### Degradação declarada (regra do PR #25 / memória cross-project)
+
+`Some`/`None` é a **única** forma do `app` saber se a key
+está disponível. **Nunca substituição silenciosa** (memória
+do PR #25): o sistema é explicitamente classificador/embedding
+real **se** a key está disponível, e explicitamente
+noop/lexical **se** não está. Sem farsa de "ligado e quebrado"
+(mesma lição do PR #25 — defaults fail-open escondem o que
+nunca funcionou).
 
 ## 6. O que ele **não** faz
 
