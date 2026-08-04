@@ -1,5 +1,95 @@
 ## [Não publicado]
 
+### Fechado — Fase de Ligação, Etapa 5 (testes E2E atravessando o caminho de produção) (2026-08-04)
+
+- **Nova crate `frederico-e2e`** como 14º membro do workspace.
+  `publish = false`, sem `src/lib.rs` (os helpers ficam em
+  `tests/common/mod.rs` — padrão Cargo de teste de integração).
+  Path **fixado em `crates/e2e/tests/`** (a Etapa 6 vai fazer o
+  gate "E2E por fase" procurar por esse path — **não mudar sem
+  ADR**). O spec original dizia `tests/e2e/`, mas o Cargo só
+  reconhece `tests/` dentro de um package — um diretório `tests/`
+  na raiz do workspace não é compilado. 5 testes novos
+  atravessam o caminho de produção **sem subir a casca Tauri**
+  (consomem `frederico_app::build_chat_orchestrator` direto, a
+  mesma função da casca — regra do ADR-0022 §D4).
+- **5 testes E2E** (4 sempre rodam + 1 `#[ignore]` ativado pelo
+  `verify-external.ps1`):
+  - `e2e_files_read` — caminho de produção do `files.read`:
+    modelo chama tool → `RunExecutor` → `Tool::execute` →
+    filesystem dentro do jail da conversa → `ToolResult` → Done.
+    Prova que `build_chat_orchestrator` está montado certo e
+    o bump atômico do `documents: None → Full` (ADR-0020 §3 D3)
+    funciona com o catálogo cheio de 3 tools.
+  - `e2e_degradation_declared` — sem invoker, catálogo só
+    tem `files.read`. Provedor tenta chamar `docs.generate`
+    (simulando prompt injection). O `RunExecutor` rejeita via
+    `ExecutorError::UnknownTool` e fecha o run como `Failed`
+    com `Message.error` claro. **Esse é o teste que mais
+    protege contra regressão** do bump atômico capability +
+    permission (degradação declarada, não silenciosa).
+  - `e2e_jail_per_conversation` — 2 conversas com workspaces
+    diferentes. A conversa A tenta ler `secret.txt` de B via
+    `../<cid_b>/secret.txt`. `Jail::resolve` rejeita com
+    `TOOL_JAIL_VIOLATION` (regressão §I3 do threat model).
+    Conteúdo do `secret.txt` **não vaza** pro journal nem pro
+    conteúdo da mensagem assistant.
+  - `e2e_docs_generate_with_fake_worker` — `docs.generate(docx)`
+    com `FakeWorker` in-process. O `WordProKit::render` chama
+    `WorkerInvoker::invoke` (contrato do ADR-0024), recebe
+    resposta do fake, e o run fecha como `Completed`. Prova
+    o caminho motor → WorkerInvoker.
+  - `e2e_docs_generate_with_real_worker` (#[ignore]) — único
+    teste que **vai até o fim do caminho do produto**:
+    `DocumentWorkerLauncher` real (Etapa 2.A) spawna o
+    `document-worker.py`, gera `.docx` de verdade. Sem ele,
+    a Etapa 5 fecha com `cargo test --workspace` verde mas
+    sem nunca ter gerado um documento pelo caminho do
+    produto.
+- **Helper `build_orchestrator` em `tests/common/mod.rs`** é
+  o **ponto único de montagem** (regra do ADR-0022 §D4): mesma
+  função que a casca Tauri chama. Os testes E2E **importam**
+  o helper, não duplicam a montagem — o que torna o "E2E
+  verde" significativo (não estamos testando um código
+  diferente do que a casca usa em produção). Aceita
+  `Option<Arc<dyn WorkerInvoker>>` (degradação quando `None`)
+  + `Option<WorkerManager>` (segura o ator do `FakeWorker`
+  vivo) + `Option<Arc<Database>>` (reusa DB pra testes que
+  precisam criar conversas antes da montagem).
+- **Helper `ScriptedProvider`** — `ProviderAdapter` fake com
+  fila de scripts (um `Vec<StreamEvent>` por chamada a
+  `stream()`). Cada teste programa round 1 e round 2 do loop
+  tool_call. Diferente do `FakeProviderAdapter` do
+  `provider-engine::fake` (que tem um único `events: Vec<StreamEvent>`
+  emitido em toda chamada).
+- **`testing-strategy.md` promovido a `parcialmente implementado`**
+  com 2 adições: (1) a **fronteira do que os E2E cobrem** — a
+  maioria para antes do Python; 1 teste atravessa o caminho
+  do produto; (2) a **regra da composição compartilhada** —
+  os E2E chamam a mesma função que a casca, sem divergência
+  possível. Próxima sessão: ler essa seção antes de adicionar
+  teste novo.
+- **`docs/modules/e2e.md`** criado (§1.4 da REGRAS — todo
+  crate precisa do seu). Documenta a fronteira, o helper, o
+  `publish = false`, e os 2 cuidados do user ("`src/lib.rs`
+  mínimo só se helpers forem reusáveis" + "a distinção que
+  importa é a fronteira, não a pasta").
+- **`verify-external.ps1` ganhou Step 7** que roda
+  `e2e_docs_generate_with_real_worker -- --include-ignored`
+  (depois do `bootstrap.ps1` instalar o `runtime/`). Cobre
+  a fronteira "até o Python" no CI.
+- **4 testes E2E passam (4/4) sem runtime** + 1 `#[ignore]`
+  passa quando `bootstrap.ps1` rodou. Suíte do workspace
+  continua verde (533→538+ testes, com os novos 5 do
+  `frederico-e2e`). `cargo clippy --workspace --all-targets
+  -- -D warnings -D clippy::await_holding_lock` limpo.
+  `cargo fmt --check` limpo.
+- **Aviso ao user (na conversa):** a Etapa 6 da fase-ligação
+  vai criar o gate que exige "E2E que atravessa a casca" por
+  fase — ele vai procurar os testes por **caminho**, então
+  o path `crates/e2e/tests/` está fixado. Mover o diretório
+  sem ADR quebra o gate.
+
 ### Fechado — Fase de Ligação, Etapa 2.B (integração dos kits com o ToolRegistry via `WorkerInvoker`) (2026-08-03)
 
 - **Trait `WorkerInvoker` no `frederico-core` + `InvokeError` próprio**
