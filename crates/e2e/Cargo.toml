@@ -23,6 +23,7 @@ frederico-execution-engine = { workspace = true }
 frederico-process-architecture = { workspace = true }
 frederico-document-kits = { workspace = true }
 frederico-document-engine = { workspace = true }
+frederico-memory = { workspace = true }
 frederico-test-support = { workspace = true }
 
 # Async runtime
@@ -38,6 +39,7 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+secrecy = { workspace = true }
 
 # Python embedding — usado só pelo teste e2e_docs_generate_with_real_worker
 # (#[ignore]). Roda `python.exe` do workers/document-worker/runtime/ via
