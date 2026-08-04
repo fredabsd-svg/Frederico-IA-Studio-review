@@ -29,6 +29,169 @@ use frederico_tool_registry::{
     DocumentPermission, FileReadPermission, PermissionSet, Tool, ToolRegistry,
 };
 
+// ============================================================================
+// Memória: MemoryConfig + build_completion_provider + build_embedding_provider
+//          + build_memory_extractor (Etapa 3 da Fase de Ligação)
+// ============================================================================
+
+/// Configuração da camada de memória (Fase 4). **Default sensato**:
+/// classificador LLM habilitado com `gpt-4o-mini` via OpenRouter;
+/// embeddings via `text-embedding-3-small` (1536 dim). A Etapa 6
+/// da Fase 3 (UI de configuração) substitui por leitura de
+/// storage; até lá, **a casca e o modo servidor §5.5 usam o
+/// mesmo default**, sem `MemoryConfig::default()` ficar
+/// desabilitado.
+///
+/// ## Degradação declarada (regra do PR #25 / memória cross-project)
+///
+/// `build_completion_provider` e `build_embedding_provider` recebem
+/// `api_key: Option<SecretString>` da casca. Se a casca passou
+/// `Some(key)` (DPAPI ou env var), os providers reais são
+/// construídos. Se passou `None`, **warning é logado** e o
+/// fallback `NoopCompletionProvider` / `NoopEmbeddingAdapter` é
+/// usado — o classificador LLM vira noop, o retriever vira
+/// lexical-only. **A UI mostra o diagnóstico** (a Etapa 6 da
+/// Fase 3 vai adicionar o Settings panel; até lá, o log do
+/// app é a única indicação).
+///
+/// A regra: **nunca substituição silenciosa** (memória do PR #25).
+/// O sistema é explicitamente classificador/embedding real
+/// **se** a key está disponível, e explicitamente noop/lexical
+/// **se** não está. Sem farsa de "ligado e quebrado" (mesma
+/// lição do PR #25 — defaults fail-open escondem o que nunca
+/// funcionou).
+pub struct MemoryConfig {
+    /// Liga/desliga o classificador LLM pós-resposta. Default
+    /// `true` (a Etapa 3 da Fase de Ligação). A Etapa 6 da
+    /// Fase 3 (UI) vai expor isso no Settings.
+    pub classifier_enabled: bool,
+    /// Modelo do classificador. Default `openai/gpt-4o-mini`
+    /// (OpenRouter gateway).
+    pub classifier_model: String,
+    /// Modelo de embedding. Default `openai/text-embedding-3-small`
+    /// (OpenAI, 1536 dim).
+    pub embedding_model: String,
+    /// Dimensões do embedding (deve bater com `embedding_model`).
+    pub embedding_dimensions: usize,
+    /// Base URL do gateway. Default OpenRouter.
+    pub base_url: String,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            classifier_enabled: true,
+            classifier_model: "openai/gpt-4o-mini".into(),
+            embedding_model: "openai/text-embedding-3-small".into(),
+            embedding_dimensions: 1536,
+            base_url: "https://openrouter.ai/api/v1".into(),
+        }
+    }
+}
+
+/// Constrói o `Arc<dyn CompletionProvider>` pro classificador de
+/// memória. Se `api_key` é `Some`, constrói
+/// `OpenRouterCompletionProvider`. Se `None`, loga warning
+/// explícito e cai pra `NoopCompletionProvider` (degradação
+/// declarada — classificador vira noop).
+///
+/// **Por que a casca passa a key, não busca ela mesma:** o
+/// `frederico-app` é puro (sem dependência Windows, ADR-0003 +
+/// `scripts/check-core-purity.ps1`). O `CredentialStore` do
+/// DPAPI vive na casca (`apps/desktop/src-tauri`). A casca
+/// busca, o `app` recebe. Mesma divisão do resto da
+/// composição.
+#[must_use]
+pub fn build_completion_provider(
+    cfg: &MemoryConfig,
+    api_key: Option<secrecy::SecretString>,
+) -> Arc<dyn frederico_memory::classifier::CompletionProvider> {
+    match api_key {
+        Some(key) => Arc::new(
+            frederico_memory::classifier::OpenRouterCompletionProvider::new(key)
+                .with_model(&cfg.classifier_model)
+                .with_base_url(&cfg.base_url),
+        ),
+        None => {
+            tracing::warn!(
+                memory.classifier = "openrouter",
+                classifier_model = %cfg.classifier_model,
+                "OpenRouter API key ausente (DPAPI + env var): \
+                 classificador de memoria opera em modo Noop. \
+                 Captura automatica desabilitada. \
+                 Retrieval fica lexical-only (sem semantica)."
+            );
+            Arc::new(frederico_memory::classifier::NoopCompletionProvider)
+        }
+    }
+}
+
+/// Constrói o `Arc<dyn EmbeddingProvider>` pro retriever híbrido.
+/// Se `api_key` é `Some`, constrói `OpenRouterEmbeddingAdapter`.
+/// Se `None`, loga warning e cai pra `NoopEmbeddingAdapter`
+/// (retriever vira lexical-only — `HybridRetriever` já trata
+/// transparentemente, ver `docs/modules/memory.md`).
+#[must_use]
+pub fn build_embedding_provider(
+    cfg: &MemoryConfig,
+    api_key: Option<secrecy::SecretString>,
+) -> Arc<dyn frederico_memory::embedding::EmbeddingProvider> {
+    match api_key {
+        Some(key) => Arc::new(
+            frederico_memory::embedding::OpenRouterEmbeddingAdapter::new(key)
+                .with_model(&cfg.embedding_model, cfg.embedding_dimensions)
+                .with_base_url(&cfg.base_url),
+        ),
+        None => {
+            tracing::warn!(
+                memory.embedding = "openrouter",
+                embedding_model = %cfg.embedding_model,
+                "OpenRouter API key ausente (DPAPI + env var): \
+                 retriever opera em modo Noop (lexical-only). \
+                 Buscas por similaridade semantica desabilitadas."
+            );
+            Arc::new(frederico_memory::embedding::NoopEmbeddingAdapter)
+        }
+    }
+}
+
+/// Constrói o `MemoryExtractor` da casca. Se `cfg.classifier_enabled`
+/// é `false`, retorna `None` (memória desabilitada). Senão, monta
+/// o `LlmMemoryClassifier` com o completion provider real (ou
+/// noop) e inicia o worker em background via `tokio::spawn`.
+///
+/// O extractor roda em background e processa jobs do canal
+/// `mpsc` (256, sem `tokio::time::interval` — ADR-0014 §1). É
+/// o portão de **captura automática** da memória: cada run que
+/// termina enfileira um `MemoryExtractionJob` (Fase 4 Etapa 5),
+/// o worker classifica via LLM, e persiste via `MemoryRepo`.
+///
+/// **Retorna `Some(Arc<MemoryExtractorHandle>)` para caller
+/// passar pro [`ChatOrchestratorParts::memory_extractor`]** —
+/// o `ChatOrchestrator` enfileira o job automaticamente quando
+/// o run termina (regra do ADR-0012 §1 — fora do caminho
+/// crítico).
+#[must_use]
+pub fn build_memory_extractor(
+    db: &frederico_storage::Database,
+    cfg: &MemoryConfig,
+    api_key: Option<secrecy::SecretString>,
+) -> Option<Arc<frederico_memory::worker::MemoryExtractorHandle>> {
+    if !cfg.classifier_enabled {
+        tracing::info!(
+            memory.classifier = "disabled",
+            "classificador de memoria desabilitado por MemoryConfig::classifier_enabled"
+        );
+        return None;
+    }
+    let completion = build_completion_provider(cfg, api_key);
+    let classifier: Arc<dyn frederico_memory::classifier::MemoryClassifier> = Arc::new(
+        frederico_memory::classifier::LlmMemoryClassifier::new(completion),
+    );
+    let extractor = frederico_memory::worker::MemoryExtractor::start(db.pool(), classifier);
+    Some(Arc::new(extractor.handle()))
+}
+
 /// Constrói o `ToolRegistry` da casca + dos testes E2E.
 ///
 /// Itera sobre `tool.manifest()` e registra cada manifesto no

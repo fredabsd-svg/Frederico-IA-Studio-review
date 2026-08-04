@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -157,6 +158,197 @@ impl CompletionProvider for NoopCompletionProvider {
         Err(ClassifierError::Unavailable(
             "NoopCompletionProvider: sem provider configurado".into(),
         ))
+    }
+}
+
+/// Adapter de produção: OpenRouter (mesmo padrão do
+/// `OpenRouterEmbeddingAdapter` da Etapa 2) com `POST
+/// /chat/completions` no formato OpenAI-compat. Suporta
+/// qualquer modelo de completion que o gateway expor
+/// (default `openai/gpt-4o-mini`).
+///
+/// Auth via `SecretString` — o caller (casca Tauri) busca a
+/// key do `CredentialStore` (DPAPI no Windows, ADR-0007) e
+/// constrói o adapter. A `SecretString` evita que a key vaze
+/// em logs/debug (`Debug` não a exibe; `Display` retorna
+/// `[REDACTED]`).
+///
+/// **Timeout:** 5s por request (mesma regra do `provider-engine`
+/// da Fase 2). Sem retry — o `MemoryExtractor` (Etapa 3) registra
+/// o erro via `tracing::warn!` e segue (regra do `ADR-0012 §2`).
+pub struct OpenRouterCompletionProvider {
+    api_key: SecretString,
+    base_url: String,
+    model: String,
+    client: reqwest::Client,
+}
+
+impl std::fmt::Debug for OpenRouterCompletionProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenRouterCompletionProvider")
+            .field("api_key", &"[REDACTED]")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+impl OpenRouterCompletionProvider {
+    /// Cria um adapter OpenRouter com defaults sensatos
+    /// (modelo `gpt-4o-mini` da OpenAI, base URL OpenRouter,
+    /// timeout 5s). O caller pode customizar via
+    /// [`Self::with_model`] se precisar.
+    ///
+    /// `api_key` vem do `CredentialStore` da Fase 2 (DPAPI
+    /// no Windows, ADR-0007) **ou** de env var
+    /// (`OPENROUTER_API_KEY`). **Nunca** é persistido em
+    /// banco, log ou config.
+    #[must_use]
+    pub fn new(api_key: SecretString) -> Self {
+        Self {
+            api_key,
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model: "openai/gpt-4o-mini".into(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(5000))
+                .build()
+                .expect("reqwest::Client::builder não deveria falhar em runtime"),
+        }
+    }
+
+    /// Customiza o modelo (e.g. `"anthropic/claude-3-haiku"`,
+    /// `"google/gemini-flash-1.5"`, etc).
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Customiza a base URL (default OpenRouter; pode apontar
+    /// pra OpenAI direto, Azure, etc).
+    #[must_use]
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+}
+
+#[async_trait]
+impl CompletionProvider for OpenRouterCompletionProvider {
+    fn name(&self) -> &str {
+        "openrouter"
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<String, ClassifierError> {
+        // Request body (formato OpenAI-compat). `stream: false`
+        // porque o classificador quer o JSON completo, não delta.
+        #[derive(Serialize)]
+        struct ChatMessage<'a> {
+            role: &'a str,
+            content: &'a str,
+        }
+        #[derive(Serialize)]
+        struct ChatRequest<'a> {
+            model: &'a str,
+            messages: Vec<ChatMessage<'a>>,
+            stream: bool,
+        }
+
+        // Response (subset do OpenAI — só o que usamos).
+        #[derive(Deserialize)]
+        struct ChatResponse {
+            choices: Vec<ChatChoice>,
+        }
+        #[derive(Deserialize)]
+        struct ChatChoice {
+            message: ChatResponseMessage,
+        }
+        #[derive(Deserialize)]
+        struct ChatResponseMessage {
+            content: String,
+        }
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = ChatRequest {
+            model: &self.model,
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: &request.system,
+                },
+                ChatMessage {
+                    role: "user",
+                    content: &request.user,
+                },
+            ],
+            stream: false,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ClassifierError::Unavailable(format!("timeout após 5s: {e}"))
+                } else {
+                    ClassifierError::Unavailable(format!("send: {e}"))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<erro ao ler corpo: {e}>"));
+            return Err(ClassifierError::Unavailable(format!(
+                "HTTP {status}: {body}"
+            )));
+        }
+
+        let parsed: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| ClassifierError::InvalidOutput(format!("parse da resposta: {e}")))?;
+
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .ok_or_else(|| ClassifierError::InvalidOutput("resposta sem choices".to_string()))?;
+
+        Ok(content)
+    }
+}
+
+/// Helper de teste: monta um adapter apontando pra um
+/// `TcpListener` local. O caller sobe o listener e passa
+/// o `addr`. Usado pelos integration tests que precisam
+/// de um servidor HTTP fake (mesma técnica do
+/// `OpenRouterEmbeddingAdapter::for_test`).
+impl OpenRouterCompletionProvider {
+    /// Cria um adapter com `base_url` customizado (e.g.
+    /// `http://127.0.0.1:8080` pra testes locais).
+    #[must_use]
+    pub fn for_test(api_key: SecretString, base_url: impl Into<String>) -> Self {
+        Self {
+            api_key,
+            base_url: base_url.into(),
+            model: "test-model".into(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+                .expect("reqwest::Client::builder não deveria falhar em runtime"),
+        }
     }
 }
 

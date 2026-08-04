@@ -141,5 +141,31 @@ Invoke-Step "E2E docs.generate (caminho do produto, frederico-e2e)" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
+# Step 8 - Teste E2E determinístico do pipeline de memória
+# (Fase de Ligação, Etapa 3, 2026-08-04). Prova o pipeline
+# de memória ponta a ponta com providers falsos (scripted
+# JSON + vetores fixos): classificador persiste, embedding
+# é calculado, retriever pontua semântica acima de zero.
+# **Sempre roda no CI de PR** — sem dependência de OpenRouter
+# (sem latência de rede, sem cota, sem custo em dinheiro a
+# cada PR). **Diferente do `e2e_memory_real_embeddings`**
+# (#[ignore], só noturno, com API real do OpenRouter) que
+# prova o adaptador real contra a API real.
+#
+# A divisão segue o ADR-0008 (provedor simulado em CI de PR;
+# real fora) e o ADR-0019 (Tesseract vai pro noturno, não pro
+# gate de PR). Mesma forma do `e2e_docs_generate_with_real_worker`
+# vs `e2e_docs_generate_with_fake_worker`: o caminho do
+# produto (real) vai pro noturno, o pipeline (com fake)
+# vai pro gate.
+#
+# Ver `crates/e2e/tests/e2e_memory_pipeline_end_to_end.rs` e
+# `docs/architecture/testing-strategy.md` §3 "Fronteira do
+# que os E2E cobrem".
+Invoke-Step "E2E memory pipeline (deterministico, sem rede)" {
+    cargo test -p frederico-e2e --test e2e_memory_pipeline_end_to_end
+    if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
+}
+
 Write-Host ""
-Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect - TODOS OS TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect + memory pipeline (deterministico) - TODOS OS TESTES PASSARAM" -ForegroundColor Green

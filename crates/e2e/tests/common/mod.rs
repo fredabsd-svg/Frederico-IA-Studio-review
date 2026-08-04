@@ -15,20 +15,31 @@
 //! Cada teste importa via `mod common;` no topo (padrão Cargo
 //! de teste de integração).
 
+// `#[allow(dead_code)]` no nível do módulo: cada teste E2E
+// compila o `common/mod.rs` em um binário separado
+// (target/debug/deps/<test_name>-<hash>.exe), e o Cargo só
+// reclama de `dead_code` para o que aquele binário não usa.
+// Sem o allow, o `RUSTFLAGS=-D warnings` no `ci.yml` quebra
+// em todo PR que adiciona helper novo. O custo é zero
+// (helper morto é raro e auditado em revisão).
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use frederico_app::composition::{
     build_chat_orchestrator, build_default_allowed_for_run, build_default_tools,
     build_tool_registry, initial_permission_set, initial_permission_set_for_capable_launcher,
     ChatOrchestratorParts,
 };
 use frederico_app::jail::FileSystemJailResolver;
-use frederico_core::{ModelId, ProviderId};
+use frederico_core::{EmbeddingStatus, MemoryId, ModelId, ProviderId};
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
+use frederico_memory::memory_repo::MemoryRepo;
 use frederico_model_catalog::Catalog;
 use frederico_process_architecture::{FakeWorkerConfig, WorkerManager, WorkerSpawnConfig};
 use frederico_provider_engine::event_sink::{EventSink, RecordedEvent, RecordingEventSink};
@@ -389,4 +400,90 @@ pub async fn wait_for_run_completion(
             sink.events.lock().unwrap().len()
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Helpers de pipeline de memória (Etapa 3 da Fase de Ligação)
+// ---------------------------------------------------------------------------
+
+/// Espera o `MemoryExtractor` (em background) classificar o job
+/// e persistir uma memória. Retorna o `MemoryId` da primeira
+/// memória persistida. Usado pelos E2E determinístico
+/// (CI de PR) e real (noturno).
+pub async fn wait_for_classified_memory(db: &Database, timeout: Duration) -> MemoryId {
+    let start = std::time::Instant::now();
+    loop {
+        let repo = MemoryRepo::new(db);
+        match repo.list_pending_embeddings(100).await {
+            Ok(pending) if !pending.is_empty() => return pending[0].id,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("list_pending_embeddings errou (transient?): {e}");
+            }
+        }
+        if start.elapsed() > timeout {
+            panic!(
+                "timeout ({}s) esperando classificador processar o job. \
+                 Possiveis causas: provider indisponivel, classificador \
+                 decidiu descartar (confidence < threshold), ou bug no \
+                 pipeline. Verifique os logs do MemoryExtractor.",
+                timeout.as_secs()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Espera o `EmbeddingWorker` (em background) calcular o
+/// embedding da memória e marcar `embedding_status = Ready`.
+pub async fn wait_for_embedding(db: &Database, id: MemoryId, timeout: Duration) {
+    let start = std::time::Instant::now();
+    loop {
+        let repo = MemoryRepo::new(db);
+        if let Ok(Some(m)) = repo.get(&id).await {
+            if m.embedding_status == EmbeddingStatus::Ready {
+                return;
+            }
+            if m.embedding_status == EmbeddingStatus::Failed {
+                panic!(
+                    "EmbeddingWorker marcou memoria {id} como Failed. \
+                     Causas provaveis: timeout do provider, erro HTTP, \
+                     ou dim mismatch. Verifique os logs."
+                );
+            }
+        }
+        if start.elapsed() > timeout {
+            panic!(
+                "timeout ({}s) esperando embedding da memoria {id}. \
+                 Verifique se o EmbeddingWorker foi spawnado.",
+                timeout.as_secs()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Cria uma conversa de teste com `provider_id` e `model_id`
+/// fixos. Retorna `(Conversation, conversation_id_string)`.
+/// O `conversation_id_string` é o formato que o
+/// `MemoryExtractionJob` espera.
+pub async fn create_memory_test_conversation(
+    db: &Database,
+) -> (frederico_storage::Conversation, String) {
+    let conv_repo = ConversationRepo::new(db);
+    let conv = conv_repo
+        .create(
+            &ProviderId::new("openai"),
+            &ModelId::new("gpt-4o-mini"),
+            Some("e2e memory"),
+        )
+        .await
+        .expect("cria conversa de teste");
+    let id_str = conv.id.as_uuid().to_string();
+    (conv, id_str)
+}
+
+/// Helper de timestamp "agora" — usa `Utc::now()`.
+pub fn memory_job_now() -> chrono::DateTime<Utc> {
+    Utc::now()
 }

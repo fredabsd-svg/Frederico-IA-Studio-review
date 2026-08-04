@@ -65,6 +65,12 @@ struct AppState {
     /// `DocumentWorkerStatus` e pode chamar
     /// `DocumentWorkerInvoke` quando `Some`.
     document_worker: Option<Arc<DocumentWorkerLauncher>>,
+    /// Provider de embedding (Fase de Ligação, Etapa 3).
+    /// `OpenRouterEmbeddingAdapter` quando a key do OpenRouter
+    /// está disponível (DPAPI ou env var); `NoopEmbeddingAdapter`
+    /// caso contrário (retriever vira lexical-only). O
+    /// `build_retriever` helper local lê daqui.
+    embedding_provider: Arc<dyn frederico_memory::embedding::EmbeddingProvider>,
 }
 
 /// Diretório local de dados do aplicativo (Windows: `%LOCALAPPDATA%\studio\frederico\ia`).
@@ -420,22 +426,25 @@ fn main() {
                 frederico_app::composition::initial_permission_set()
             };
 
-            // `MemoryExtractor` (Fase 4, Etapa 5). Usa
-            // `LlmMemoryClassifier` com `NoopCompletionProvider`
-            // por enquanto — Etapa 5.x injeta o
-            // `CompletionProvider` real (OpenRouter + gpt-4o-mini).
-            // O extractor roda em background via `tokio::spawn` e
+            // `MemoryExtractor` (Fase 4, Etapa 5; Fase de Ligação
+            // Etapa 3 — bump de default). Constrói via
+            // `frederico_app::composition::build_memory_extractor`
+            // (mesma função que os E2E consomem). Se a key do
+            // OpenRouter está disponível (DPAPI ou env var), o
+            // `LlmMemoryClassifier` usa `OpenRouterCompletionProvider`
+            // (gpt-4o-mini); senão, cai pra `NoopCompletionProvider`
+            // com warning logado (degradação declarada). O
+            // extractor roda em background via `tokio::spawn` e
             // processa jobs do canal mpsc (256, sem
             // `tokio::time::interval` — ADR-0014 §1).
-            let memory_extractor_handle = {
-                let classifier: Arc<dyn frederico_memory::classifier::MemoryClassifier> =
-                    Arc::new(frederico_memory::classifier::LlmMemoryClassifier::new(
-                        Arc::new(frederico_memory::classifier::NoopCompletionProvider),
-                    ));
-                let extractor =
-                    frederico_memory::worker::MemoryExtractor::start(db.pool(), classifier);
-                std::sync::Arc::new(extractor.handle())
-            };
+            //
+            // Custo por run concluído: 1 chamada LLM (cota
+            // 5/min default, regra do ADR-0012 §2).
+            let memory_extractor_handle = tauri::async_runtime::block_on(async {
+                let cfg = frederico_app::composition::MemoryConfig::default();
+                let key = lookup_openrouter_key(&credentials).await;
+                frederico_app::composition::build_memory_extractor(&db, &cfg, key)
+            });
 
             // Composição centralizada no `frederico-app` (Etapa 1
             // da Fase de Ligação, ADR-0022 §D4). Esta é a
@@ -454,7 +463,7 @@ fn main() {
                 tools,
                 allowed_for_run,
                 permission_set,
-                memory_extractor: Some(memory_extractor_handle),
+                memory_extractor: memory_extractor_handle,
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 
@@ -477,11 +486,25 @@ fn main() {
                 std::time::Duration::from_secs(DEFAULT_STALE_THRESHOLD_SECS),
             );
 
+            // Provider de embedding (Fase de Ligação, Etapa 3):
+            // OpenRouterEmbeddingAdapter se a key está
+            // disponível, NoopEmbeddingAdapter caso contrário
+            // (degradação declarada). Construído **antes** do
+            // `app.manage` porque precisa de `credentials` (que é
+            // movido pro `AppState`).
+            let embedding_provider: Arc<dyn frederico_memory::embedding::EmbeddingProvider> =
+                tauri::async_runtime::block_on(async {
+                    let cfg = frederico_app::composition::MemoryConfig::default();
+                    let key = lookup_openrouter_key(&credentials).await;
+                    frederico_app::composition::build_embedding_provider(&cfg, key)
+                });
+
             app.manage(AppState {
                 db,
                 orch,
                 credentials,
                 document_worker,
+                embedding_provider,
             });
 
             Ok(())
@@ -931,17 +954,28 @@ fn parse_scope_type(s: &str) -> Result<MemoryScopeType, String> {
 }
 
 /// Constrói o retriever padrão da casca. Usa `HybridRetriever`
-/// com `NoopEmbeddingAdapter` por enquanto (cai pra lexical puro
-/// automaticamente — o `HybridRetriever` é transparente). A
-/// Etapa 5.x vira o adapter de embedding em `AppState` quando
-/// o `provider-engine` for refatorado.
+/// com o `embedding_provider` do `AppState` — que é o
+/// `OpenRouterEmbeddingAdapter` se a key do OpenRouter está
+/// disponível (DPAPI ou env var), ou `NoopEmbeddingAdapter`
+/// caso contrário (degradação declarada, retriever vira
+/// lexical-only — o `HybridRetriever` é transparente: se o
+/// provider é `NoopEmbeddingAdapter`, age como o
+/// `LexicalRetriever`).
+///
+/// **Por que helper local e não no `composition.rs`:** o
+/// `HybridRetriever` é emprestado (`'a`) e a fonte é o
+/// `&state.db` (referência do Tauri). Mover pro `composition.rs`
+/// exigiria lifting do lifetime ou mudança de design
+/// (e.g.owned hybrid retriever). Por ora fica aqui; a
+/// composição do `embedding_provider` (que é o que importa
+/// pra Etapa 3) mora em `frederico_app::composition::build_embedding_provider`.
 fn build_retriever<'a>(state: &'a State<'_, AppState>) -> HybridRetriever<'a> {
     use frederico_memory::config::ScoringWeights;
-    use frederico_memory::embedding::NoopEmbeddingAdapter;
-    use std::sync::Arc;
-    let embedding: Arc<dyn frederico_memory::embedding::EmbeddingProvider> =
-        Arc::new(NoopEmbeddingAdapter);
-    HybridRetriever::new(&state.db, embedding, ScoringWeights::default())
+    HybridRetriever::new(
+        &state.db,
+        state.embedding_provider.clone(),
+        ScoringWeights::default(),
+    )
 }
 
 /// Converte `MemoryRecord` em `MemoryView` (serializável pra UI).
@@ -1099,4 +1133,38 @@ async fn document_worker_reset(state: State<'_, AppState>) -> Result<serde_json:
     } else {
         Ok(serde_json::json!({ "ok": false, "message": "launcher indisponível" }))
     }
+}
+
+// --- Etapa 3 da Fase de Ligação: lookup de key do OpenRouter ---
+
+/// Busca a API key do OpenRouter pro embedding/classificador
+/// de memória. Ordem de precedência (degradação declarada):
+///
+/// 1. **DPAPI** via `WindowsCredentialStore` (chave cadastrada
+///    pelo usuário no Settings, Etapa 6 da Fase 3 vai expor
+///    isso). O `target_name` é
+///    `Frederico-IA-Studio:provider:openrouter` (formato
+///    `target_name_for(provider)` em `crates/security/src/windows.rs`).
+/// 2. **Env var** `OPENROUTER_API_KEY` (fallback pra dev local
+///    e CI). Útil pra E2E com `verify-external.ps1`.
+///
+/// Se ambas ausentes, retorna `None` — o
+/// `build_completion_provider` / `build_embedding_provider`
+/// logam warning e caem pra `Noop*` (degradação declarada).
+async fn lookup_openrouter_key(
+    credentials: &Arc<WindowsCredentialStore>,
+) -> Option<secrecy::SecretString> {
+    use frederico_core::ProviderId;
+    use secrecy::SecretString;
+
+    // 1. DPAPI (mesmo `ProviderId` que `build_provider_map` usa
+    //    pra registrar o `OpenAiCompatAdapter` OpenRouter).
+    if let Ok(Some(secret)) = credentials.get(&ProviderId::new("openrouter")).await {
+        return Some(secret);
+    }
+
+    // 2. Env var.
+    std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .map(|s| SecretString::new(s.into_boxed_str()))
 }

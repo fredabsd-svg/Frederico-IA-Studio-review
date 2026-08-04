@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-28
-Fase correspondente: 4 (Etapas 1, 2, 3, 4, 5 e 6)
+Verificado contra o código em: 2026-08-04
+Fase correspondente: 4 (Etapas 1, 2, 3, 4, 5 e 6) + Fase de Ligação (Etapa 3)
 -->
 
 # `frederico-memory`
@@ -317,11 +317,18 @@ do adapter + 9 E2E de expiration.
 ## 6. O que ele **não** faz
 
 - **Não classifica memórias automaticamente** com
-  CompletionProvider real. A Etapa 5 wire usa
-  `NoopCompletionProvider` por padrão (classificador vira
-  no-op, sem chamadas a LLM). A Etapa 5.x injeta o
-  `OpenRouterCompletionProvider` real (provider-engine da
-  Fase 2 + adapter OpenAI-compat).
+  `CompletionProvider` real como **default**. A Etapa 3
+  da Fase de Ligação (PR #28) introduziu o
+  `OpenRouterCompletionProvider` (gpt-4o-mini via
+  OpenRouter), e a casca consome via
+  `frederico_app::composition::build_completion_provider`
+  com degradação declarada: se a key do OpenRouter está
+  disponível (DPAPI + env var), o real é usado; senão, cai
+  pra `NoopCompletionProvider` com warning logado. O
+  `frederico-app` **não** busca a key (puro, sem
+  `windows`/`tauri`); a casca Tauri busca do DPAPI e
+  passa. O controle pela UI (Settings → Memória →
+  Classificador) chega na Fase 6 do plano mestre.
 - **Não roda o `ReindexWorker` em background.** O schema
   de `embedding_reindex_jobs` está pronto (regra do
   [ADR-0013](../decisions/0013-embedding-reindex.md)) mas

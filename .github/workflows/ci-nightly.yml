@@ -94,6 +94,25 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-external.ps1
 
+      # E2E de memória real (Fase de Ligação, Etapa 3,
+      # 2026-08-04). Classificador LLM + embedding reais via
+      # OpenRouter. **Só roda no noturno** porque o CI de PR
+      # nao pode depender de provedor externo (latencia, cota,
+      # custo em dinheiro a cada PR) — mesmo principio do
+      # ADR-0008 (provedor simulado em CI de PR) e do
+      # ADR-0019 (Tesseract no noturno). O
+      # `e2e_memory_pipeline_end_to_end` (sempre roda no CI
+      # de PR, com provider falso) cobre o pipeline; este
+      # aqui cobre o adaptador real contra a API real.
+      # Requer `OPENROUTER_API_KEY` em runtime — o helper
+      # `memory_real_providers_or_skip!` faz panic com
+      # mensagem clara apontando pra env se faltar.
+      - name: E2E memory real (OpenRouter + gpt-4o-mini + text-embedding-3-small)
+        shell: pwsh
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored
+
       - name: Core purity guard (ADR-0003)
         shell: pwsh
         run: ./scripts/check-core-purity.ps1
