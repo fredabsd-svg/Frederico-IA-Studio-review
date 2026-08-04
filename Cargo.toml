@@ -16,6 +16,7 @@ members = [
     "crates/process-architecture",
     "crates/test-support",
     "crates/app",
+    "crates/e2e",
     "packages/shared-contracts",
     "apps/desktop/src-tauri",
 ]

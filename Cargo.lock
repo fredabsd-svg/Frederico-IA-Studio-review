@@ -1178,6 +1178,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-e2e"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "frederico-app",
+ "frederico-core",
+ "frederico-document-engine",
+ "frederico-document-kits",
+ "frederico-execution-engine",
+ "frederico-model-catalog",
+ "frederico-process-architecture",
+ "frederico-provider-engine",
+ "frederico-security",
+ "frederico-storage",
+ "frederico-test-support",
+ "frederico-tool-registry",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "frederico-execution-engine"
 version = "0.1.0"
 dependencies = [
