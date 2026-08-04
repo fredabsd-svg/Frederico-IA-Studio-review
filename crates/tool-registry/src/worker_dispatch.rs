@@ -51,8 +51,8 @@
 //! (current_thread) é suficiente.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use frederico_process_architecture::{ProcessError, WorkerHandle};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -69,11 +69,16 @@ pub enum DispatchError {
         allowed: Vec<PathBuf>,
     },
 
-    /// O `WorkerHandle::invoke` falhou (transporte, timeout,
-    /// protocolo). Re-exportado pra que o caller não precise
-    /// importar `process-architecture` direto.
+    /// O `WorkerInvoker::invoke` falhou (transporte, timeout,
+    /// protocolo, plataforma, ou permanentemente morto). O
+    /// erro carrega a mensagem do `InvokeError` neutro do
+    /// `core` — o caller não precisa importar
+    /// `process-architecture` direto. **Bump atômico** (ADR-0024):
+    /// substitui a antiga `Process(ProcessError)` porque o
+    /// `WorkerInvoker` é o contrato genérico agora, e o
+    /// `InvokeError` (não o `ProcessError`) é o tipo neutro.
     #[error(transparent)]
-    Process(#[from] ProcessError),
+    Invoke(#[from] frederico_core::InvokeError),
 
     /// Path no `args` não é uma string (tipo errado).
     #[error("campo de path '{field}' não é uma string")]
@@ -83,33 +88,40 @@ pub enum DispatchError {
 /// Ponte `Tool::execute` → `WorkerHandle::invoke` com
 /// allowlist. Clonável (o `WorkerHandle` interno é `Arc`-ed).
 ///
-/// `Debug` **não** é derivado: o `WorkerHandle` interno
-/// carrega um `Arc<WorkerState>` que não implementa `Debug`
-/// (decisão do `process-architecture` — a saúde do worker é
-/// observada via `health_snapshot()`, não via `Debug`).
+/// `Debug` **não** é derivado: o `Arc<dyn WorkerInvoker>`
+/// interno carrega um trait object (não implementa `Debug` —
+/// decisão herdada do `WorkerHandle` que carregava `Arc<WorkerState>`
+/// sem `Debug`).
 #[derive(Clone)]
 pub struct WorkerToolDispatcher {
-    handle: WorkerHandle,
+    invoker: Arc<dyn frederico_core::WorkerInvoker>,
     allowed_paths: Vec<PathBuf>,
 }
 
 impl WorkerToolDispatcher {
-    /// Cria o dispatcher. `allowed_paths` é a allowlist
-    /// canonicalizada em runtime (não precisa ser absoluta
-    /// na entrada — `validate_against_allowlist` cuida).
+    /// Cria o dispatcher. `invoker` é o contrato genérico de
+    /// invocação de worker (ADR-0024) — pode ser um
+    /// `WorkerHandle` (Fase 5) ou um `DocumentWorkerLauncher`
+    /// (Etapa 2.A, lazy + restart on death). `allowed_paths`
+    /// é a allowlist canonicalizada em runtime (não precisa
+    /// ser absoluta na entrada — `validate_against_allowlist`
+    /// cuida).
     #[must_use]
-    pub fn new(handle: WorkerHandle, allowed_paths: Vec<PathBuf>) -> Self {
+    pub fn new(
+        invoker: Arc<dyn frederico_core::WorkerInvoker>,
+        allowed_paths: Vec<PathBuf>,
+    ) -> Self {
         Self {
-            handle,
+            invoker,
             allowed_paths,
         }
     }
 
-    /// `WorkerHandle` interno. Útil pra ping/health antes
+    /// `WorkerInvoker` interno. Útil pra ping/health antes
     /// do invoke.
     #[must_use]
-    pub fn handle(&self) -> &WorkerHandle {
-        &self.handle
+    pub fn invoker(&self) -> &Arc<dyn frederico_core::WorkerInvoker> {
+        &self.invoker
     }
 
     /// Allowlist atual (paths **não** canonicalizados — eles
@@ -162,8 +174,12 @@ impl WorkerToolDispatcher {
             }
         }
 
-        // 2. Invoke opaco. O handle cuida do envelope IPC.
-        let result = self.handle.invoke(args).await?;
+        // 2. Invoke opaco via trait. O `WorkerInvoker` (seja
+        // `WorkerHandle` ou `DocumentWorkerLauncher`) cuida do
+        // envelope IPC e do ciclo de vida. `InvokeError` é
+        // convertido pra `DispatchError::Process` (a tool
+        // concreta vê o mesmo erro que via antes).
+        let result = self.invoker.invoke(args).await?;
         Ok(result)
     }
 

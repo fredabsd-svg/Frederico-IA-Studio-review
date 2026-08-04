@@ -1,5 +1,96 @@
 ## [Não publicado]
 
+### Fechado — Fase de Ligação, Etapa 2.B (integração dos kits com o ToolRegistry via `WorkerInvoker`) (2026-08-03)
+
+- **Trait `WorkerInvoker` no `frederico-core` + `InvokeError` próprio**
+  (ADR-0024 §D1, D2) — o contrato genérico de invocação de worker
+  sidecar. **Por que no `core` e não no `tool-registry`** (regra
+  do user): "WorkerInvoker é um contrato genérico de invocação
+  de worker — não tem nada a ver com registro de ferramentas.
+  Colocá-lo no `tool-registry` criaria uma dependência errada
+  do `document-kits` em `tool-registry`. Onde ele deveria morar:
+  `frederico-core`." O `core` é o lugar dos tipos compartilhados
+  (`ToolId`, `ConversationId`, `MessageId`, `RunId`).
+  `InvokeError` tem 6 variantes (5 mapeiam 1:1 do `ProcessError`
+  do `process-architecture`; `PermanentlyDead` é específico do
+  launcher). 3 unit tests no `core`.
+- **Dois `impl`s do `WorkerInvoker`**: `impl WorkerInvoker for
+  WorkerHandle` em `process-architecture/src/worker_invoker_impl.rs`
+  (regra do Rust: orphan rule — `WorkerHandle` mora no
+  `process-architecture`, o `impl` precisa estar lá), e `impl
+  WorkerInvoker for DocumentWorkerLauncher` em
+  `app/src/launcher.rs` (mesma razão). **Helper
+  `process_to_invoke_error` inline duplicado em 3 lugares**
+  (`process-architecture`, `app`, deletado do `tool-registry`):
+  ~25 linhas duplicadas, preço de manter o grafo de dependências
+  limpo (o `core` não pode importar `process-architecture` pela
+  regra de pureza). 4 unit tests no `process-architecture`.
+- **Bump atômico do contrato em 1 PR** (ADR-0024 §D5): 4
+  commits consecutivos mas obrigatórios (cada um é uma camada
+  do grafo): `954e79b feat(core)` → `1c777b8 feat(process-architecture)`
+  → `5d0d26f feat(tool-registry)` → `8800d26 feat(document-kits)`.
+  A invariante preservada: **em qualquer commit intermediário
+  o workspace não compila** (a ordem é obrigatória). Força o
+  reviewer a olhar a mudança como atômica, não como 4 mudanças
+  separadas. Mudanças de contrato: `WorkerToolDispatcher::new
+  (Arc<dyn WorkerInvoker>)`, `WordProKit::new(Arc<dyn
+  WorkerInvoker>)`, `ExcelProKit::new(Arc<dyn WorkerInvoker>)`,
+  `PdfProKit::new(Arc<dyn WorkerInvoker>)`, `KitError::Process
+  (InvokeError)`, `DispatchError::Process(ProcessError) →
+  DispatchError::Invoke(InvokeError)`.
+- **Bump atômico do `documents: None → Full` na casca Tauri**
+  (ADR-0020 §3 D3): quando o `DocumentWorkerLauncher` está
+  disponível, as 3 funções de composição (`build_default_tools`,
+  `build_default_allowed_for_run`, `initial_permission_set*`)
+  recebem a **mesma** `Option<Arc<dyn WorkerInvoker>>` — quando
+  `Some`, os 2 tools do `document-worker` (`DocsGenerateTool` +
+  `DocsInspectTool`) entram no `ToolRegistry`, os 2 `ToolId`s
+  (`docs.generate` + `docs.inspect`) entram na allowlist, e
+  `documents` vira `Full`; quando `None`, em nenhum dos três
+  lugares. A simetria é o que garante que o modelo **nunca**
+  vê um tool que não consegue invocar (degradação declarada,
+  não substituição silenciosa — "documento falso entregue como
+  verdadeiro" é a falha mais cara em app de contabilidade).
+- **Tests do `frederico-app` atualizados** pra nova assinatura
+  `Option<Arc<dyn WorkerInvoker>>` (helper `fake_invoker()`
+  constrói um `WorkerHandle` real via `FakeWorker` in-process,
+  sem Python, sem disco). `build_default_tools_with_invoker_returns_three_tools`
+  e `build_default_allowed_for_run_with_invoker_includes_documents`
+  substituem os tests da Etapa 2.A que assumiam
+  `Option<&RuntimeLocation>`. Suíte do `frederico-app` continua
+  **32/32 verde**.
+- **Guarda automatizada: `scripts/check-fase-5-untouched.ps1`**
+  (ADR-0024 §D6) — a Etapa 2.B **integra** os 3 kits ao
+  `ToolRegistry`, mas **não mexe** no `document-worker` Python
+  da Fase 5. O script compara `git diff --stat origin/main..HEAD`
+  em 3 arquivos sensíveis do worker (`test_pdf_audit.py`,
+  `document-worker.py`, `generate_srgb_icc.py`); se algum mudou,
+  exit 1 com mensagem explicando o atravessamento de fronteira.
+  "Valeria virarem passo de script em vez de comando manual"
+  virou passo de script — roda em todo CI e em todo pre-push
+  manual. **É o tipo de coisa que ninguém desfaz depois.**
+- ADR-0024 (novo) — 6 decisões: D1 (trait no `core`, não no
+  `tool-registry`), D2 (`InvokeError` próprio do `core`),
+  D3 (orphan rule — `impl` no `process-architecture`),
+  D4 (`impl` no `app` + `Arc<dyn WorkerInvoker>` local,
+  `AppState` guarda `DocumentWorkerLauncher` concreto),
+  D5 (bump atômico em 4 commits obrigatórios), D6 (guarda
+  automatizada `check-fase-5-untouched.ps1`). 3 alternativas
+  consideradas: o `LauncherDispatcher` wrapper do ADR-0023
+  (rejeitado — re-introduz indireção sem benefício), o
+  `ProcessError` como erro do trait (rejeitado — `core` não
+  pode importar `process-architecture`), o `WorkerInvoker` no
+  `tool-registry` (rejeitado — inversão hierárquica).
+- Suíte workspace (excluindo `process-architecture` com 2
+  testes de OCR pré-existentes) **533/533 verde** (era 531
+  na Etapa 2.A; +2 tests do `core` `worker_invoker` e
+  ajustes no `app` que entram e saem sem mudar contagem
+  líquida — vamos validar no `cargo test`). `cargo fmt
+  --check` limpo, `cargo clippy --workspace --all-targets
+  --exclude frederico-process-architecture -- -D warnings
+  -D clippy::await_holding_lock` limpo, `check-core-purity.ps1`
+  OK, `check-docs.mjs` OK, `check-fase-5-untouched.ps1` OK.
+
 ### Fechado — Fase de Ligação, Etapa 2.A (DocumentWorkerLauncher + caminho de invoke direto) (2026-08-03)
 
 - **Lifecycle do `document-worker` agora é gerenciado pela casca

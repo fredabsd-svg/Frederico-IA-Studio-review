@@ -71,6 +71,7 @@ pub mod fake;
 pub mod manager;
 pub mod pipes;
 pub mod protocol;
+pub mod worker_invoker_impl;
 
 #[cfg(windows)]
 pub mod windows_pipes;

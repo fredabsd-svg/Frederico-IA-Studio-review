@@ -82,11 +82,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use frederico_core::WorkerInvoker;
 use frederico_document_engine::{
     CalloutKind, ChartKind, ConfidentialityLevel, DocumentBlock, DocumentError, DocumentSpec,
     DocumentStyle, PdfaFlavor, WatermarkPosition, WatermarkSpec,
 };
-use frederico_process_architecture::WorkerHandle;
 use frederico_tool_registry::{
     JsonSchema, RiskLevel, ToolCategory, ToolManifest, ToolManifestBuilder,
 };
@@ -557,7 +557,7 @@ fn confidentiality_level_str(l: ConfidentialityLevel) -> &'static str {
 
 /// `PdfProKit` v0.1 — Etapa 5 PR 2 da Fase 5.
 pub struct PdfProKit {
-    handle: Arc<WorkerHandle>,
+    handle: Arc<dyn WorkerInvoker>,
     manifest: ToolManifest,
 }
 
@@ -566,7 +566,7 @@ impl PdfProKit {
     /// `document-worker` (clonado do `AppState` ou passado
     /// no teste).
     #[must_use]
-    pub fn new(handle: Arc<WorkerHandle>) -> Self {
+    pub fn new(handle: Arc<dyn WorkerInvoker>) -> Self {
         Self {
             handle,
             manifest: Self::build_manifest(),

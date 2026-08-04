@@ -40,8 +40,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use frederico_core::WorkerInvoker;
 use frederico_document_engine::{DocumentError, DocumentSpec};
-use frederico_process_architecture::WorkerHandle;
 use frederico_tool_registry::{
     JsonSchema, RiskLevel, ToolCategory, ToolManifest, ToolManifestBuilder,
 };
@@ -282,7 +282,7 @@ pub fn translate_spec_to_docx_payload(
 /// do kit — a fronteira do "eu sou o tradutor + chamador"
 /// fica clara aqui.
 pub struct WordProKit {
-    handle: Arc<WorkerHandle>,
+    handle: Arc<dyn WorkerInvoker>,
     manifest: ToolManifest,
 }
 
@@ -290,7 +290,7 @@ impl WordProKit {
     /// Cria o kit. O `handle` é o `WorkerHandle` do
     /// `document-worker` (clonado do `AppState`).
     #[must_use]
-    pub fn new(handle: Arc<WorkerHandle>) -> Self {
+    pub fn new(handle: Arc<dyn WorkerInvoker>) -> Self {
         Self {
             handle,
             manifest: Self::build_manifest(),

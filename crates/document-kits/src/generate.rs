@@ -253,7 +253,7 @@ impl Tool for DocsGenerateTool {
                         allowed
                     ),
                 ),
-                DispatchError::Process(_) => ToolResult::err(
+                DispatchError::Invoke(_) => ToolResult::err(
                     self.tool_id.clone(),
                     "erro de processo na validação de path",
                 ),
@@ -424,7 +424,7 @@ mod tests {
         registry.register(wordpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         (tool, manager)
@@ -452,7 +452,7 @@ mod tests {
         registry.register(excelpro);
         let registry = Arc::new(registry);
 
-        let dispatcher = WorkerToolDispatcher::new((*handle).clone(), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new((*handle).clone()), vec![]);
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         (tool, manager)
@@ -493,7 +493,7 @@ mod tests {
         .await
         .expect("spawn fake");
         let registry = Arc::new(KitRegistry::new());
-        let dispatcher = WorkerToolDispatcher::new(handle.clone(), vec![]);
+        let dispatcher = WorkerToolDispatcher::new(Arc::new(handle.clone()), vec![]);
         let tool = DocsGenerateTool::new(registry, dispatcher);
 
         let schema = tool.manifest().input_schema.0.clone();

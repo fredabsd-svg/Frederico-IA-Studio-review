@@ -20,6 +20,7 @@ frederico-execution-engine = { workspace = true }
 frederico-memory = { workspace = true }
 frederico-document-kits = { workspace = true }
 frederico-process-architecture = { workspace = true }
+async-trait = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

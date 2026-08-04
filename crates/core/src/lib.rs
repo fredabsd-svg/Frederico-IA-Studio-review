@@ -10,6 +10,7 @@
 //! [`docs/architecture/memory-architecture.md`](../../docs/architecture/memory-architecture.md).
 
 pub mod memory;
+pub mod worker_invoker;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -28,6 +29,14 @@ pub enum CoreError {
 
 /// Resultado padrão do núcleo.
 pub type CoreResult<T> = Result<T, CoreError>;
+
+// Re-exports do submódulo `worker_invoker` (ADR-0024).
+// O trait `WorkerInvoker` é o contrato genérico de invocação
+// de worker sidecar — usado por `tool-registry`,
+// `document-kits`, e `app`. O `InvokeError` é o erro próprio
+// (não usamos `ProcessError` aqui pra manter o `core` puro,
+// sem dependência em `process-architecture`).
+pub use worker_invoker::{InvokeError, InvokeResult, WorkerInvoker};
 
 /// Macro helper para definir identificadores opacos (UUID newtype).
 /// Usado por `RunId`, `ConversationId`, `ProjectId`, etc. Exportada

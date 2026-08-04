@@ -39,6 +39,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+use frederico_core::{InvokeError, WorkerInvoker};
 use frederico_process_architecture::{ProcessError, WorkerHandle, WorkerHealth, WorkerManager};
 use tokio::sync::Mutex;
 
@@ -484,6 +486,74 @@ impl Drop for DocumentWorkerLauncher {
             "DocumentWorkerLauncher droppado — child python.exe será reaped pelo SO \
              (Windows) ou pelo Job Object (Etapa 7 — SecurityJailResolver)."
         );
+    }
+}
+
+// --- ADR-0024: impl WorkerInvoker for DocumentWorkerLauncher ---
+//
+// O launcher implementa o trait `WorkerInvoker` (do `core`) pra
+// integrar com o `WorkerToolDispatcher` e os 3 kits do
+// `document-kits`. **Mapeamento de erros:** cada variante do
+// `WorkerError` (específico do launcher) é convertida pra
+// `InvokeError` (genérico do core). `SpawnFailed(pe)` e
+// `InvokeFailed(pe)` carregam um `ProcessError` interno — o
+// `process_to_invoke_error` helper inline converte 1:1
+// (espelhado em `process-architecture/src/worker_invoker_impl.rs`).
+
+/// Converte `ProcessError` em `InvokeError` (1:1, exceto
+/// categorização). Duplicado intencionalmente em
+/// `process-architecture/src/worker_invoker_impl.rs` —
+/// cada crate que precisa do mapeamento tem o seu, pra
+/// evitar ciclo no grafo de dependências.
+#[must_use]
+fn process_to_invoke_error(e: ProcessError) -> InvokeError {
+    match e {
+        ProcessError::Protocol { message } => InvokeError::Protocol { message },
+        ProcessError::Transport { message } => InvokeError::Transport { message },
+        ProcessError::Timeout { .. } => InvokeError::Timeout,
+        ProcessError::Cancelled { .. } => InvokeError::Unhealthy {
+            message: "cancelado pelo watchdog (passou do budget)".to_string(),
+        },
+        ProcessError::Unhealthy { message, .. } => InvokeError::Unhealthy { message },
+        ProcessError::Platform { message } => InvokeError::Platform { message },
+    }
+}
+
+#[async_trait]
+impl WorkerInvoker for DocumentWorkerLauncher {
+    async fn invoke(&self, payload: serde_json::Value) -> Result<serde_json::Value, InvokeError> {
+        // Delega pro `DocumentWorkerLauncher::invoke` (que é
+        // inherent async, sem `async_trait`) e converte
+        // `WorkerError` → `InvokeError`.
+        DocumentWorkerLauncher::invoke(self, payload)
+            .await
+            .map_err(worker_error_to_invoke_error)
+    }
+}
+
+/// Converte `WorkerError` em `InvokeError`. Função pública
+/// (não-pub seria `fn` no `impl`) — usada pelo `impl
+/// WorkerInvoker for DocumentWorkerLauncher` acima e exposta
+/// pra outros adapters se necessário.
+#[must_use]
+pub fn worker_error_to_invoke_error(e: WorkerError) -> InvokeError {
+    match e {
+        WorkerError::RuntimeUnavailable => InvokeError::Platform {
+            message: "document-worker runtime indisponível \
+                     (execute bootstrap.ps1 ou popule bundle.resources)"
+                .to_string(),
+        },
+        WorkerError::PlatformNotSupported => InvokeError::Platform {
+            message: "document-worker não suportado nesta plataforma (Windows only)".to_string(),
+        },
+        WorkerError::SpawnFailed(pe) => process_to_invoke_error(pe),
+        WorkerError::InvokeFailed(pe) => process_to_invoke_error(pe),
+        WorkerError::PermanentlyDead { attempts, max } => {
+            InvokeError::PermanentlyDead { attempts, max }
+        }
+        WorkerError::ShutdownFailed(pe) => InvokeError::Platform {
+            message: format!("shutdown best-effort falhou: {pe}"),
+        },
     }
 }
 
