@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-27
-Fase correspondente: 3 (Etapa 1)
+Verificado contra o código em: 2026-08-04
+Fase correspondente: 3 (Etapa 1) + Fase de Ligação (Etapa 4 — ADR-0025)
 -->
 
 # `frederico-agent-engine`
@@ -67,19 +67,22 @@ na Etapa 4.
 
 **Quem depende dele (hoje):**
 
-- Ninguém ainda. A Etapa 4 (integração) vai fazer
-  `frederico-provider-engine` depender dele para o `RunExecutor`. A
-  Etapa 2 (tool-registry) e a Etapa 3 (permissões) podem consultá-lo
-  para validar transições fora do executor (ex.: `apply_transition`
-  num preview da UI).
+- `frederico-execution-engine` — importa `RunState` (3+ lugares:
+  `src/state_mapping.rs:35`, `src/recovery.rs:236`, `src/orchestrator.rs:338-349`)
+  e `Budget` (8+ lugares: `src/budget.rs:13`, `src/orchestrator.rs:72`,
+  `src/executor.rs:66`, mais os 5 arquivos de teste). **Não** importa
+  `apply_transition` nem `RunEvent`/`RunEventKind`.
+- `frederico-storage` — importa `RunState` em `src/lib.rs:997` e
+  `src/lib.rs:1020` (assinaturas de `RunRepo::set_state_tx`).
+  `Cargo.toml` declara a dep normalmente.
+- **Nenhum** outro crate importa `apply_transition`, `RunEvent` ou
+  `RunEventKind` — ver ADR-0025 §"Fato" pra auditoria completa.
 
 **Quem vai depender dele (próximas etapas):**
 
-- `frederico-execution-engine` (sugerido pelo spec
-  `software-architecture.md` §"Crates previstos na fundação") — o
-  coordenador entre motor, tools e persistência. Pode ser módulo
-  dentro do `frederico-agent-engine` na Etapa 4, ou crate separado
-  se crescer.
+- A integração com o caminho de produção (portão único de
+  transição via `apply_transition`) é trabalho da **Fase 6 do
+  plano mestre**, não da Fase de Ligação. Ver ADR-0025.
 - `frederico-subagent-engine` (Fase 6) — o motor de subagentes
   precisa de uma máquina de estados; reusar a do `agent-engine` é o
   caminho natural.
@@ -194,3 +197,19 @@ Cobertura por par atual (em `crates/agent-engine/src/transition.rs`):
   constrói `Run::new(...)` em vez de `Run::default()`. Estados
   terminais são explicitamente imutáveis (a `apply_transition`
   rejeita qualquer evento a partir deles).
+- **A máquina de estados não é exercitada no produto até a Fase 6.**
+  A função `apply_transition` e os tipos `RunEvent` / `RunEventKind`
+  têm **zero chamadas fora deste crate** (auditoria de 2026-08-04
+  com `git grep` — ver ADR-0025 §"Fato"). O caminho de produção é
+  `RunExecutor → state_mapping → RunRepo::set_state`, e o
+  `state_mapping.rs:42-56` mapeia `StreamEvent → RunState` por
+  **match puro** (sem consultar a tabela `TRANSITIONS`, sem chamar
+  `apply_transition`). Os 46 testes do crate protegem o invariante
+  da função pura — não cobrem o que o produto faz. A Etapa 4 da
+  Fase 3 prometeu "transição gravada antes de retornar"
+  (ADR-0009 §D1) e não entregou. **O portão único de transição
+  (chamar `apply_transition` antes de `set_state` e emitir
+  `RunEvent` no journal) é trabalho da Fase 6**, com pendência
+  nomeada no ADR-0025. Mecanismos que nunca rodam no caminho real
+  parecem funcionar até o dia que precisam; quando precisam, é
+  tarde — mesma lição do PR #25.
