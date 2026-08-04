@@ -137,16 +137,18 @@ impl WorkerToolDispatcher {
     /// contra a allowlist. Os campos são validados na ordem;
     /// o primeiro que falhar aborta o dispatch.
     ///
-    /// Se `allowed_paths` está vazio, **não valida** (o
-    /// trabalho é do worker — defesa em profundidade). A
-    /// `Tool` que constrói o dispatcher é responsável por
-    /// popular a allowlist (vazio é OK pra tools que não
-    /// recebem path do chamador, mas a recomendação é sempre
-    /// popular).
+    /// **Sempre valida** (fail-closed, vide
+    /// [`validate_against_allowlist`]). O caller é responsável
+    /// por passar uma `allowed` adequada — vetor vazio é
+    /// "nega tudo", não "passa sem validar". A composição
+    /// (`app/src/composition.rs`) popula `allowed` por chamada
+    /// a partir do `Jail` da conversa (Etapa 1 da Fase de
+    /// Ligação).
     ///
     /// # Erros
     /// - `DispatchError::PathNotAllowed` se algum `path_field`
-    ///   aponta pra fora da allowlist.
+    ///   aponta pra fora da allowlist (ou se a allowlist é
+    ///   vazia — fail-closed).
     /// - `DispatchError::NotAString` se o campo não é string.
     /// - `DispatchError::Process` se o `WorkerHandle::invoke`
     ///   falha (transporte/timeout/protocolo).
@@ -156,22 +158,20 @@ impl WorkerToolDispatcher {
         path_fields: &[&str],
     ) -> Result<Value, DispatchError> {
         // 1. Valida os paths ANTES de tocar no handle.
-        if !self.allowed_paths.is_empty() {
-            for field in path_fields {
-                if let Some(v) = args.get(*field) {
-                    if let Some(s) = v.as_str() {
-                        validate_against_allowlist(s, &self.allowed_paths)?;
-                    } else {
-                        return Err(DispatchError::NotAString {
-                            field: (*field).to_string(),
-                            value: v.clone(),
-                        });
-                    }
+        for field in path_fields {
+            if let Some(v) = args.get(*field) {
+                if let Some(s) = v.as_str() {
+                    validate_against_allowlist(s, &self.allowed_paths)?;
+                } else {
+                    return Err(DispatchError::NotAString {
+                        field: (*field).to_string(),
+                        value: v.clone(),
+                    });
                 }
-                // Se o campo não está presente, sem problema —
-                // o schema do manifesto (validado antes) já
-                // cobre a obrigatoriedade.
             }
+            // Se o campo não está presente, sem problema —
+            // o schema do manifesto (validado antes) já
+            // cobre a obrigatoriedade.
         }
 
         // 2. Invoke opaco via trait. O `WorkerInvoker` (seja
@@ -197,8 +197,14 @@ impl WorkerToolDispatcher {
 /// `starts_with`.
 ///
 /// Regras:
-/// - Se `allowed` está vazio, **passa** (sem validação —
-///   caller decide).
+/// - **Fail-closed: allowlist vazia nega tudo.** Se um caller
+///   precisar de "sem restrição" legítimo, é variante explícita
+///   (`PathPolicy::Unrestricted` num PR próprio) — não é o
+///   default. Bug original (Etapa 3 da Fase 5): vetor vazio
+///   = passava sem validar, e a composição deixou o vetor
+///   vazio no caminho de produção, desligando a barreira de
+///   path safety do `docs.generate`. Correção de modelagem:
+///   o default seguro é negar; o "sem restrição" é opt-in.
 /// - Se o path pedido não puder ser canonicalizado (e.g.
 ///   arquivo não existe), usa o path como está e tenta
 ///   `starts_with` mesmo assim. A defesa em profundidade
@@ -229,8 +235,16 @@ pub fn validate_against_allowlist(
     path_str: &str,
     allowed: &[PathBuf],
 ) -> Result<(), DispatchError> {
+    // Fail-closed: allowlist vazia = nega tudo. O for lá embaixo
+    // também cai no `Err(PathNotAllowed)` no final (não há
+    // `allowed` que case), mas o early-return deixa a intenção
+    // explícita e evita o trabalho de canonicalizar o path pra
+    // nada.
     if allowed.is_empty() {
-        return Ok(());
+        return Err(DispatchError::PathNotAllowed {
+            path: Path::new(path_str).to_path_buf(),
+            allowed: Vec::new(),
+        });
     }
 
     // Decide ANTES se vamos canonicalizar o `allowed`: só
@@ -390,10 +404,17 @@ mod tests {
     }
 
     #[test]
-    fn path_with_empty_allowlist_passes() {
-        // Allowlist vazia = sem validação.
+    fn path_with_empty_allowlist_denies() {
+        // Fail-closed: allowlist vazia = nega tudo. O caller
+        // que precisar de "sem restrição" usa variante explícita
+        // (`PathPolicy::Unrestricted` num PR próprio se aparecer).
+        // Este teste trava o fail-open original: se alguém
+        // "simplificar" voltando ao `return Ok(())`, este teste
+        // falha.
         let outside = std::env::temp_dir().join("anywhere.txt");
-        validate_against_allowlist(outside.to_str().unwrap(), &[]).unwrap();
+        let err = validate_against_allowlist(outside.to_str().unwrap(), &[])
+            .expect_err("deveria falhar (fail-closed)");
+        assert!(matches!(err, DispatchError::PathNotAllowed { .. }));
     }
 
     #[test]
