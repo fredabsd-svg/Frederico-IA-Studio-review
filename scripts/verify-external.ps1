@@ -141,30 +141,31 @@ Invoke-Step "E2E docs.generate (caminho do produto, frederico-e2e)" {
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
-# Step 8 - Teste E2E de memória real (Fase de Ligação, Etapa 3,
-# 2026-08-04). Classificador LLM + embedding real via OpenRouter;
-# salva um facto, recupera por paráfrase com `HybridRetriever`.
-# **Esse é o teste que prova "memória real funciona ponta a
-# ponta"** — sem ele, a Etapa 3 fecha com `cargo test
-# --workspace` verde mas o classificador fica em `Noop` e o
-# retrieval lexical-only (mesma armadilha que a Etapa 5.X
-# da Fase de Ligação documentou no PR #25: mecanismo que
-# nunca roda no caminho real parece funcionar até o dia
-# que precisa). Marcado `#[ignore]` no source;
-# `--include-ignored` ativa.
+# Step 8 - Teste E2E determinístico do pipeline de memória
+# (Fase de Ligação, Etapa 3, 2026-08-04). Prova o pipeline
+# de memória ponta a ponta com providers falsos (scripted
+# JSON + vetores fixos): classificador persiste, embedding
+# é calculado, retriever pontua semântica acima de zero.
+# **Sempre roda no CI de PR** — sem dependência de OpenRouter
+# (sem latência de rede, sem cota, sem custo em dinheiro a
+# cada PR). **Diferente do `e2e_memory_real_embeddings`**
+# (#[ignore], só noturno, com API real do OpenRouter) que
+# prova o adaptador real contra a API real.
 #
-# Requer `OPENROUTER_API_KEY` em runtime — o helper
-# `memory_real_providers_or_skip!` faz panic com mensagem
-# clara se faltar. Em CI, a env é setada como secret do
-# repositório (ver `.github/workflows/ci.yml` `env:` block).
+# A divisão segue o ADR-0008 (provedor simulado em CI de PR;
+# real fora) e o ADR-0019 (Tesseract vai pro noturno, não pro
+# gate de PR). Mesma forma do `e2e_docs_generate_with_real_worker`
+# vs `e2e_docs_generate_with_fake_worker`: o caminho do
+# produto (real) vai pro noturno, o pipeline (com fake)
+# vai pro gate.
 #
-# Ver `crates/e2e/tests/e2e_memory_real_embeddings.rs` e
+# Ver `crates/e2e/tests/e2e_memory_pipeline_end_to_end.rs` e
 # `docs/architecture/testing-strategy.md` §3 "Fronteira do
 # que os E2E cobrem".
-Invoke-Step "E2E memory real (classificador LLM + embedding, caminho do produto)" {
-    cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored
+Invoke-Step "E2E memory pipeline (deterministico, sem rede)" {
+    cargo test -p frederico-e2e --test e2e_memory_pipeline_end_to_end
     if ($LASTEXITCODE -ne 0) { throw "cargo test falhou" }
 }
 
 Write-Host ""
-Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect + memory real (LLM + embedding) - TODOS OS TESTES PASSARAM" -ForegroundColor Green
+Write-Host "E2E document-worker handlers + docs.generate (docx + xlsx + pdf) + docs.inspect + memory pipeline (deterministico) - TODOS OS TESTES PASSARAM" -ForegroundColor Green
