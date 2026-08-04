@@ -4,6 +4,14 @@
 Estado: em andamento
 Verificado contra o código em: 2026-08-03
 Fase correspondente: fase-ligacao (entre 5 e 6)
+Carimbo de estado por linha: a tabela abaixo mostra o status real
+de cada etapa. A Etapa 5 foi movida pra PRÓXIMA (antes da Etapa 3)
+— E2E atravessando a casca prova que 1, 2.A e 2.B funcionam no
+binário antes de empilhar mais etapas por cima. A Etapa 7
+(`SecurityJailResolver` modo desenvolvedor) foi REMOVIDA desta
+fase — depende da Fase 7 do PROMPT MESTRE, e uma fase de
+ligação que depende de fase futura nunca fecha. Virou
+pendência nomeada dentro da Fase 7.
 -->
 
 Índice das narrativas de processo (descrições de PR, lições de
@@ -47,14 +55,30 @@ deny-all).
 |-------|--------|---------|----------|
 | Etapa 1 — composição + jail + tools | **fechada** (PR #21) | Etapa 2 | — |
 | Etapa 2.A — `DocumentWorkerLauncher` + resolvedor de runtime + status/invoke direto | **fechada** (PR #22) | Etapa 2.B | nenhuma |
-| Etapa 2.B — `docs.generate`/`docs.inspect` no `ToolRegistry` (bump atômico capability+permission) | **fechada** (este PR) | Etapa 3 | nenhuma |
+| Etapa 2.B — `docs.generate`/`docs.inspect` no `ToolRegistry` (bump atômico capability+permission) | **fechada** (PR #23) | Etapa 5 | nenhuma |
+| **Etapa 5** — `tests/e2e/` atravessando a casca (modelo → ChatOrchestrator → ToolRegistry → kit → WorkerInvoker → document-worker → arquivo) | **não iniciada (próxima)** | Etapa 1, 2.A, 2.B | nenhuma |
 | Etapa 3 — `MemoryExtractor` + embedding adapter reais | não iniciada | Etapa 1 | nenhuma |
 | Etapa 4 — decidir `frederico-agent-engine` | não iniciada | nenhuma | nenhuma |
-| Etapa 5 — `tests/e2e/` atravessando a casca | não iniciada | Etapa 1, 2.A, 2.B | nenhuma |
 | Etapa 6 — regra de "definição de pronto" + gate CI | não iniciada | nenhuma | nenhuma |
-| Etapa 7 — `SecurityJailResolver` (modo desenvolvedor) | não iniciada | Etapa 1 | Fase 7 do PROMPT MESTRE |
 
-Etapas 3-7 não dependem umas das outras (em sua maioria) e
+**Ordem recomendada:** Etapa 5 antes da Etapa 3. As Etapas 1,
+2.A e 2.B acabaram de fechar — o E2E é o que prova que elas
+realmente funcionam no binário. Se algo estiver mal ligado
+(recurso, ciclo de vida do worker, bump atômico de permission,
+rota no ToolRegistry), você descobre agora, com três PRs de
+contexto fresco. Esperar a Etapa 3 primeiro empilha mais uma
+etapa por cima antes de validar a base.
+
+**Etapa 7 (`SecurityJailResolver` modo desenvolvedor) REMOVIDA**
+desta fase. Depende da Fase 7 do PROMPT MESTRE; uma fase
+de ligação que depende de fase futura nunca fecha. Virou
+pendência nomeada dentro da Fase 7 (criar
+`SecurityJailResolver` em `crates/security/src/jail.rs` com
+Job Objects do Windows pra garantir kill-tree do child
+quando o parent morre, mesmo em kill -9; substituir
+`FileSystemJailResolver` no `setup` da casca).
+
+Etapas 3-6 não dependem umas das outras (em sua maioria) e
 podem entrar em PRs separadas conforme a capacidade de revisão
 do momento. A regra de PRs empilhadas continua valendo: PR
 aberta depois que a anterior entrou em main, sempre.
