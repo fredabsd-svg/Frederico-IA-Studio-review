@@ -77,13 +77,6 @@ fn worker_script() -> PathBuf {
         .join("document-worker.py")
 }
 
-fn temp_out_dir() -> PathBuf {
-    let mut d = std::env::temp_dir();
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    d.push(format!("frederico_docs_generate_xlsx_e2e_{nonce}"));
-    d
-}
-
 // ---------------------------------------------------------------------------
 // Budget
 // ---------------------------------------------------------------------------
@@ -424,18 +417,20 @@ async fn e2e_docs_generate_xlsx_full_vertical() {
         let spec = spec_do_etapa_4_xlsx();
         let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-        // 4. Output path.
-        let out_dir = temp_out_dir();
-        std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-        let xlsx_path = out_dir.join("planilha_etapa_4.xlsx");
+        // 4. Output path. **Fase de Ligação Etapa 5.X
+        // (patch-allowed-paths):** path dentro do jail do
+        // `dummy_ctx` (mesma justificativa dos outros
+        // `e2e_docs_generate_*`).
+        let ctx = dummy_ctx();
+        let xlsx_path = ctx.jail.root().join("planilha_etapa_4.xlsx");
 
         // 5. Executa.
         let result = tool
             .execute(
-                &dummy_ctx(),
+                &ctx,
                 &json!({
                     "spec": spec_json,
-                    "output_path": xlsx_path.to_string_lossy(),
+                    "output_path": "planilha_etapa_4.xlsx",
                     "format": "xlsx",
                 }),
             )

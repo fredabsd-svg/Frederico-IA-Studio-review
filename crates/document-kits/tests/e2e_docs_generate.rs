@@ -75,13 +75,6 @@ fn worker_script() -> PathBuf {
         .join("document-worker.py")
 }
 
-fn temp_out_dir() -> PathBuf {
-    let mut d = std::env::temp_dir();
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    d.push(format!("frederico_docs_generate_e2e_{nonce}"));
-    d
-}
-
 // ---------------------------------------------------------------------------
 // Budget
 // ---------------------------------------------------------------------------
@@ -291,18 +284,28 @@ async fn e2e_docs_generate_docx_full_vertical() {
         let spec = spec_do_etapa_3();
         let spec_json = serde_json::to_value(&spec).expect("spec serializa");
 
-        // 4. Output path.
-        let out_dir = temp_out_dir();
-        std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-        let docx_path = out_dir.join("relatorio_etapa_3.docx");
+        // 4. Output path. **Fase de Ligação Etapa 5.X
+        // (patch-allowed-paths):** o `output_path` precisa
+        // estar **dentro do jail do `dummy_ctx`**. Antes
+        // do bump atômico, `temp_out_dir()` retornava um
+        // path absoluto em outro subdiretório de `temp_dir`
+        // e o `WorkerToolDispatcher::check_path` era no-op
+        // (fail-open) — o teste passava, mas o jail estava
+        // desligado. Agora o `Jail::resolve_allowing_nonexistent`
+        // é a barreira primária e rejeita absoluto. Path
+        // relativo resolve pra dentro do jail; o `docx_path`
+        // (a PathBuf local) é o canônico dentro do jail
+        // pra asserções posteriores.
+        let ctx = dummy_ctx();
+        let docx_path = ctx.jail.root().join("relatorio_etapa_3.docx");
 
         // 5. Executa.
         let result = tool
             .execute(
-                &dummy_ctx(),
+                &ctx,
                 &json!({
                     "spec": spec_json,
-                    "output_path": docx_path.to_string_lossy(),
+                    "output_path": "relatorio_etapa_3.docx",
                     "format": "docx",
                 }),
             )
