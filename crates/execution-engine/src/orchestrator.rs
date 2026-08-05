@@ -293,6 +293,27 @@ impl ChatOrchestrator {
                 cancel.clone(),
             )
             .with_audit_sink(audit_sink);
+            // **Fase 6, Etapa 2:** o portão único de mudança de
+            // estado (`apply_transition`) exige que o run esteja em
+            // `CallingModel` antes do `Delta` que o provider emite.
+            // O `Run` foi criado em `Created` pelo `send_message` (na
+            // Etapa 4 da Fase 3, a transição `Created → ... →
+            // CallingModel` ficava implícita no `state_mapping`
+            // original que mapeava `Delta → Streaming` direto). A
+            // Etapa 2 fecha o portão e exige o estado explícito.
+            // Bump atômico com a Etapa 2: o orchestrator (que é a
+            // peça que monta o run) é quem faz a transição pra
+            // `CallingModel` antes de chamar o executor. Grava
+            // também o `RunEvent` correspondente (Enqueue + Dequeue
+            // + ContextReady + ... + CapabilitiesOk + FirstToken
+            // são eventos do journal, mas a Etapa 2 só persiste o
+            // `RunEvent` que efetivamente causou a transição —
+            // simplificação: gravamos `FirstToken → CallingModel`
+            // como atalho, idêntico ao que o `Delta` faz no
+            // `state_mapping` quando o run está em `CallingModel`).
+            let _ = RunRepo::new(&this.db)
+                .set_state(&run_id, frederico_agent_engine::RunState::CallingModel)
+                .await;
             let outcome = match executor
                 .run(
                     asst_id,

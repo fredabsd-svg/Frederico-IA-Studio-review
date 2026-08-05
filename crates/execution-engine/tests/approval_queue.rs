@@ -151,7 +151,17 @@ async fn approval_required_enqueues_to_queue() {
         .create(&conv.id, "assistant", "", None)
         .await
         .unwrap();
-    let run = RunRepo::new(&db).create(&conv.id, &asst.id).await.unwrap();
+    let run_repo = RunRepo::new(&db);
+    let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
+    // Fase 6, Etapa 2: o executor usa o portão único de mudança
+    // de estado. Para o `Delta` virar `Streaming`, o run precisa
+    // estar em `CallingModel`. Em produção, a transição é feita
+    // pelo orquestrador antes de chamar o executor; em teste,
+    // simulamos manualmente.
+    run_repo
+        .set_state(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .await
+        .unwrap();
 
     let perms = PermissionSet {
         file_read: frederico_tool_registry::FileReadPermission::WorkspaceOnly,

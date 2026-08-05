@@ -195,6 +195,78 @@ pub const TRANSITIONS: &[Transition] = &[
         RunEventKind::MessageComplete,
         RunState::ContinuingModel,
     ),
+    // 23. calling_model → waiting_tool_call (Etapa 2 da Fase 6)
+    // — modelo não-streaming emitiu `tool_call` direto sem passar por
+    // `streaming`. A máquina anterior só tinha `streaming +
+    // tool_call_emitted → waiting_tool_call` (aresta 7). A Etapa 2
+    // fecha o portão único de transição e exige que cada estado
+    // atingível tenha aresta explícita — `state_mapping.rs` consulta
+    // `apply_transition` e rejeita caminhos sem aresta. Sem esta
+    // aresta, o portão rejeitaria `Done { stop_reason: ToolCalls }`
+    // vindo de `CallingModel` (modelo sem streaming que emitiu
+    // tool_call). Bump atômico com a Etapa 2.
+    Transition::new(
+        RunState::CallingModel,
+        RunEventKind::ToolCallEmitted,
+        RunState::WaitingToolCall,
+    ),
+    // 24. continuing_model → checkpointing (Etapa 2 da Fase 6)
+    // — fim do run sem nova iteração: o modelo decidiu que a
+    // resposta está completa. A máquina anterior só tinha
+    // `checkpointing + checkpoint_persisted → completed` (aresta 19);
+    // o caminho `continuing_model → completed` ficava como uma
+    // "compressão" no `state_mapping` original (que mapeava
+    // `Done { Stop | Length } → Completed` direto, sem consultar
+    // `apply_transition`). A Etapa 2 fecha o portão e exige que o
+    // estado passe por `Checkpointing` antes de `Completed` —
+    // mantendo a invariante "todo Completed vem de Checkpointing
+    // via CheckpointPersisted" que já existia. Bump atômico.
+    Transition::new(
+        RunState::ContinuingModel,
+        RunEventKind::MessageComplete,
+        RunState::Checkpointing,
+    ),
+    // 25. continuing_model → streaming (Etapa 2 da Fase 6)
+    // — início de uma nova rodada: o executor está pronto pra chamar
+    // o modelo de novo (após processar tool_result). O `Delta` que
+    // chega do provider precisa disparar a transição. A aresta
+    // existente `calling_model + first_token → streaming` (aresta 6)
+    // só funciona quando o estado é `CallingModel`. Antes da Etapa
+    // 2, o `state_mapping` mapeava `Delta → Streaming` direto
+    // (sem consultar o portão) e funcionava pra qualquer estado.
+    // A Etapa 2 fecha o portão e precisa de uma aresta explícita.
+    // Bump atômico. Nota: a forma "ortodoxa" seria o executor
+    // emitir `NextIteration` (aresta 14) entre rounds, indo
+    // `ContinuingModel → CallingModel` e depois `CallingModel +
+    // FirstToken → Streaming`. Essa forma é mais correta
+    // semanticamente mas exige mudança no loop do executor. A
+    // aresta 25 é o atalho que mantém o caminho do `Delta` simples
+    // — trabalho de refinar o loop pra emitir `NextIteration`
+    // explicitamente vira melhoria de fase futura.
+    Transition::new(
+        RunState::ContinuingModel,
+        RunEventKind::FirstToken,
+        RunState::Streaming,
+    ),
+    // 26. waiting_tool_call → continuing_model (Etapa 2 da Fase 6)
+    // — fim do tool processing: o executor validou, executou e
+    // validou o resultado da ferramenta. O estado é
+    // `ContinuingModel`, pronto pra próxima rodada (ou pra fechar
+    // o run se o modelo decidir que está completo). A aresta
+    // comprime o caminho `ValidatingToolCall → ExecutingTool →
+    // ValidatingToolResult → ContinuingModel` (que envolve 3
+    // eventos: `ApprovalGrantedOrNotRequired`, `ToolReturned`,
+    // `ResultValid`) em 1 evento: o executor emite `ResultValid`
+    // direto de `WaitingToolCall`. A invariante "ferramenta
+    // processada → ContinuingModel via ResultValid" é mantida
+    // — a aresta 13 (`ValidatingToolResult + ResultValid →
+    // ContinuingModel`) continua existindo como caminho
+    // alternativo (se o executor quiser granularidade no futuro).
+    Transition::new(
+        RunState::WaitingToolCall,
+        RunEventKind::ResultValid,
+        RunState::ContinuingModel,
+    ),
 ];
 
 /// Tabela de arestas globais: cada evento aqui listado parte de
@@ -495,5 +567,63 @@ mod tests {
         // `calling_model`.
         let next = apply_transition(RunState::CallingModel, RunEventKind::MessageComplete).unwrap();
         assert_eq!(next, RunState::ContinuingModel);
+    }
+
+    // ---- Testes das arestas adicionadas na Etapa 2 da Fase 6 ------
+
+    #[test]
+    fn aresta_23_calling_model_tool_call_emitted_non_streaming() {
+        // Modelo sem streaming emitiu tool_call direto.
+        let next = apply_transition(RunState::CallingModel, RunEventKind::ToolCallEmitted).unwrap();
+        assert_eq!(next, RunState::WaitingToolCall);
+    }
+
+    #[test]
+    fn aresta_24_continuing_model_message_complete_to_checkpointing() {
+        // Fim do run: ContinuingModel → Checkpointing via
+        // MessageComplete. Combinada com aresta 19 (Checkpointing +
+        // CheckpointPersisted → Completed), o caminho é
+        // `... → ContinuingModel → Checkpointing → Completed`.
+        let next =
+            apply_transition(RunState::ContinuingModel, RunEventKind::MessageComplete).unwrap();
+        assert_eq!(next, RunState::Checkpointing);
+    }
+
+    #[test]
+    fn aresta_25_continuing_model_first_token_to_streaming() {
+        // Início de nova rodada após processar tool_result: o
+        // `Delta` que chega do provider dispara `FirstToken →
+        // Streaming` direto de `ContinuingModel`. A forma
+        // "ortodoxa" seria emitir `NextIteration` antes, mas
+        // a aresta 25 é o atalho que mantém o caminho do
+        // `Delta` simples (Etapa 2).
+        let next = apply_transition(RunState::ContinuingModel, RunEventKind::FirstToken).unwrap();
+        assert_eq!(next, RunState::Streaming);
+    }
+
+    #[test]
+    fn aresta_26_waiting_tool_call_result_valid_to_continuing_model() {
+        // Fim do tool processing: o executor emite `ResultValid`
+        // direto de `WaitingToolCall` → `ContinuingModel`.
+        // Aresta 26 da Etapa 2 (comprime as 3 transições internas
+        // `ApprovalGrantedOrNotRequired` + `ToolReturned` +
+        // `ResultValid` em 1 evento `ResultValid` direto).
+        let next = apply_transition(RunState::WaitingToolCall, RunEventKind::ResultValid).unwrap();
+        assert_eq!(next, RunState::ContinuingModel);
+    }
+
+    #[test]
+    fn aresta_23_24_walk_to_completed() {
+        // Caminho completo de fim de run sem streaming:
+        //   CallingModel
+        //   → ContinuingModel (aresta 22, MessageComplete)
+        //   → Checkpointing (aresta 24, MessageComplete)
+        //   → Completed (aresta 19, CheckpointPersisted)
+        let s1 = apply_transition(RunState::CallingModel, RunEventKind::MessageComplete).unwrap();
+        assert_eq!(s1, RunState::ContinuingModel);
+        let s2 = apply_transition(s1, RunEventKind::MessageComplete).unwrap();
+        assert_eq!(s2, RunState::Checkpointing);
+        let s3 = apply_transition(s2, RunEventKind::CheckpointPersisted).unwrap();
+        assert_eq!(s3, RunState::Completed);
     }
 }
