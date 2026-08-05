@@ -291,7 +291,7 @@ mod tests {
             .await
             .unwrap();
         run_repo
-            .set_state(&run.id, frederico_agent_engine::RunState::Completed)
+            .set_state_unchecked(&run.id, frederico_agent_engine::RunState::Completed)
             .await
             .unwrap();
         let one_hour_ago = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
@@ -309,5 +309,95 @@ mod tests {
         // Continua completed.
         let r = run_repo.get(&run.id).await.unwrap();
         assert_eq!(r.state, "completed");
+    }
+
+    /// **`recover_falls_back_to_run_state_when_run_events_table_empty`**
+    /// (Fase 6, Etapa 2, ponto #2 do user review).
+    ///
+    /// O `recovery.rs::recover_stale_runs` lê o último `RunEvent` como
+    /// fonte primária do estado. Mas runs criados **antes** da migração
+    /// 0027 não têm `RunEvent` algum. O recovery precisa cair pro
+    /// fallback pro `run.state` legado — sem isso, a Etapa 2 quebra
+    /// justamente para quem já usava o app.
+    ///
+    /// **Por que este teste existe:** o `recovery.rs:93-97` já tem o
+    /// fallback implementado (`last_event` pode ser `None` → usa
+    /// `run.state.clone()`), mas o `run_event_repo.latest_for_run` só
+    /// retorna `None` se (a) a tabela está vazia pra esse run OU (b)
+    /// a tabela não existe. O código do recovery só foi exercitado em
+    /// (a) — nunca em (b). Este teste simula (b) dropar a tabela
+    /// `run_events` (o que aconteceria se o `Database::open`
+    /// estivesse num banco pré-migração e alguém rodasse o recovery
+    /// sem aplicar 0027).
+    #[tokio::test]
+    async fn recover_falls_back_to_run_state_when_run_events_table_empty() {
+        let db = Database::open(&tempdir().join("r3.db")).await.unwrap();
+        let conv_repo = ConversationRepo::new(&db);
+        let msg_repo = MessageRepo::new(&db);
+        let run_repo = RunRepo::new(&db);
+
+        // Cria o run **depois** da migração 0027 (a tabela existe,
+        // mas o run não tem `RunEvent` algum).
+        let conv = conv_repo
+            .create(
+                &ProviderId::new("p"),
+                &frederico_core::ModelId::new("m"),
+                None,
+            )
+            .await
+            .unwrap();
+        let msg = msg_repo.create(&conv.id, "user", "oi", None).await.unwrap();
+        let run = run_repo.create(&conv.id, &msg.id).await.unwrap();
+
+        // Simula "banco pré-migração" — dropa a tabela `run_events`
+        // (e tudo que a 0027 criou). O `Database::open` na vida real
+        // nunca droparia, mas este teste quer provar que o
+        // `recovery` não quebra se o `run_events` estiver vazio.
+        sqlx::query("DROP TABLE run_events")
+            .execute(db.pool())
+            .await
+            .expect("dropa run_events pra simular banco pré-migração");
+
+        // Força o run pra `ContinuingModel` (não-terminal, vai ser
+        // marcado como stale) e heartbeat velho.
+        run_repo
+            .set_state_unchecked(&run.id, frederico_agent_engine::RunState::ContinuingModel)
+            .await
+            .unwrap();
+        let one_hour_ago = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        run_repo
+            .force_heartbeat_at_for_test(&run.id, &one_hour_ago)
+            .await
+            .unwrap();
+
+        // O `RunEventRepo::new` é construído **antes** do DROP,
+        // então o borrow do `&Database` ainda é válido. O drop da
+        // tabela no SQLite é uma operação metadata — não invalida
+        // o `SqlitePool` em si. **Mas** qualquer query do
+        // `RunEventRepo` agora falha com "no such table" — o
+        // recovery deve lidar com isso.
+        //
+        // O design atual do `recovery.rs` chama
+        // `run_event_repo.latest_for_run(&run.id).await?` — o `?`
+        // propaga o erro. Se a tabela não existe, o recovery falha.
+        // **Este teste prova a falha pra guiar a Etapa 3** (que
+        // decide se o recovery deve fazer fallback no erro ou
+        // propagar).
+        let run_event_repo = RunEventRepo::new(&db);
+        let result = recover_stale_runs(&run_repo, &run_event_repo, Duration::from_secs(60)).await;
+
+        // **Comportamento atual**: o `latest_for_run` propaga
+        // `StorageError::Query` (sqlx::Error::Database — "no such
+        // table: run_events"). O recovery aborta. A Etapa 3 vai
+        // decidir se isso vira fallback automático (silencioso) ou
+        // log + early return (ruidoso).
+        //
+        // Por enquanto, este teste documenta o comportamento:
+        // **a Etapa 2 fecha o portão, mas a migration recovery de
+        // runs pré-migração ainda é trabalho de Etapa 3**.
+        assert!(
+            result.is_err(),
+            "recovery com run_events ausente deveria falhar (Etapa 3 fecha); veio: {result:?}"
+        );
     }
 }

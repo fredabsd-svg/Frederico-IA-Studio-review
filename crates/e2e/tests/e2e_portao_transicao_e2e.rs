@@ -51,11 +51,17 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use frederico_agent_engine::{RunState, RunStateParseError};
-use frederico_core::{ModelId, ProviderId};
+use frederico_agent_engine::{Budget, RunState, RunStateParseError};
+use frederico_core::{MessageId, ModelId, ProviderId, ToolId};
+use frederico_execution_engine::executor::{ExecutorError, RunExecutor};
 use frederico_execution_engine::recovery;
-use frederico_provider_engine::types::{StopReason, StreamEvent};
-use frederico_storage::{RunEventRepo, RunRepo};
+use frederico_provider_engine::types::{ChatMessage, StopReason, StreamEvent};
+use frederico_storage::{ConversationRepo, MessageRepo, RunEventRepo, RunRepo};
+use frederico_tool_registry::{
+    static_jail_resolver, FileReadPermission, FilesReadTool, Jail, PermissionSet, Tool,
+    ToolRegistry,
+};
+use tokio_util::sync::CancellationToken;
 
 use common::{
     build_orchestrator, create_test_conversation, fake_invoker, wait_for_run_completion,
@@ -68,23 +74,34 @@ const MODEL_ID: &str = "gpt-4o-mini";
 /// 1. **`run_executor_rejects_invalid_transition_through_orchestrator`**
 ///
 /// O portão fecha: `apply_transition` é consultado **antes** de
-/// `set_state`. Prova direta: forçar uma transição inválida
-/// (terminal → qualquer) via DB direto e ver o `ExecutorError`
-/// propagar.
+/// `set_state`. Prova direta: forçar o run a um estado terminal
+/// (`Completed`) **antes** de chamar o `RunExecutor` e ver o
+/// `ExecutorError::InvalidTransition` propagar — sem nenhum
+/// `RunEvent` espúrio gravado e sem o `runs.state` regredir.
 ///
 /// Por que este teste existe: a Etapa 4 da Fase 3 introduziu
 /// `RunExecutor` "para conectar a máquina ao storage", mas o
 /// ADR-0025 §Fato (auditoria de 2026-08-04) provou que o
 /// caminho real (`state_mapping → RunRepo::set_state`) ignorava
 /// a tabela `TRANSITIONS` por completo. A Etapa 2 fecha o
-/// portão. Este teste é a prova no caminho real.
+/// portão. Este teste é a prova no caminho real: ele força
+/// o estado para um terminal via DB e roda o `RunExecutor`
+/// direto (não via orchestrator) — o `state_mapping` consulta
+/// `apply_transition` que rejeita com `FromTerminal`, e o
+/// executor propaga como `ExecutorError::InvalidTransition`.
+/// **Sem este teste, o portão é convenção, não portão.**
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_executor_rejects_invalid_transition_through_orchestrator() {
-    // 1. Invoker + provider com 1 script: Delta + Done{Stop}.
+    // 1. Setup DB + repos via build_orchestrator (mesma composição
+    //    da casca). Não usamos o `h.orchestrator` para nada — só
+    //    queremos o `h.db` e o `h.provider` (ScriptedProvider).
     let (invoker, manager) = fake_invoker().await;
     let provider = Arc::new(ScriptedProvider::new(
         PROVIDER_ID,
         MODEL_ID,
+        // O provider emite 1 round com Delta + Done{Stop}.
+        // O portão deveria rejeitar no Delta porque o run
+        // começa em `Completed` (terminal).
         vec![vec![
             StreamEvent::Delta {
                 content: "x".to_string(),
@@ -103,62 +120,200 @@ async fn run_executor_rejects_invalid_transition_through_orchestrator() {
         None,
     )
     .await;
-    let conv = create_test_conversation(
-        &h.db,
-        &ProviderId::new(PROVIDER_ID),
-        &ModelId::new(MODEL_ID),
-        None,
-    )
-    .await;
+    let conv = ConversationRepo::new(&h.db)
+        .create(&ProviderId::new(PROVIDER_ID), &ModelId::new(MODEL_ID), None)
+        .await
+        .expect("cria conversa de teste");
+    let asst_msg: MessageId = MessageRepo::new(&h.db)
+        .create(&conv.id, "assistant", "", None)
+        .await
+        .expect("cria assistant msg")
+        .id;
 
-    // 2. Força o run a estar em estado terminal `Completed` ANTES
-    //    de chamar o executor. A transição `Completed → Streaming`
-    //    via `Delta` é inválida pela tabela `TRANSITIONS` —
+    // 2. Cria o run **via DB direto** (sem passar pelo
+    //    orchestrator). Isso dá controle total sobre o
+    //    `run_id` — o orchestrator sempre cria um run novo.
+    let run_repo = RunRepo::new(&h.db);
+    let run = run_repo
+        .create(&conv.id, &asst_msg)
+        .await
+        .expect("cria run de teste");
+
+    // 3. Força o run para estado terminal `Completed` **antes** de
+    //    chamar o executor. A transição `Completed → Streaming`
+    //    (via `Delta`) é inválida pela tabela `TRANSITIONS` —
     //    terminais são imutáveis. O portão deve rejeitar com
     //    `FromTerminal { from: Completed }`.
     //
-    //    A Etapa 2 fechou o portão: o `state_mapping` consulta
-    //    `apply_transition` antes de aceitar a mudança. O
-    //    `executor.run()` propaga o erro como
-    //    `ExecutorError::InvalidTransition`; o orchestrator
-    //    captura e marca o run como `Failed`.
-    let (_user_msg, run_id) = h
-        .orchestrator
-        .send_message(conv.id, "oi".to_string())
-        .await
-        .expect("send_message ok");
-    let run_repo = RunRepo::new(&h.db);
+    //    Usamos `set_state` (legado) aqui **propositalmente**:
+    //    é a única forma de levar o run a um estado terminal
+    //    sem passar pelo caminho de produção (que sempre começa
+    //    em `Created`). O ponto do teste é justamente mostrar
+    //    que mesmo que alguém use `set_state` para deixar o
+    //    run num estado ruim, o `RunExecutor` recusa.
     run_repo
-        .set_state(&run_id, RunState::Completed)
+        .set_state_unchecked(&run.id, RunState::Completed)
         .await
-        .expect("forçar Completed");
-    // (O send_message já setou o estado pra CallingModel no
-    // orchestrator, mas a Etapa 2 deixa o estado em
-    // `CallingModel` para a próxima chamada do executor. Aqui
-    // sobrescrevemos direto no DB pra simular o caso onde o
-    // estado persistido é terminal.)
+        .expect("força run em Completed");
 
-    // 3. Re-roda via nova mensagem... mas o `send_message` cria um
-    //    NOVO run. Pra testar o portão, precisamos reusar o mesmo
-    //    run. Como o executor não expõe API de re-run, validamos
-    //    de outra forma: lemos o `run_events` e o `runs.state`
-    //    do run original. O `send_message` do orchestrator vai
-    //    criar um run novo, com o estado certo. O run original
-    //    (forçado a `Completed`) fica lá.
+    // 4. Constroi o `RunExecutor` **direto** (não via
+    //    orchestrator). Mesma assinatura que o orchestrator
+    //    usa internamente — o teste exercita o **mesmo
+    //    construtor** que a casca usa, então o caminho de
+    //    código é idêntico ao de produção.
+    let registry = ToolRegistry::new();
+    // `Jail::new` faz `canonicalize()` no root — o
+    // `workspaces_root()` ainda não existe (é criado por
+    // conversa). Crio o diretório vazio pra satisfazer o
+    // `canonicalize`. Não é trabalho de produção — produção
+    // já cria via `FileSystemJailResolver` antes da 1ª
+    // mensagem (Etapa de Ligação §3).
+    std::fs::create_dir_all(h.workspace.workspaces_root()).expect("cria workspaces/");
+    let jail = Jail::new(&h.workspace.workspaces_root()).expect("cria jail");
+    let jail_resolver = static_jail_resolver(jail);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FilesReadTool::new())];
+    let permissions = PermissionSet {
+        file_read: FileReadPermission::WorkspaceOnly,
+        ..Default::default()
+    };
+    let mut executor = RunExecutor::new(
+        provider.clone(),
+        registry,
+        jail_resolver,
+        (*h.db).clone(),
+        permissions,
+        vec![ToolId::new("files.read")],
+        tools,
+        Budget::default(),
+        CancellationToken::new(),
+    );
+
+    // 5. Roda o executor com o run em estado terminal. O
+    //    `state_mapping` consulta `apply_transition` no
+    //    primeiro `Delta`: o portão rejeita com
+    //    `FromTerminal { from: Completed }`, e o executor
+    //    (recovery de transições inválidas, Etapa 2) marca
+    //    o run como `Failed` e grava um `RunEvent` de
+    //    `UnrecoverableError` antes de propagar o erro.
+    let result = executor
+        .run(
+            asst_msg,
+            run.id,
+            ModelId::new(MODEL_ID),
+            vec![ChatMessage::user("oi")],
+        )
+        .await;
+
+    // 6. Asserções: o portão rejeita e a mensagem é legível.
+    //    O `from` reportado no erro é o estado **pós-recovery**
+    //    (Failed) — é o estado em que o `current_state` ficou
+    //    depois que o executor marcou como `Failed` antes de
+    //    propagar. O `from` **pré-tentativa** (Completed, que
+    //    forçamos antes do executor) está no `from_state` do
+    //    `RunEvent` (assertion #8 abaixo) — a auditoria é
+    //    honesta.
     //
-    //    Para validar a rejeição, o teste usa uma estratégia
-    //    alternativa: força o run novo a `Completed` via DB, e
-    //    depois cria um run de teste via `RunRepo::create` que
-    //    herda esse estado, e valida via `apply_transition` que
-    //    a transição seria rejeitada. **Este é o teste do
-    //    portão em si, fora do orchestrator** — a parte do
-    //    orchestrator já está coberta pelos outros 3 testes
-    //    (que verificam que o portão é exercitado em todas as
-    //    transições válidas).
-    let _ = run_id; // suprime warning de não-uso
-    let _ = provider;
-    let _ = h;
-    let _ = conv;
+    //    **Por que o `from` é Failed e não Completed**: o
+    //    `UnrecoverableError` é uma aresta **especial** que o
+    //    executor aplica bypassando o portão (justamente porque
+    //    o `from` é terminal — a regra 1 do `apply_transition`
+    //    rejeita terminais). O estado pós-recovery é `Failed`
+    //    e o `from` no erro reflete isso. O `from` real
+    //    (Completed) está no journal.
+    match result {
+        Err(ExecutorError::InvalidTransition {
+            from,
+            ref stream_event,
+            ref cause,
+        }) => {
+            assert_eq!(
+                from,
+                RunState::Failed,
+                "from no erro é o estado pós-recovery (Failed); \
+                 o from pré-tentativa (Completed) está no from_state do RunEvent"
+            );
+            // A mensagem tem que ser útil pro log do produto —
+            // não pode ser vazia nem "unknown".
+            assert!(
+                !stream_event.is_empty() && stream_event != "unknown",
+                "stream_event tem que ser legível, veio: {stream_event:?}"
+            );
+            assert!(
+                !cause.is_empty() && cause != "unknown",
+                "cause tem que ser legível, veio: {cause:?}"
+            );
+        }
+        other => panic!("esperava Err(ExecutorError::InvalidTransition), veio: {other:?}"),
+    }
+
+    // 7. Asserção: o `runs.state` final é `Failed` — o
+    //    executor não ignora a rejeição do portão, ele marca
+    //    o run como `Failed` (recovery determinístico). Se o
+    //    `run.state` continuasse `Completed`, o portão não
+    //    estaria sendo exercido no caminho de produto.
+    let final_run = run_repo.get(&run.id).await.expect("get run");
+    let final_state: RunState = final_run.state.parse().expect("state é um RunState válido");
+    assert_eq!(
+        final_state,
+        RunState::Failed,
+        "runs.state deveria ser Failed (recovery do portão)"
+    );
+
+    // 8. Asserção: o `RunEvent` de `UnrecoverableError` foi
+    //    gravado **com o from pré-tentativa no payload**.
+    //    É a auditoria honesta: o journal registra exatamente
+    //    de onde o portão tentou transicionar (Completed) e
+    //    o erro estruturado que ele devolveu. Sem este evento,
+    //    a rejeição do portão seria silenciosa — o run
+    //    ficaria como `Failed` sem nenhuma trilha de qual
+    //    evento causou a falha.
+    let run_event_repo = RunEventRepo::new(&h.db);
+    let events = run_event_repo
+        .list_for_run(&run.id)
+        .await
+        .expect("list run_events");
+    assert_eq!(
+        events.len(),
+        1,
+        "esperava exatamente 1 RunEvent (UnrecoverableError), veio {}: {:?}",
+        events.len(),
+        events
+    );
+    let ev = &events[0];
+    assert_eq!(
+        ev.kind, "unrecoverable_error",
+        "kind deveria ser unrecoverable_error (recovery do portão)"
+    );
+    assert_eq!(
+        ev.from_state.as_deref(),
+        Some("completed"),
+        "from_state do RunEvent deveria ser Completed (estado pré-tentativa)"
+    );
+    assert_eq!(
+        ev.to_state.as_deref(),
+        Some("failed"),
+        "to_state do RunEvent deveria ser Failed (recovery determinístico)"
+    );
+    // O payload tem o erro estruturado do `apply_transition`
+    // — prova que a causa raiz está no journal pra debug.
+    let payload: serde_json::Value =
+        serde_json::from_str(&ev.payload_json).expect("payload_json é JSON válido");
+    let from_in_payload = payload
+        .get("from")
+        .and_then(|v| v.as_str())
+        .expect("payload.from presente");
+    assert_eq!(
+        from_in_payload, "completed",
+        "payload.from deveria ser completed (causa raiz)"
+    );
+    let transition_error = payload
+        .get("transition_error")
+        .and_then(|v| v.as_str())
+        .expect("payload.transition_error presente");
+    assert!(
+        transition_error.contains("FromTerminal") || transition_error.contains("from_terminal"),
+        "payload.transition_error deveria mencionar FromTerminal, veio: {transition_error:?}"
+    );
 }
 
 /// Workaround: o teste acima não pode reusar o run depois do
@@ -408,7 +563,7 @@ async fn recovery_loads_state_from_run_event_journal() {
     let run_repo = RunRepo::new(&db);
     let run = run_repo.create(&conv.id, &asst.id).await.expect("cria run");
     run_repo
-        .set_state(&run.id, RunState::CallingModel)
+        .set_state_unchecked(&run.id, RunState::CallingModel)
         .await
         .expect("set_state CallingModel");
 

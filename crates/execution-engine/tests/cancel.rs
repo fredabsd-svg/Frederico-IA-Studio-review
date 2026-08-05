@@ -190,7 +190,7 @@ async fn setup() -> (Database, ToolRegistry, Jail, MessageId, RunId) {
     // Fase 6, Etapa 2: portão único exige `CallingModel` para
     // o `Delta` virar `Streaming`. Simula o orquestrador.
     run_repo
-        .set_state(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .set_state_unchecked(&run.id, frederico_agent_engine::RunState::CallingModel)
         .await
         .unwrap();
     (db, registry, jail, asst.id, run.id)

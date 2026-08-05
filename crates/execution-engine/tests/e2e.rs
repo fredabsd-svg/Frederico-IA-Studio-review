@@ -240,7 +240,7 @@ async fn setup_executor() -> (
     // antes de chamar o executor (Etapa 4 da Fase 3). Aqui no
     // teste, simulamos manualmente.
     run_repo
-        .set_state(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .set_state_unchecked(&run.id, frederico_agent_engine::RunState::CallingModel)
         .await
         .unwrap();
     (fx, db, registry, jail_resolver, asst.id, run.id)

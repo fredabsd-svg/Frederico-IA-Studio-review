@@ -159,7 +159,7 @@ async fn approval_required_enqueues_to_queue() {
     // pelo orquestrador antes de chamar o executor; em teste,
     // simulamos manualmente.
     run_repo
-        .set_state(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .set_state_unchecked(&run.id, frederico_agent_engine::RunState::CallingModel)
         .await
         .unwrap();
 

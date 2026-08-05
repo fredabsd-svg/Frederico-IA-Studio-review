@@ -33,3 +33,7 @@ tracing = { workspace = true }
 # (precisa de `macros`) e `tokio::time::sleep` em testes de
 # cancelamento (precisa de `time`).
 tokio = { workspace = true }
+# `sqlx` direto só pra 1 teste (`recover_falls_back_to_run_state_when_run_events_table_empty`)
+# que dropa a tabela `run_events` via `db.pool().execute(...)` pra simular
+# banco pré-migração 0027. Dev-dep, não production.
+sqlx = { workspace = true }

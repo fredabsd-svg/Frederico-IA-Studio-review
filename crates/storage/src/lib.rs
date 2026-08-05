@@ -10,6 +10,7 @@
 //! `provider_configs`) e os repositórios correspondentes.
 
 use chrono::Utc;
+use frederico_agent_engine::{apply_transition as portao_apply_transition, RunEventKind, RunState};
 use frederico_core::{AppVersion, ConversationId, MessageId, ModelId, ProviderId, RunId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -35,6 +36,18 @@ pub enum StorageError {
     MessageNotFound(MessageId),
     #[error("run {0} não encontrado")]
     RunNotFound(RunId),
+    /// O portão [`frederico_agent_engine::apply_transition`]
+    /// rejeitou a transição solicitada. O caller deveria ter
+    /// passado a transição pelo `state_mapping` antes de
+    /// invocar este método — o erro aqui significa que o
+    /// estado real do run não bate com o `from` que o caller
+    /// assumiu.
+    #[error("portão `apply_transition` rejeitou: from={from} kind={kind} — {cause}")]
+    InvalidTransition {
+        from: String,
+        kind: String,
+        cause: String,
+    },
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -1010,15 +1023,23 @@ impl<'a> RunRepo<'a> {
         Ok(())
     }
 
-    /// Atualiza a coluna `state` (22 valores do
-    /// `frederico_agent_engine::RunState`) **sozinha**. Usado
-    /// somente em testes e em fluxos legados; o caminho quente da
-    /// Etapa 5.x usa
-    /// [`set_state_and_heartbeat_tx`](Self::set_state_and_heartbeat_tx)
-    /// que agrupa `state` + `last_heartbeat_at` + `last_event_seq`
-    /// numa transação `BEGIN IMMEDIATE; ...; COMMIT;` (atomicidade
-    /// contra crash).
-    pub async fn set_state(
+    /// **Versão UNCHECKED**: atualiza a coluna `state` (22 valores
+    /// do `frederico_agent_engine::RunState`) **sozinha, sem
+    /// consultar o portão `apply_transition`**. **Não usar em
+    /// código de produção da Fase 6 em diante** — é API legada
+    /// mantida só pra testes que precisam forçar estados
+    /// (`setup_executor`, testes de recovery com banco
+    /// pré-migração).
+    ///
+    /// O caminho de produção da Etapa 2 da Fase 6 é
+    /// [`set_state_validated`](Self::set_state_validated) (valida
+    /// via `apply_transition` antes de gravar + grava `RunEvent`
+    /// atômico) ou
+    /// [`set_state_and_heartbeat_unchecked_tx`](Self::set_state_and_heartbeat_unchecked_tx)
+    /// (versão transacional, ainda unchecked, mantida por
+    /// compatibilidade até a Etapa 3 fechar a migração do
+    /// `RunExecutor`).
+    pub async fn set_state_unchecked(
         &self,
         id: &RunId,
         state: frederico_agent_engine::RunState,
@@ -1031,17 +1052,21 @@ impl<'a> RunRepo<'a> {
         Ok(())
     }
 
-    /// Atualiza `runs.state` + `last_heartbeat_at` + `last_event_seq`
-    /// numa **única transação** `BEGIN IMMEDIATE; ...; COMMIT;`. Isso
-    /// garante consistência contra crash: ou os 3 valores novos são
-    /// persistidos, ou nenhum é.
+    /// **Versão UNCHECKED**: atualiza `runs.state` +
+    /// `last_heartbeat_at` + `last_event_seq` numa **única
+    /// transação** `BEGIN IMMEDIATE; ...; COMMIT;`. Garante
+    /// consistência contra crash (ou os 3 valores novos são
+    /// persistidos, ou nenhum é), mas **não consulta o portão
+    /// `apply_transition`** — é API legada, mantida por
+    /// compatibilidade até a Etapa 3 da Fase 6 migrar o
+    /// `RunExecutor` pra
+    /// [`set_state_validated`](Self::set_state_validated).
     ///
     /// O `BEGIN IMMEDIATE` pega o write lock imediatamente (em vez
     /// de `BEGIN DEFERRED` que só pega no primeiro `WRITE`),
     /// evitando o `SQLITE_BUSY` quando vários executors estão
-    /// ativos. A Etapa 5.x introduz esse padrão; a Etapa 4 só
-    /// chamava `set_status` (que não é transacional).
-    pub async fn set_state_and_heartbeat_tx(
+    /// ativos.
+    pub async fn set_state_and_heartbeat_unchecked_tx(
         &self,
         id: &RunId,
         state: frederico_agent_engine::RunState,
@@ -1127,6 +1152,114 @@ impl<'a> RunRepo<'a> {
             .execute(self.pool)
             .await?;
         Ok(())
+    }
+
+    /// **Caminho validado de mudança de estado** (Fase 6, Etapa 2
+    /// — fechamento do portão, ADR-0029 §D1).
+    ///
+    /// O portão [`frederico_agent_engine::apply_transition`] é
+    /// consultado **antes** de qualquer gravação. Se a transição
+    /// `from → to` (via `kind`) não é uma aresta válida da tabela
+    /// `TRANSITIONS` / `GLOBAL_TRANSITIONS`, o método retorna
+    /// [`StorageError::InvalidTransition`] sem alterar nada no
+    /// banco. Caso contrário:
+    ///
+    /// 1. `runs.state` é atualizado pra `to` e `last_heartbeat_at` /
+    ///    `last_event_seq` são atualizados.
+    /// 2. Um [`RunEventRecord`] é gravado com `from = from`,
+    ///    `to = to`, `kind = kind`, `seq = last_event_seq + 1`
+    ///    e o `payload` fornecido.
+    ///
+    /// Os dois updates rodam na **mesma transação** `BEGIN
+    /// IMMEDIATE; ...; COMMIT;` — se qualquer um falhar, nada é
+    /// persistido (atomicidade contra crash).
+    ///
+    /// Retorna `(to, run_seq)` em sucesso. O `run_seq` é o `seq`
+    /// do `RunEvent` recém-gravado (o caller usa pra popular
+    /// `MessageEvent.run_seq` no mesmo round — Etapa 4 da Fase
+    /// de Ligação documenta a invariante "RunEvent gravado antes
+    /// de MessageEvent.emit" do ADR-0009 §D1).
+    ///
+    /// **Por que este método é a única via de produção pra
+    /// mudar `runs.state`:** o [`RunExecutor`] consome o walk
+    /// de [`crate::state_mapping::run_state_for_event`] (que já
+    /// validou cada aresta) e passa cada `RunStateTransition`
+    /// por aqui. Se o caminho de validação driftar (regressão
+    /// em `state_mapping`), o portão no `apply_transition`
+    /// dentro deste método é a **segunda linha de defesa** —
+    /// `from` precisa bater com o estado persistido do run
+    /// (lido de `runs.state`), e `kind` precisa ter aresta pra
+    /// `to`. Se o `state_mapping` esqueceu de consultar o
+    /// portão, este método pega.
+    ///
+    /// [`RunExecutor`]: ../../execution_engine/executor/struct.RunExecutor.html
+    pub async fn set_state_validated(
+        &self,
+        id: &RunId,
+        from: RunState,
+        kind: RunEventKind,
+        payload: serde_json::Value,
+    ) -> StorageResult<(RunState, u64)> {
+        // 1. Portão: aplica a transição via `apply_transition` (puro).
+        //    Se a tabela `TRANSITIONS` rejeita, nada é gravado.
+        let to =
+            portao_apply_transition(from, kind).map_err(|e| StorageError::InvalidTransition {
+                from: from.as_str().to_string(),
+                kind: kind.as_str().to_string(),
+                cause: format!("{e:?}"),
+            })?;
+
+        // 2. Tudo numa única transação. Se o `INSERT` em
+        //    `run_events` falhar (e.g. UNIQUE(run_id, seq) batido
+        //    por race), o `UPDATE` em `runs` é desfeito.
+        let mut tx = self.pool.begin().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        let now_rfc = Utc::now().to_rfc3339();
+
+        // Próximo `seq` do journal (monotônico por `run_id`).
+        // Lemos o `last_event_seq` do `runs` na **mesma** transação
+        // pra evitar race com outro executor do mesmo run (a Etapa
+        // 4 garante que cada run tem 1 executor, mas a defesa em
+        // profundidade não custa nada).
+        let current_last_seq: i64 =
+            sqlx::query_scalar("SELECT last_event_seq FROM runs WHERE id = ?1")
+                .bind(id.0.to_string())
+                .fetch_one(&mut *tx)
+                .await?;
+        let new_seq = (current_last_seq as u64) + 1;
+
+        // 3. Insere o `RunEvent` (UNIQUE(run_id, seq) garante
+        //    monotonicidade mecânica).
+        let event_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO run_events (event_id, run_id, seq, kind, from_state, to_state, \
+             timestamp_ms, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(&event_id)
+        .bind(id.0.to_string())
+        .bind(new_seq as i64)
+        .bind(kind.as_str())
+        .bind(from.as_str())
+        .bind(to.as_str())
+        .bind(now_ms)
+        .bind(payload.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        // 4. Atualiza `runs.state` + `last_heartbeat_at` + `last_event_seq`.
+        sqlx::query(
+            "UPDATE runs SET state = ?1, last_heartbeat_at = ?2, last_event_seq = ?3 \
+             WHERE id = ?4",
+        )
+        .bind(to.as_str())
+        .bind(&now_rfc)
+        .bind(new_seq as i64)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok((to, new_seq))
     }
 }
 

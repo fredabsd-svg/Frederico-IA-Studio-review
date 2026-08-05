@@ -329,7 +329,7 @@ impl RunExecutor {
 
         let event_repo = MessageEventRepo::new(&self.db);
         let message_repo = MessageRepo::new(&self.db);
-        let run_repo = RunRepo::new(&self.db);
+        let mut run_repo = RunRepo::new(&self.db);
         let run_event_repo = RunEventRepo::new(&self.db);
 
         // Carrega o `Run` para extrair o `conversation_id` e resolve
@@ -370,7 +370,7 @@ impl RunExecutor {
             if self.cancel.is_cancelled() {
                 self.finalize_status(
                     &message_repo,
-                    &run_repo,
+                    &mut run_repo,
                     &run_event_repo,
                     message_id,
                     run_id,
@@ -400,7 +400,7 @@ impl RunExecutor {
                 );
                 self.finalize_status(
                     &message_repo,
-                    &run_repo,
+                    &mut run_repo,
                     &run_event_repo,
                     message_id,
                     run_id,
@@ -486,7 +486,7 @@ impl RunExecutor {
                         );
                         self.finalize_status(
                             &message_repo,
-                            &run_repo,
+                            &mut run_repo,
                             &run_event_repo,
                             message_id,
                             run_id,
@@ -547,13 +547,23 @@ impl RunExecutor {
                             // é o journal de **transições**, não de
                             // stream.
                         } else {
-                            // Grava cada transição do walk como um
-                            // `RunEvent` separado. Para `Done { Stop
-                            // | Length }`, isso significa 2-3 entradas
-                            // no journal (`MessageComplete` +
-                            // `CheckpointPersisted`), todas com
-                            // `apply_transition(from, kind) == to`
-                            // válido pela tabela.
+                            // Grava cada transição do walk via
+                            // `set_state_validated` (Fase 6, Etapa 2,
+                            // fechamento do portão — ADR-0029 §D1).
+                            // Para `Done { Stop | Length }`, isso
+                            // significa 2-3 entradas no journal
+                            // (`MessageComplete` + `CheckpointPersisted`),
+                            // todas com `apply_transition(from, kind)
+                            // == to` válido pela tabela.
+                            //
+                            // **Atomicidade por transição**: cada
+                            // `set_state_validated` grava o `RunEvent`
+                            // + `runs.state` + `last_heartbeat_at` +
+                            // `last_event_seq` numa única transação
+                            // `BEGIN IMMEDIATE; ...; COMMIT;` — se
+                            // qualquer um falhar, nada persiste
+                            // (defesa em profundidade contra o "RunEvent
+                            // gravado, state não" do PR #26).
                             let base_payload = stream_event_payload(&ev);
                             let mut last_run_seq: u64 = 0;
                             let mut last_to: frederico_agent_engine::RunState = current_state;
@@ -567,24 +577,26 @@ impl RunExecutor {
                                         "walk_total": transitions.len(),
                                     })
                                 };
-                                let run_seq = run_event_repo
-                                    .append(&run_id, t.kind, Some(t.from), Some(t.to), payload)
-                                    .await?;
+                                let (to, run_seq) = Self::set_state_validated_check(
+                                    &mut run_repo,
+                                    &run_id,
+                                    t.from,
+                                    t.kind,
+                                    payload,
+                                )
+                                .await?;
                                 last_run_seq = run_seq;
-                                last_to = t.to;
+                                last_to = to;
                             }
                             // Materializa a coluna de join
                             // `message_events.run_seq` (Fase 6,
                             // Etapa 2, ADR-0029 §D6) — aponta pro
-                            // primeiro RunEvent do walk (i=0).
+                            // último RunEvent do walk (o `runs.state`
+                            // já foi atualizado pelo último
+                            // `set_state_validated`, então não há
+                            // gravação adicional aqui).
                             event_repo
                                 .set_run_seq(&message_id, message_seq, last_run_seq)
-                                .await?;
-                            // `runs.state` reflete o ÚLTIMO estado
-                            // do walk (todas as transições
-                            // intermediárias são transitórias).
-                            run_repo
-                                .set_state_and_heartbeat_tx(&run_id, last_to, last_run_seq)
                                 .await?;
                             current_state = last_to;
                         }
@@ -599,6 +611,38 @@ impl RunExecutor {
                         // `run_seq` apontando pro `UnrecoverableError`
                         // — a UI do Modo Equipe pode renderizar o
                         // erro junto com o evento que o causou.
+                        //
+                        // **Bypass do portão, intencional e
+                        // documentado**: o `UnrecoverableError` é o
+                        // sinal de "abort determinístico" — a
+                        // transição `current_state → Failed via
+                        // UnrecoverableError` é por design permitida
+                        // mesmo quando `current_state` é terminal
+                        // (ex.: um evento `Delta` chegou num run
+                        // que já estava em `Completed` — o portão
+                        // rejeita o `Delta` mas o sistema **precisa**
+                        // marcar como `Failed` pra auditoria). O
+                        // `apply_transition` rejeita com
+                        // `FromTerminal` se `from` é terminal
+                        // (regra 1 da Etapa 1 da Fase 6), o que
+                        // é correto pra transições normais. Aqui,
+                        // o `UnrecoverableError` é uma aresta
+                        // **especial** que o `RunExecutor` aplica
+                        // direto via `set_state_unchecked` —
+                        // a auditoria fica honesta (RunEvent
+                        // gravado com `from` real) e o estado
+                        // do run é `Failed`.
+                        //
+                        // A atomicidade `RunEvent + runs.state` é
+                        // perdida aqui (são 2 calls separadas).
+                        // É aceito: o `UnrecoverableError` é o
+                        // último evento do run; se o app crashar
+                        // entre os 2 calls, o `recovery` na
+                        // próxima abertura encontra o run com
+                        // `state = current_state` antigo + um
+                        // `RunEvent` `UnrecoverableError` sem
+                        // state matching — e o
+                        // `latest_for_run` do journal manda.
                         let payload = serde_json::json!({
                             "stream_event_kind": stream_event_to_journal(&ev).0,
                             "from": current_state,
@@ -613,19 +657,23 @@ impl RunExecutor {
                                 payload,
                             )
                             .await?;
-                        event_repo
-                            .set_run_seq(&message_id, message_seq, run_seq)
-                            .await?;
                         run_repo
-                            .set_state_and_heartbeat_tx(
+                            .set_state_and_heartbeat_unchecked_tx(
                                 &run_id,
                                 frederico_agent_engine::RunState::Failed,
                                 run_seq,
                             )
                             .await?;
+                        event_repo
+                            .set_run_seq(&message_id, message_seq, run_seq)
+                            .await?;
                         current_state = frederico_agent_engine::RunState::Failed;
                         // Propaga o erro como `ExecutorError` próprio
-                        // pra abortar o loop e a chain acima.
+                        // pra abortar o loop e a chain acima. O `from`
+                        // aqui é `current_state` **pré-recovery**
+                        // (ex.: `Completed` no teste de rejeição) —
+                        // o caller quer saber **de onde** o portão
+                        // tentou transicionar.
                         return Err(ExecutorError::InvalidTransition {
                             from: current_state,
                             stream_event: format!("{ev:?}"),
@@ -674,7 +722,7 @@ impl RunExecutor {
                     StreamEvent::Error(e) => {
                         self.finalize_error(
                             &message_repo,
-                            &run_repo,
+                            &mut run_repo,
                             message_id,
                             run_id,
                             &accumulated,
@@ -695,7 +743,7 @@ impl RunExecutor {
                     StreamEvent::Cancelled => {
                         self.finalize_status(
                             &message_repo,
-                            &run_repo,
+                            &mut run_repo,
                             &run_event_repo,
                             message_id,
                             run_id,
@@ -725,7 +773,7 @@ impl RunExecutor {
             if self.cancel.is_cancelled() {
                 self.finalize_status(
                     &message_repo,
-                    &run_repo,
+                    &mut run_repo,
                     &run_event_repo,
                     message_id,
                     run_id,
@@ -792,24 +840,20 @@ impl RunExecutor {
                 //     portão: o tool processing acabou, o run está
                 //     pronto pra próxima rodada (ou pra fechar se o
                 //     modelo decidir). Grava `RunEvent` no journal
-                //     + atualiza `runs.state` na mesma transação.
-                let from_state = RunState::WaitingToolCall;
+                //     + atualiza `runs.state` na mesma transação
+                //     (via `set_state_validated_check`).
+                let _ = Self::set_state_validated_check(
+                    &mut run_repo,
+                    &run_id,
+                    RunState::WaitingToolCall,
+                    frederico_agent_engine::RunEventKind::ResultValid,
+                    serde_json::json!({
+                        "tool_id": tool_id.to_string(),
+                        "ok": result.ok,
+                    }),
+                )
+                .await?;
                 let to_state = RunState::ContinuingModel;
-                let run_seq = run_event_repo
-                    .append(
-                        &run_id,
-                        frederico_agent_engine::RunEventKind::ResultValid,
-                        Some(from_state),
-                        Some(to_state),
-                        serde_json::json!({
-                            "tool_id": tool_id.to_string(),
-                            "ok": result.ok,
-                        }),
-                    )
-                    .await?;
-                run_repo
-                    .set_state_and_heartbeat_tx(&run_id, to_state, run_seq)
-                    .await?;
                 current_state = to_state;
 
                 // 4d. Continua o loop (próximo round).
@@ -826,7 +870,7 @@ impl RunExecutor {
             final_state = RunState::Completed;
             self.finalize_status(
                 &message_repo,
-                &run_repo,
+                &mut run_repo,
                 &run_event_repo,
                 message_id,
                 run_id,
@@ -1025,7 +1069,7 @@ impl RunExecutor {
     async fn finalize_status(
         &self,
         message_repo: &MessageRepo<'_>,
-        run_repo: &RunRepo<'_>,
+        run_repo: &mut RunRepo<'_>,
         run_event_repo: &RunEventRepo<'_>,
         message_id: MessageId,
         run_id: RunId,
@@ -1053,48 +1097,65 @@ impl RunExecutor {
         // Bump atômico com o `finalize_status`.
         if run_status == RunStatus::Completed {
             use frederico_agent_engine::RunEventKind;
-            let final_state = Self::apply_transition_check(
+            // `set_state_validated_check` re-consulta o portão
+            // (defesa em profundidade). Se o estado do run não for
+            // `Checkpointing` (porque algum caller burlou o
+            // `state_mapping`), o portão rejeita e abortamos com
+            // `InvalidTransition` legível.
+            let _ = run_event_repo; // re-uso só dentro do set_state_validated
+            Self::set_state_validated_check(
+                run_repo,
+                &run_id,
                 RunState::Checkpointing,
                 RunEventKind::CheckpointPersisted,
-            )?;
-            let run_seq = run_event_repo
-                .append(
-                    &run_id,
-                    RunEventKind::CheckpointPersisted,
-                    Some(RunState::Checkpointing),
-                    Some(final_state),
-                    serde_json::json!({ "trigger": "finalize_status" }),
-                )
-                .await?;
-            run_repo
-                .set_state_and_heartbeat_tx(&run_id, final_state, run_seq)
-                .await?;
+                serde_json::json!({ "trigger": "finalize_status" }),
+            )
+            .await?;
         }
         run_repo.set_status(&run_id, run_status).await?;
         Ok(())
     }
 
-    /// Helper que aplica uma transição via portão (`apply_transition`).
-    /// Wraps o `TransitionError` em `ExecutorError::InvalidTransition`
-    /// pra propagar como erro do executor (em vez de erro de
-    /// storage, que seria a categoria errada).
-    fn apply_transition_check(
-        from: frederico_agent_engine::RunState,
-        event: frederico_agent_engine::RunEventKind,
-    ) -> ExecutorResult<frederico_agent_engine::RunState> {
-        use frederico_agent_engine::apply_transition;
-        apply_transition(from, event).map_err(|e| ExecutorError::InvalidTransition {
-            from,
-            stream_event: format!("{event:?}"),
-            cause: format!("{e:?}"),
-        })
+    /// Helper que faz `set_state_validated` e mapeia o erro
+    /// `StorageError::InvalidTransition` pra
+    /// `ExecutorError::InvalidTransition`. Mantém o contrato do
+    /// executor (caller recebe `InvalidTransition` do executor,
+    /// não do storage) — o `set_state_validated` é detalhe de
+    /// implementação. Se o portão rejeitar, o erro carrega o
+    /// `from` parseado e a `cause` original do
+    /// `apply_transition`.
+    async fn set_state_validated_check(
+        run_repo: &mut RunRepo<'_>,
+        run_id: &RunId,
+        from: RunState,
+        kind: frederico_agent_engine::RunEventKind,
+        payload: serde_json::Value,
+    ) -> ExecutorResult<(RunState, u64)> {
+        run_repo
+            .set_state_validated(run_id, from, kind, payload)
+            .await
+            .map_err(|e| match e {
+                StorageError::InvalidTransition {
+                    from,
+                    kind: _,
+                    cause,
+                } => {
+                    let from_state: RunState = from.parse().unwrap_or(RunState::Created);
+                    ExecutorError::InvalidTransition {
+                        from: from_state,
+                        stream_event: format!("{from:?}"),
+                        cause,
+                    }
+                }
+                other => ExecutorError::Storage(other),
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn finalize_error(
         &self,
         message_repo: &MessageRepo<'_>,
-        run_repo: &RunRepo<'_>,
+        run_repo: &mut RunRepo<'_>,
         message_id: MessageId,
         run_id: RunId,
         accumulated: &str,

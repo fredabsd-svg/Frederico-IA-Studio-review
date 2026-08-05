@@ -198,7 +198,7 @@ pub async fn setup_executor() -> (
     // orquestrador antes de chamar o executor (Etapa 4 da Fase
     // 3); em teste, simulamos manualmente no helper compartilhado.
     run_repo
-        .set_state(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .set_state_unchecked(&run.id, frederico_agent_engine::RunState::CallingModel)
         .await
         .unwrap();
     (workspace, db, registry, jail, asst.id, run.id)
