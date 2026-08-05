@@ -100,6 +100,18 @@ jobs:
       - name: Docs guard (REGRAS §1.10)
         run: node scripts/check-docs.mjs
 
+      # REGRAS §3 / ADR-0026: gate de E2E por fase. Cada fase `concluida` em
+      # docs/status.md precisa ter `E2E de cobertura` (formato path::fn_name)
+      # + `Passo CI` preenchidos e consistentes com o codigo. Roda em todo
+      # PR e em todo push pro main (gate nao usa `if: pull_request` — se o
+      # main ficar inconsistente, o proximo push quebra tambem).
+      - name: E2E coverage gate (REGRAS §3 / ADR-0026)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: pwsh
+        run: ./scripts/check-e2e-gate.ps1
+
       # REGRAS §1.10, quarto item + válvula de escape do §1.3.
       - name: Doc-impact guard (REGRAS §1.10)
         if: github.event_name == 'pull_request'

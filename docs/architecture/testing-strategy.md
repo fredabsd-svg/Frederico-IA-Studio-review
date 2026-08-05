@@ -209,6 +209,12 @@ pra casca. O §1.3 da `REGRAS-DO-PROJETO.md` exige
 atualizar este spec **no mesmo commit** se a fronteira
 mudar.
 
+### Mapa de cobertura por fase e distinção PR/noturno (Etapa 6 da Fase de Ligação, 2026-08-04)
+
+A Etapa 6 da Fase de Ligação instituiu o `docs/status.md` como **mapa explícito de cobertura E2E por fase**: cada linha da tabela tem as colunas `E2E de cobertura` (formato `path::fn_name`) e `Passo CI` (onde o teste roda). O gate `scripts/check-e2e-gate.ps1` confere que o mapa é consistente com o código — teste renomeado, apagado, ou com Passo CI inexistente quebra o PR. A enumeração em prosa deste §3 (5 testes com `FakeWorker` + 1 com worker real) **deixou de ser a fonte de verdade** a partir desta Etapa 6: o mapa em `status.md` é a fonte canônica, e este §3 vira referência conceitual (o que a cobertura mede, o que ela não mede, como a composição compartilhada impede divergência), não enumeração de testes.
+
+A distinção **CI de PR vs noturno** é a outra metade que mudou. A Etapa 3 da Fase de Ligação (PR #27) descobriu que colocar o `e2e_memory_real_embeddings` (OpenRouter real) em `verify-external.ps1#8` (que roda em todo PR) fez o gate depender de provedor externo — 429, cota, latência, custo a cada execução. Contrariava o ADR-0008 (provedor simulado em CI de PR; real fora) e o ADR-0019 (Tesseract no noturno, não no gate). A correção foi **dividir o E2E de memória em 2**: `e2e_memory_pipeline_end_to_end_deterministic` (scripted JSON + `FixedVectorEmbeddingAdapter` com cosine ~0.99 entre paráfrase) roda em todo PR; `e2e_memory_real_embeddings_recall_by_paraphrase` (`#[ignore]`) roda só no `ci-nightly.yml` com a secret. O mesmo padrão já existia pros documentos: `e2e_docs_generate_with_fake_worker` (CI de PR) + `e2e_docs_generate_with_real_worker` (`#[ignore]`, noturno). **"Só noturno" é cobertura mais fraca por natureza** — uma PR pode quebrar o teste noturno e ser mesclada horas antes de alguém ver. A REGRA 3 (§3.3) trata isso exigindo twin determinístico: teste `#[ignore]` sem twin no PR fica em `em andamento` com pendência nomeada, não promove pra `concluída`.
+
 ## Referências
 
 - `PROMPT MESTRE` §23.7 (desempenho), §28 (testes), §32 (critérios de aceite)

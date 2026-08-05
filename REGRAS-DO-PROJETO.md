@@ -212,4 +212,60 @@ Falha em etapa que executa código do projeto (`cargo test`, `clippy`, `fmt`, `n
 
 ---
 
-*Próximas regras serão adicionadas como REGRA 3, REGRA 4, … neste mesmo arquivo.*
+## REGRA 3 — GATE DE E2E POR FASE
+
+### 3.1 Princípio único
+
+**Status de fase `concluída` exige mapa explícito de cobertura E2E — e o mapa é fonte de verdade mecânica, não revisão humana.**
+
+A REGRA 1 (§1.8) institui `docs/status.md` como a fonte do estado real por fase. A REGRA 2 institui que o `main` verde é pré-condição para promover fase. A REGRA 3 une as duas: a "real" da cobertura E2E vem de um mapa explícito por fase + um gate que valida esse mapa contra o código.
+
+O "E2E verde" do `cargo test --workspace` prova que **algum** caminho de produção foi exercitado, mas não diz **qual**. A Etapa 5 da Fase de Ligação fechou com 412+ testes Rust + 11 E2E do `external_doc_worker` verde, mas o caminho de produção do `docs.generate` (componentes da Etapa 3 Etapa 5) só foi exercitado em outra fase — a cobertura tinha subido sem que ninguém lesse o `status.md` e dissesse "este caminho está coberto?". O gate existe pra que **revisão não dependa de memória**: a tabela é o índice, o gate confere o índice, o índice é fonte de verdade.
+
+### 3.2 Colunas obrigatórias em `docs/status.md`
+
+A tabela do `status.md` ganha **2 colunas novas** ao lado de "Pendências":
+
+- **E2E de cobertura** — formato `path::fn_name` (ex.: `crates/e2e/tests/e2e_files_read.rs::files_read_e2e_through_chat_orchestrator`). Múltiplos testes por fase = múltiplos itens separados por vírgula. Fase sem cobertura E2E (ex.: Fase 0, documental) marca `-` e exige a frase `regra não-aplicável` na coluna "Pendências".
+- **Passo CI** — formato `cargo test --workspace` (roda no step "Tests" do `ci.yml`), `verify-external.ps1#N` (step do script `verify-external.ps1`), ou `name:` de um step em `ci.yml`/`ci-nightly.yml` (ex.: `E2E document-worker handlers`). Múltiplos passos por teste = múltiplos itens separados por vírgula, mesma quantidade da coluna anterior.
+
+**Por que `path::fn_name` e não só o path:** o caminho sozinho permite renomear o teste sem o gate perceber. O `path::fn_name` quebra o gate se o teste for renomeado ou apagado. É a mesma proteção que a Etapa 5.X da Fase de Ligação pediu para o `WorkerToolDispatcher::allowed_paths` (PR #25).
+
+### 3.3 "Só noturno" é cobertura mais fraca (regra D2 do ADR-0026)
+
+Cobertura "só noturno" (teste `#[ignore]` rodando apenas no `ci-nightly.yml`) é **mais fraca por natureza** que cobertura em todo PR:
+
+- Uma PR pode quebrar o teste noturno e ser **mesclada horas antes** de alguém ver (o CI de PR não roda o noturno).
+- O próximo run noturno é o único que descobre, e pode ser 24h depois.
+
+A REGRA 3 trata isso como **cobertura explícita no mapa, twin determinístico obrigatório**:
+
+- Teste `#[ignore]` (único na fase) → a fase fica `em andamento` com a pendência "E2E noturno X não rodou verde". Sem twin determinístico, não promove para `concluída`.
+- Teste `#[ignore]` (com twin determinístico na mesma fase) → a fase pode ser `concluída` com a cobertura "determinístico" nomeada no mapa; o `#[ignore]` entra como `Passo CI` noturno com a ressalva.
+
+A regra existe porque **"mecanismo que nunca roda no caminho real parece funcionar até o dia que precisa; quando precisa, é tarde"** (PR #25, lição 1). O noturno é o último a ser exercitado — se o CI de PR não o cobre, o caminho pode quebrar e o main fica verde por horas.
+
+### 3.4 Procedimento
+
+- **Promover fase para `concluída`**: o PR que fecha a fase preenche as 2 colunas novas (`E2E de cobertura` + `Passo CI`) **no mesmo commit** que promove a fase. O gate `check-e2e-gate.ps1` valida a consistência entre o mapa e o código. Sem isso, gate falha.
+- **Adicionar caminho de produção novo**: o PR adiciona o E2E de cobertura no `status.md` no mesmo commit (mesma regra do §1.3 — documentação acompanha o código).
+- **Renomear ou apagar teste nomeado**: **proibido sem ADR** (mesma lógica do `WorkerToolDispatcher::allowed_paths` do PR #25). Se o teste é renomeado, o gate quebra; a saída é ou ajustar o `status.md` (mesmo commit) ou abrir um ADR justificando a renomeação.
+- **Mover teste E2E pra outro path**: o `status.md` é atualizado no mesmo commit; o `check-e2e-gate.ps1` confere a nova localização.
+
+### 3.5 Válvula de escape: nenhuma
+
+O gate é **mecânico, sem negociação**. A fase que precisa de cobertura E2E não tem o que precisa → **gate falha** → o PR não fecha. A negociação é: ou adiciona E2E de cobertura (e o twin determinístico quando o teste é `#[ignore]`), ou a fase fica em `em andamento` com a pendência nomeada.
+
+**Por que sem válvula de escape:** o sinal explícito do usuário foi que o análogo do "label `no-e2e-needed`" (proposto na conversa inicial da Etapa 6) seria usado na primeira sexta-feira apertada e nunca mais sairia. Mesmo princípio do `no skip` do path safety (PR #25) e do `no interruptor` da auditoria estrutural do PDF (PROMPT MESTRE §19.6). **Se o gate pode ser desligado por label, ele é desligado e ninguém percebe.**
+
+A única variação permitida é a **declaração explícita de "regra não-aplicável"** na coluna "Pendências" para fases documentais (Fase 0, etc.) que não têm código de produção. A frase é literal e case-insensitive; o gate confere a substring. Sem a frase, o `-` na coluna `E2E de cobertura` é treated como cobertura faltando e o gate falha.
+
+### 3.6 Registro do gate
+
+O gate é `scripts/check-e2e-gate.ps1`, executado em todo PR e em todo push pro main pelo step `E2E coverage gate (REGRAS §3 / ADR-0026)` do `.github/workflows/ci.yml`. O step roda **depois** do step "Tests" (mesma ordem dos outros guards — `check-core-purity`, `check-docs`, `check-doc-impact`).
+
+Falha do gate = PR vermelho = REGRA 2.3 porta 1 (bloqueia merge). Re-run diagnostica, não absolve (§2.5). Teste flaky do gate = defeito bloqueante (§2.6).
+
+---
+
+*Próximas regras serão adicionadas como REGRA 4, REGRA 5, … neste mesmo arquivo.*
