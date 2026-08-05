@@ -54,12 +54,17 @@ desktop.ini
 #   - `real_minimal.docx` em workers/document-worker/ (PR #24, antes
 #     do bump atomico da Etapa 5.X escrever dentro do jail)
 #   - outros `tmp_<nonce>/` que helpers de teste podem criar
-# Padrão profilático — quando aparecer um novo tmp_*, a regra
+#   - `tmp-<descricao>.ps1` que scripts de sessão PowerShell criam
+#     (Etapa 1 da Fase 6: `tmp-run-gate.ps1` para rodar o gate
+#     antes do push — fifth occurrence of "subproduto na arvore")
+# Padrão profilático — quando aparecer um novo tmp[-_]*, a regra
 # **nao** deve ser "adiciona entrada especifica pro nome"; a regra
 # e' consertar a origem (teste deve escrever em tempdir) e deixar
-# o `tmp_*` apanhar. O comentario do commit de docs da Etapa 5.X
-# detalha.
+# o `tmp[-_]*` apanhar. O comentario do commit de docs da Etapa 5.X
+# detalha. As duas grafias (hifen e underscore) sao cobertas porque
+# a grafia que escapa do `tmp_*` e' `tmp-*` e vice-versa.
 tmp_*
+tmp-*
 *_tmp/
 
 # --- Variáveis de ambiente ---
