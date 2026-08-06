@@ -376,6 +376,17 @@ impl ChatOrchestrator {
                         )
                         .await;
                     let _ = this_for_err.runs.unregister(run_id).await;
+                    // **Bump atômico do `runs.status` legado**: o
+                    // sink emite `Failed`, mas o `runs.status` legado
+                    // (lido pela `cancel_idempotent_and_status_persists`
+                    // do `provider-engine/tests/recovery.rs`) precisa
+                    // bater. Sem isso, sink diz `failed` e db diz
+                    // `running` — drift que o teste pega. `set_status`
+                    // é best-effort aqui (não propagamos erro — já
+                    // estamos num caminho de erro fatal).
+                    let _ = RunRepo::new(&this_for_err.db)
+                        .set_status(&run_id, RunStatus::Failed)
+                        .await;
                     this_for_err.sink.emit_run_status(run_id, RunStatus::Failed);
                     init_ok = false;
                     break;
