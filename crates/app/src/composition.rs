@@ -474,6 +474,49 @@ pub fn initial_permission_set_for_capable_launcher() -> PermissionSet {
     }
 }
 
+/// Constrói o `PermissionSet` **real** da cadeia
+/// `user ∩ project ∩ assistant` via
+/// `PermissionLoader::load_effective_permission_set`.
+///
+/// **Etapa 3 da Fase 6, PR 2, ADR-0030 §D3** — fecha a
+/// pendência deixada pela Etapa 3 da Fase 3 Etapa 4
+/// (`docs/modules/tool-registry.md §3`: "a Etapa 4 carrega
+/// o `PermissionSet` real do `assistant` / `project` /
+/// `user` antes de validar — pendente").
+///
+/// **Fail-closed (decisão de 2026-08-06 no PR 2):** o
+/// `PermissionLoader` cai pro `PermissionSet::default()`
+/// (deny all) quando um layer está ausente ou tem TOML
+/// inválido. A `PermissionSet::merge3` é o "mais restritivo
+/// vence" — campo ausente num layer **nunca herda** `true`
+/// de outro layer.
+///
+/// **Por que um `PermissionLoader` compartilhado** (em vez
+/// de construir um novo a cada chamada): o loader tem cache
+/// em memória chaveado por `(path, content_hash)`. Reusar
+/// a mesma instância entre runs do mesmo `AppState`
+/// aproveita o cache (cada load = 1 read de disco + 1
+/// parse, no pior caso). A casca Tauri guarda o loader no
+/// `AppState` e o `ChatOrchestrator` consome via
+/// `Arc<PermissionLoader>`.
+///
+/// **Por que recebe os paths, não o `PermissionLoader`:**
+/// o `load_effective_permission_set` do loader é o que
+/// faz o trabalho (read + parse + merge). Esta função
+/// é só o **wrapper** que resolve os paths default
+/// (`~/.config/...`, `./.frederico/...`) e chama o
+/// loader. Tests podem passar paths custom (TempDir
+/// + perfis escritos manualmente).
+#[must_use]
+pub fn build_default_permission_set(
+    loader: &frederico_tool_registry::PermissionLoader,
+    user: &std::path::Path,
+    project: &std::path::Path,
+    assistant: &std::path::Path,
+) -> PermissionSet {
+    loader.load_effective_permission_set(user, project, assistant)
+}
+
 /// Constrói o catálogo default de tools concretas. Retorna o
 /// `Vec<Arc<dyn Tool>>` que a casca Tauri e o modo servidor
 /// §5.5 vão passar pro `build_chat_orchestrator`.

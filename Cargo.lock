@@ -1365,13 +1365,16 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "directories",
  "frederico-core",
  "frederico-process-architecture",
  "jsonschema",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "toml 0.8.2",
  "tracing",
  "uuid",
 ]

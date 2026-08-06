@@ -1,7 +1,7 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-04
-Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3) + Fase de Ligação (Etapas 1 e 4)
+Verificado contra o código em: 2026-08-06
+Fase correspondente: 3 (Etapas 2, 3 e 5) + 5 (Etapa 3) + 6 (Etapa 3 PR 2) + Fase de Ligação (Etapas 1 e 4)
 -->
 
 # `frederico-tool-registry`
@@ -316,10 +316,15 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
   o contrato, e `FilesReadTool::execute` implementa. Mas o
   `ToolRegistry` em si não chama — quem chama é o executor da
   Etapa 4.
-- **Não carrega o `PermissionSet` real.** A Etapa 3 entrega o
-  **tipo**; a Etapa 4 carrega o real (das camadas global /
-  perfil / assistente / projeto / agente pai / subagente /
-  execução / aprovação do usuário, do spec §"Hierarquia").
+- **Carrega o `PermissionSet` real** das camadas `user` /
+  `project` / `assistant` via `PermissionLoader` (Etapa 3 PR
+  2, ADR-0030 §D3 — fechou a pendência que existia desde a
+  Etapa 3 da Fase 3). A interseção tripla é
+  `PermissionSet::merge3` (fail-closed: "mais restritivo
+  vence" em cada eixo; categoria ausente num layer
+  **nega**, nunca herda `true` de outro layer). As outras
+  3 camadas do spec §"Hierarquia" (agente pai, subagente,
+  aprovação do usuário) entram na Etapa 4 (subagente).
 - **Não tem healthcheck ativo dos workers.** O `WorkerHealth`
   existe como tipo, mas é default `Ok` na Etapa 2 (todas as
   ferramentas são in-process). Etapa 5.

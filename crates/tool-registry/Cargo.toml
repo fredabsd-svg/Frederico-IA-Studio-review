@@ -21,3 +21,17 @@ thiserror = { workspace = true }
 jsonschema = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+# `permission_loader` (Etapa 3 Fase 6, PR 2) precisa
+# resolver `~/.config/frederico/profiles/default.toml` cross-OS
+# (Linux/macOS via XDG, Windows via %APPDATA%). O mesmo `directories`
+# que o `model-catalog` já usa pro `~/.config/frederico/specialists.toml`.
+directories = { workspace = true }
+# `toml` pra parse do profile (decisão análoga ao
+# `model-catalog` Etapa 3 PR 1: pra 4 chaves planas o parse
+# manual seria viável, mas `permission_loader` precisa
+# desserializar 18 campos com enums aninhados — `toml::from_str`
+# é mais robusto).
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
