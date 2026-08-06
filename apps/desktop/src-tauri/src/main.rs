@@ -71,6 +71,11 @@ struct AppState {
     /// caso contrário (retriever vira lexical-only). O
     /// `build_retriever` helper local lê daqui.
     embedding_provider: Arc<dyn frederico_memory::embedding::EmbeddingProvider>,
+    /// Bundle de especialistas (Fase 6, Etapa 3, ADR-0030).
+    /// Consumido pelo Tauri command `ListSpecialists` (e
+    /// futuramente pelo `SubagentRunner` da Etapa 4). Carrega
+    /// bundled + override via `build_specialist_registry`.
+    specialist_bundle: Arc<frederico_app::composition::SpecialistBundle>,
 }
 
 /// Diretório local de dados do aplicativo (Windows: `%LOCALAPPDATA%\studio\frederico\ia`).
@@ -286,6 +291,15 @@ fn main() {
             let providers = build_provider_map(credentials_dyn);
             let runs = RunRegistry::new();
             let catalog = Arc::new(Catalog::load().clone());
+            // Specialist bundle (Fase 6, Etapa 3, ADR-0030):
+            // carrega bundled + override + pareia com o catálogo pra
+            // resolver capabilities por `default_model`. Mesmo
+            // `Arc<Catalog>` que o orchestrator usa — se a UI trocar
+            // o catálogo em runtime (Etapa futura), o `ListSpecialists`
+            // e o orchestrator enxergam a mudança junto.
+            let specialist_bundle = Arc::new(
+                frederico_app::composition::build_specialist_registry(catalog.clone()),
+            );
 
             // Sink: TauriEventSink emite via `Window::emit`. Se a
             // janela estiver fechada, `emit` falha silenciosa —
@@ -505,6 +519,7 @@ fn main() {
                 credentials,
                 document_worker,
                 embedding_provider,
+                specialist_bundle,
             });
 
             Ok(())
@@ -515,6 +530,7 @@ fn main() {
             document_worker_status,
             document_worker_invoke,
             document_worker_reset,
+            list_specialists,
         ])
         .run(tauri::generate_context!())
         .expect("falha ao rodar app Tauri");
@@ -1167,4 +1183,33 @@ async fn lookup_openrouter_key(
     std::env::var("OPENROUTER_API_KEY")
         .ok()
         .map(|s| SecretString::new(s.into_boxed_str()))
+}
+
+// --- Etapa 3 da Fase 6: registro de especialistas (ADR-0030) ---
+
+/// `tauri::command` que devolve a lista de especialistas
+/// disponíveis (bundled + override) com as capabilities do
+/// `default_model` já resolvidas via catálogo. Consumido pelo
+/// `<SpecialistPicker>` (Etapa 3, ADR-0030 §D5) e pelo Modo
+/// Equipe (Etapa 6, sidebar).
+///
+/// **Por que separado do `ipc_dispatch`:** a UI do Modo Equipe
+/// faz polling de 1 em 1s enquanto o picker está aberto
+/// (mostra spinner "carregando"). O `ipc_dispatch` enfileira
+/// no mesmo canal do orchestrator; um comando dedicado é mais
+/// barato e não disputa com o `MessageSend`. Mesma justificativa
+/// do `document_worker_status` (Etapa 2.A da Fase de Ligação).
+///
+/// **Por que `Vec<SpecialistSummary>` direto e não view do
+/// `shared-contracts`:** o `SpecialistSummary` é o tipo da
+/// camada de catálogo (sem paths internos, sem custos — só o
+/// que a UI precisa). Promover a view no `shared-contracts` é
+/// trabalho da Etapa 6 (quando o Modo Equipe consumir o tipo
+/// também) — pra Etapa 3 o comando já é consumido pelo
+/// frontend via `dispatch<ListSpecialistsView[]>`.
+#[tauri::command]
+async fn list_specialists(
+    state: State<'_, AppState>,
+) -> Result<Vec<frederico_model_catalog::SpecialistSummary>, String> {
+    Ok(state.specialist_bundle.list_summaries())
 }

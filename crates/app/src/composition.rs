@@ -25,9 +25,184 @@
 
 use std::sync::Arc;
 
+use frederico_model_catalog::{
+    registry::list_summaries as registry_list_summaries, DefaultSpecialistRegistry,
+    SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
+};
 use frederico_tool_registry::{
     DocumentPermission, FileReadPermission, PermissionSet, Tool, ToolRegistry,
 };
+
+// ============================================================================
+// Especialistas: build_specialist_registry (Etapa 3 da Fase 6, ADR-0030)
+// ============================================================================
+//
+// Constrói o `SpecialistRegistry` que o `ListSpecialists` Tauri
+// command (Etapa 3) consome. **A Etapa 3 não invoca subagentes**
+// — o registry só é consultado pelo UI pra listar disponíveis.
+// A Etapa 4 (`SubagentRunner`) é quem consome o registry pra
+// resolver `SpecialistId → ModelId + BudgetAllocation + allowed_tools`.
+//
+// **Por que `Arc<dyn SpecialistRegistry>` em vez de `DefaultSpecialistRegistry`
+// direto:** mesmo princípio do `WorkerInvoker` (ADR-0024) e do
+// `JailResolver` (ADR-0022) — trait no contrato, impl específica
+// injetada. Permite mock em testes e registry de arquivo de
+// projeto no futuro, sem mexer no `ListSpecialists`.
+//
+// **Por que recebe `Catalog`:** o `ListSpecialists` precisa
+// resolver o `default_model` de cada especialista pra devolver as
+// capabilities que o modelo tem (badge "tem tools", "tem visão"
+// na UI). A resolução é `Catalog::find_model` — feito aqui uma
+// vez pra não duplicar no comando.
+
+/// Constrói o `Arc<dyn SpecialistRegistry>` default (bundled mais override) já pareado
+/// com o `Catalog` do app pra resolver capabilities por `default_model`. Retorna também o
+/// helper `list_summaries_with_catalog` que o Tauri command chama (devolve um vetor de
+/// `SpecialistSummary` com capabilities resolvidas).
+///
+/// **Por que retorna uma struct e não só o `Arc<dyn>`:** o
+/// Tauri command precisa das duas coisas — o registry (pra
+/// `get`/`list`) e o `Catalog` (pra resolver capabilities por
+/// `default_model`). Empacotar no mesmo `SpecialistBundle`
+/// garante que os dois ficam sincronizados (mesma `Arc` do
+/// `Catalog`, sem cópia).
+pub struct SpecialistBundle {
+    pub registry: Arc<dyn SpecialistRegistry>,
+    pub catalog: Arc<frederico_model_catalog::Catalog>,
+}
+
+impl SpecialistBundle {
+    /// Lista os summaries com capabilities do `default_model`
+    /// resolvidas via catálogo. O `default_model` que não está
+    /// no catálogo vira capability `[]` (lista vazia) — o
+    /// `ListSpecialists` Tauri command inclui o especialista
+    /// mesmo assim (o ID é válido) e a UI mostra o badge
+    /// "modelo default não resolvido" baseado no tamanho do
+    /// vetor.
+    ///
+    /// **Por que warning e não erro:** o registry já validou
+    /// o ID; o `default_model` é só metadata. Hard-fail aqui
+    /// quebraria o `ListSpecialists` se o catálogo evoluir
+    /// e remover um modelo que um especialista bundled ainda
+    /// referencia. Degradação declarada.
+    pub fn list_summaries(&self) -> Vec<SpecialistSummary> {
+        registry_list_summaries(&*self.registry, |def: &SpecialistDefinition| {
+            resolve_default_model_capabilities(&self.catalog, def)
+        })
+    }
+
+    /// Wrapper de conveniência pro Tauri command: pega um
+    /// `SpecialistId` e devolve o `SpecialistDefinition` ou
+    /// `RegistryError::UnknownSpecialist { valid }`. A UI da
+    /// Etapa 6 (Modal Equipe) consome o `valid` pra renderizar
+    /// a lista de disponíveis.
+    pub fn get(
+        &self,
+        id: &SpecialistId,
+    ) -> Result<&SpecialistDefinition, frederico_model_catalog::RegistryError> {
+        self.registry.get(id)
+    }
+
+    /// Wrapper de conveniência: valida um ID (string crua, como
+    /// vem do modelo) e devolve o `SpecialistId` canônico ou
+    /// erro estruturado. O `SubagentRunner` da Etapa 4 vai
+    /// chamar isso antes de delegar (defesa em profundidade —
+    /// o `get` também checa, mas validar uma vez no boundary
+    /// é mais barato).
+    pub fn validate_id(
+        &self,
+        id: &str,
+    ) -> Result<SpecialistId, frederico_model_catalog::RegistryError> {
+        self.registry.validate_id(id)
+    }
+}
+
+/// Constrói o `SpecialistBundle` default. Carrega o
+/// `DefaultSpecialistRegistry` (bundled + override) e pareia
+/// com o `Catalog` recebido.
+///
+/// **Por que recebe `Catalog` por `Arc` (não constrói um
+/// novo):** a casca Tauri já constrói o `Catalog` no
+/// `AppState` e passa pro `ChatOrchestrator`. Reusar a mesma
+/// `Arc` garante que o `ListSpecialists` e o orchestrator
+/// enxergam o mesmo catálogo (se a UI mudar o catálogo em
+/// runtime — Etapa futura — o command e o orchestrator
+/// atualizam juntos).
+#[must_use]
+pub fn build_specialist_registry(
+    catalog: Arc<frederico_model_catalog::Catalog>,
+) -> SpecialistBundle {
+    let registry: Arc<dyn SpecialistRegistry> = Arc::new(DefaultSpecialistRegistry::load());
+    SpecialistBundle { registry, catalog }
+}
+
+/// Resolve as capabilities (como `Vec<String>`) do
+/// `default_model` de um `SpecialistDefinition`. Se o modelo
+/// não está no catálogo, devolve `vec![]` (capability_tags
+/// vazia → UI mostra "modelo não resolvido"). O nome da
+/// capability segue o shape do `Catalog::find_model` —
+/// `tools`, `json_mode`, `parallel_tool_calls`, `vision`,
+/// `prompt_caching`, `reasoning_content`.
+///
+/// **Heurística de provedor:** o `default_model` no TOML é
+/// só o `ModelId` (ex.: `"gpt-4o"`). O `Catalog::find_model`
+/// precisa de `(ProviderId, ModelId)`. Procuramos em todos
+/// os provedores — o primeiro match vence. Pra Fase 6, o
+/// `default_model` é resolvido em runtime quando o
+/// subagente de fato roda (Etapa 4); aqui só precisamos
+/// do `CapabilitySet` pro badge da UI. Match em qualquer
+/// provedor é suficiente (capabilities são equivalentes
+/// entre provedores que oferecem o mesmo modelo —
+/// `gpt-4o` na openai e na openrouter tem o mesmo
+/// `CapabilitySet`).
+fn resolve_default_model_capabilities(
+    catalog: &frederico_model_catalog::Catalog,
+    def: &SpecialistDefinition,
+) -> Vec<String> {
+    let model_id = def.default_model.as_str();
+    // Tenta match em todos os provedores — `find_model` exige
+    // ProviderId específico, mas a Etapa 3 só precisa saber
+    // **se** o modelo existe com capabilities (badge da UI).
+    // Listamos todos e filtramos pelo ModelId.
+    let descriptor = catalog
+        .models()
+        .iter()
+        .find(|m| m.model.as_str() == model_id);
+    match descriptor {
+        Some(d) => {
+            let mut caps: Vec<String> = d
+                .capabilities
+                .capabilities
+                .iter()
+                .map(|c| capability_to_string(*c))
+                .collect();
+            caps.sort();
+            caps
+        }
+        None => {
+            tracing::warn!(
+                specialist.id = %def.id.as_str(),
+                specialist.default_model = %model_id,
+                "default_model do especialista não encontrado no catálogo. \
+                 ListSpecialists vai devolver capability_tags vazia. \
+                 Atualize o specialists.toml ou o catálogo."
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn capability_to_string(c: frederico_model_catalog::Capability) -> String {
+    use frederico_model_catalog::Capability;
+    match c {
+        Capability::Tools => "tools".into(),
+        Capability::JsonMode => "json_mode".into(),
+        Capability::ParallelToolCalls => "parallel_tool_calls".into(),
+        Capability::Vision => "vision".into(),
+        Capability::PromptCaching => "prompt_caching".into(),
+        Capability::ReasoningContent => "reasoning_content".into(),
+    }
+}
 
 // ============================================================================
 // Memória: MemoryConfig + build_completion_provider + build_embedding_provider
