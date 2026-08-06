@@ -25,11 +25,12 @@ use serde::{Deserialize, Serialize};
 /// ficam tipados e com `Default` deny; a aplicação por eixo é da
 /// Etapa 4 (integração) em diante, à medida que as ferramentas que
 /// usam cada eixo chegarem.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileReadPermission {
     /// `false` no spec antigo. Negado por default; usuário precisa
     /// ligar explicitamente.
+    #[default]
     None,
     /// `true` no spec antigo, mas restrito ao workspace (o Jail já
     /// garante).
@@ -53,9 +54,12 @@ impl fmt::Display for FileReadPermission {
 /// Permissão de execução de runtime (Python, Node, etc.).
 /// Spec §"Contrato": `RuntimePermission { None, ReadOnly, Sandboxed, Unrestricted }`.
 /// Ordem de "permissividade": `None < ReadOnly < Sandboxed < Unrestricted`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePermission {
+    #[default]
     None,
     ReadOnly,
     Sandboxed,
@@ -75,9 +79,10 @@ impl fmt::Display for RuntimePermission {
 
 /// Permissão de terminal. Spec §"Contrato":
 /// `TerminalPermission { None | RequireApproval | Denylist | Allowlist }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalMode {
+    #[default]
     None,
     RequireApproval,
     Denylist,
@@ -96,10 +101,13 @@ impl fmt::Display for TerminalMode {
 }
 
 /// Permissão de Git local.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum GitPermission {
     /// Nada — `git` desligado.
+    #[default]
     None,
     /// Leitura (`status`, `log`, `diff`).
     ReadOnly,
@@ -120,10 +128,15 @@ impl fmt::Display for GitPermission {
     }
 }
 
-/// Permissão de GitHub remoto.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Permissão de GitHub remoto. Spec §"Contrato":
+/// `GitHubPermission { None, ReadOnly, Clone, Commit, Push }`.
+/// Ordem de "permissividade": `None < ReadOnly < Clone < Commit < Push`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum GitHubPermission {
+    #[default]
     None,
     ReadOnly,
     Clone,
@@ -146,10 +159,15 @@ impl fmt::Display for GitHubPermission {
     }
 }
 
-/// Permissão de memória.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Permissão de memória. Spec §"Contrato":
+/// `MemoryPermission { None, ReadOnly, ReadWrite }`.
+/// Ordem de "permissividade": `None < ReadOnly < ReadWrite`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryPermission {
+    #[default]
     None,
     ReadOnly,
     ReadWrite,
@@ -165,10 +183,15 @@ impl fmt::Display for MemoryPermission {
     }
 }
 
-/// Permissão de geração documental.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Permissão de geração documental. Spec §"Contrato":
+/// `DocumentPermission { None, WorkspaceOnly, Full }`.
+/// Ordem de "permissividade": `None < WorkspaceOnly < Full`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentPermission {
+    #[default]
     None,
     /// Pode gerar documentos, mas não exfiltra do workspace.
     WorkspaceOnly,
@@ -186,8 +209,6 @@ impl fmt::Display for DocumentPermission {
     }
 }
 
-/// O conjunto de permissões. Spec §"Contrato".
-///
 /// **Default é deny** — todos os campos `false` ou variante mais
 /// restritiva. `PermissionSet::default()` é o que o `Run.allowed_tools`
 /// de um `Run` recém-criado carrega antes do `PermissionSet` real ser
@@ -379,28 +400,141 @@ impl PermissionSet {
     }
 }
 
-// Helper para `PermissionSet::is_subset_of`: precisamos de
-// `PartialOrd` no `TerminalMode` pra simplificar. O spec não define
-// a ordem; vou colocar None < RequireApproval < Denylist/Allowlist
-// e a checagem fina é "sub ≤ parent".
-impl PartialOrd for TerminalMode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
+// `PartialOrd` e `Ord` para `TerminalMode` foram promovidos pro
+// `#[derive(...)]` no enum (Etapa 3 PR 2). O spec não define a
+// ordem; o derive usa a ordem de declaração das variantes:
+// `None < RequireApproval < Denylist < Allowlist` — exatamente a
+// que o `PermissionSet::is_subset_of` (Etapa 3, Fase 3) e o
+// `PermissionSet::merge` (Etapa 3 PR 2) precisam. `Denylist` e
+// `Allowlist` são "opostos" mas o invariante só usa a posição
+// relativa (`sub ≤ parent`); checagem fina de patterns fica
+// pra Etapa 6 (modo dev).
 
-impl Ord for TerminalMode {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use TerminalMode::*;
-        // None < RequireApproval < Denylist/Allowlist (iguais entre si).
-        let rank = |m: &TerminalMode| -> u8 {
-            match m {
-                None => 0,
-                RequireApproval => 1,
-                Denylist | Allowlist => 2,
+/// Interseção tripla de `PermissionSet`s — `PermissionSet::merge`.
+///
+/// **Semântica (Etapa 3 da Fase 6, ADR-0030 §D3, decisão de 2026-08-06
+/// no PR 2):** o `effective` é o resultado de mesclar `user ⊆ project ⊆
+/// assistant`, onde "mesclar" significa **"mais restritivo vence"** (a
+/// interseção de cada eixo). Em cada eixo, o **min** dos 3 é o que vale
+/// (ex.: se user = `network: true` mas project = `network: false`,
+/// effective = `network: false`).
+///
+/// ## Fail-closed (princípio do projeto, regra do PR 2)
+///
+/// "Mais restritivo vence" é enforçado **em todos os eixos, sem
+/// exceção**:
+/// - **Bool**: `effective = self.x && other.x && third.x` (todos true ⇒
+///   true; qualquer false ⇒ false). Um dos 3 ser false **nega** o
+///   eixo.
+/// - **Enum com ordem** (`RuntimePermission`, `GitPermission`, etc):
+///   `effective = min(self, other, third)`. O mais restritivo vence.
+///
+/// **Consequência crítica:** se um dos 3 inputs tem um **campo
+/// faltando** ou **valor desconhecido** (enum variante que o parser
+/// não conhece), o resultado da merge é o **fallback deny**
+/// (variante mais restritiva do enum / `false` pro bool) **para esse
+/// eixo**, nunca herdar o valor permissivo de outro layer.
+///
+/// **Por que fail-closed:** mesma família da `WorkerToolDispatcher`
+/// (PR #25, allowed_paths fail-closed) e do `permission_loader`
+/// cacheando parse (PR 2, decisão de 2026-08-06). Default-deny
+/// significa "ferramenta perigosa nasce desligada; ligar é decisão
+/// consciente" (spec `tool-permission-model.md` §"Invariantes").
+/// Herdar `network: true` de um layer que **não cita** `network`
+/// seria assumir que "ausente = permitido" — e essa suposição é o
+/// que produz brechas silenciosas.
+///
+/// **Quando o caller quer herdar valor explícito ausente:** ele
+/// precisa passar um `PermissionSet::default()` no slot ausente
+/// (`network: false`, `file_read: None`, etc) — o deny explícito é
+/// o "preenchi" da ausência. `merge` é a operação, não a
+/// interpretação de ausência.
+impl PermissionSet {
+    /// `self.merge(other)` = `self ∩ other` (mais restritivo vence,
+    /// fail-closed). `merge` é comutativa e associativa — pode ser
+    /// encadeada: `user.merge(project).merge(assistant) ==
+    /// user.merge(assistant).merge(project)`.
+    ///
+    /// **Inverso da `is_subset_of`:** `a.is_subset_of(b)` ⇒
+    /// `a.merge(b) == a` (o `a` é o mais restritivo, merge não
+    /// restringe mais). Mesma família de invariante que o
+    /// `PermissionSet::is_subset_of` da Fase 3 Etapa 3, agora
+    /// exercitada no caminho de produção (Etapa 3 PR 2 fecha
+    /// essa peça do `tool-permission-model.md §"Hierarquia"`).
+    #[must_use]
+    pub fn merge(&self, other: &Self) -> Self {
+        // Booleans: AND (todos true ⇒ true; um false ⇒ false).
+        // Fail-closed: um dos 2 ser false **nega** o eixo.
+        let file_create = self.file_create && other.file_create;
+        let file_modify = self.file_modify && other.file_modify;
+        let file_delete = self.file_delete && other.file_delete;
+        let web_browse = self.web_browse && other.web_browse;
+        let web_download = self.web_download && other.web_download;
+        let network = self.network && other.network;
+        let screen_capture = self.screen_capture && other.screen_capture;
+        let input_control = self.input_control && other.input_control;
+        let credentials = self.credentials && other.credentials;
+        let destructive_ops = self.destructive_ops && other.destructive_ops;
+
+        // file_read: min da ordem `None < WorkspaceOnly <
+        // WorkspacePlusApproved`. Fail-closed: se um dos 2 for
+        // None, effective = None. Nunca herda o mais permissivo.
+        let file_read = match (self.file_read, other.file_read) {
+            (FileReadPermission::None, _) | (_, FileReadPermission::None) => {
+                FileReadPermission::None
             }
+            (FileReadPermission::WorkspaceOnly, FileReadPermission::WorkspaceOnly) => {
+                FileReadPermission::WorkspaceOnly
+            }
+            (FileReadPermission::WorkspaceOnly, FileReadPermission::WorkspacePlusApproved)
+            | (FileReadPermission::WorkspacePlusApproved, FileReadPermission::WorkspaceOnly) => {
+                FileReadPermission::WorkspaceOnly
+            }
+            (
+                FileReadPermission::WorkspacePlusApproved,
+                FileReadPermission::WorkspacePlusApproved,
+            ) => FileReadPermission::WorkspacePlusApproved,
         };
-        rank(self).cmp(&rank(other))
+
+        // Enums com ordem: `min`. Fail-closed: variantes são
+        // `None < ... < Unrestricted`, então `min` é a mais
+        // restritiva. `min(None, Unrestricted) = None`.
+        let terminal = std::cmp::min(self.terminal, other.terminal);
+        let python = std::cmp::min(self.python, other.python);
+        let node = std::cmp::min(self.node, other.node);
+        let git = std::cmp::min(self.git, other.git);
+        let github = std::cmp::min(self.github, other.github);
+        let memory = std::cmp::min(self.memory, other.memory);
+        let documents = std::cmp::min(self.documents, other.documents);
+
+        Self {
+            file_read,
+            file_create,
+            file_modify,
+            file_delete,
+            terminal,
+            python,
+            node,
+            git,
+            github,
+            web_browse,
+            web_download,
+            network,
+            screen_capture,
+            input_control,
+            memory,
+            credentials,
+            documents,
+            destructive_ops,
+        }
+    }
+
+    /// `self.merge3(a, b)` = `self.merge(a).merge(b)`. Atalho
+    /// pra deixar o `permission_loader` mais legível quando
+    /// mergear 3 camadas (user ∩ project ∩ assistant).
+    #[must_use]
+    pub fn merge3(&self, a: &Self, b: &Self) -> Self {
+        self.merge(a).merge(b)
     }
 }
 
@@ -564,6 +698,234 @@ mod tests {
         assert_eq!(
             FileReadPermission::WorkspacePlusApproved.to_string(),
             "workspace_plus_approved"
+        );
+    }
+
+    // -------- `PermissionSet::merge` (Etapa 3 da Fase 6, PR 2) --------
+
+    /// **Princípio fail-closed:** `merge` é o **min** de cada eixo.
+    /// Teste por eixo: bool (AND), enums (min), file_read (matriz
+    /// `None < WorkspaceOnly < WorkspacePlusApproved`).
+
+    #[test]
+    fn merge_bool_axis_more_restrictive_wins() {
+        // network: self=true, other=false → false (nega)
+        let lhs = PermissionSet {
+            network: true,
+            ..PermissionSet::default()
+        };
+        let rhs = PermissionSet::default();
+        assert!(
+            !lhs.merge(&rhs).network,
+            "false em rhs nega mesmo se lhs=true"
+        );
+        assert!(
+            !rhs.merge(&lhs).network,
+            "comutativa: false em lhs nega mesmo se rhs=true"
+        );
+    }
+
+    #[test]
+    fn merge_bool_axis_allows_only_if_all_true() {
+        let lhs = PermissionSet {
+            network: true,
+            ..PermissionSet::default()
+        };
+        let rhs = PermissionSet {
+            network: true,
+            ..PermissionSet::default()
+        };
+        assert!(lhs.merge(&rhs).network);
+    }
+
+    #[test]
+    fn merge_enum_axis_more_restrictive_wins() {
+        // python: lhs=ReadOnly, rhs=Unrestricted → ReadOnly (mais restritivo)
+        let lhs = PermissionSet {
+            python: RuntimePermission::ReadOnly,
+            ..PermissionSet::default()
+        };
+        let rhs = PermissionSet {
+            python: RuntimePermission::Unrestricted,
+            ..PermissionSet::default()
+        };
+        assert_eq!(lhs.merge(&rhs).python, RuntimePermission::ReadOnly);
+        assert_eq!(rhs.merge(&lhs).python, RuntimePermission::ReadOnly);
+    }
+
+    #[test]
+    fn merge_enum_axis_none_dominates() {
+        // python: lhs=None, rhs=Unrestricted → None (nunca herda Unrestricted)
+        let lhs = PermissionSet::default(); // python = None
+        let rhs = PermissionSet {
+            python: RuntimePermission::Unrestricted,
+            ..PermissionSet::default()
+        };
+        assert_eq!(lhs.merge(&rhs).python, RuntimePermission::None);
+    }
+
+    #[test]
+    fn merge_file_read_none_dominates() {
+        // file_read: lhs=None, rhs=WorkspacePlusApproved → None
+        let lhs = PermissionSet::default(); // file_read = None
+        let rhs = PermissionSet {
+            file_read: FileReadPermission::WorkspacePlusApproved,
+            ..PermissionSet::default()
+        };
+        assert_eq!(lhs.merge(&rhs).file_read, FileReadPermission::None);
+    }
+
+    #[test]
+    fn merge_file_read_workspace_only_workspace_plus_intersects_to_workspace_only() {
+        // WorkspaceOnly ∩ WorkspacePlusApproved = WorkspaceOnly
+        let lhs = PermissionSet {
+            file_read: FileReadPermission::WorkspaceOnly,
+            ..PermissionSet::default()
+        };
+        let rhs = PermissionSet {
+            file_read: FileReadPermission::WorkspacePlusApproved,
+            ..PermissionSet::default()
+        };
+        assert_eq!(
+            lhs.merge(&rhs).file_read,
+            FileReadPermission::WorkspaceOnly,
+            "fail-closed: WorkspaceOnly ∩ WorkspacePlusApproved = WorkspaceOnly (mais restritivo)"
+        );
+    }
+
+    #[test]
+    fn merge_is_commutative() {
+        let lhs = PermissionSet {
+            network: true,
+            python: RuntimePermission::Sandboxed,
+            file_read: FileReadPermission::WorkspaceOnly,
+            ..PermissionSet::default()
+        };
+        let rhs = PermissionSet {
+            network: false,
+            python: RuntimePermission::Unrestricted,
+            file_read: FileReadPermission::WorkspacePlusApproved,
+            ..PermissionSet::default()
+        };
+        assert_eq!(lhs.merge(&rhs), rhs.merge(&lhs));
+    }
+
+    #[test]
+    fn merge_is_associative() {
+        let a = PermissionSet {
+            network: true,
+            ..PermissionSet::default()
+        };
+        let b = PermissionSet {
+            python: RuntimePermission::Sandboxed,
+            ..PermissionSet::default()
+        };
+        let c = PermissionSet {
+            file_read: FileReadPermission::WorkspaceOnly,
+            ..PermissionSet::default()
+        };
+        assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+    }
+
+    #[test]
+    fn merge_with_default_is_self_when_self_more_restrictive() {
+        // Se self já é o mais restritivo, merge com default =
+        // self (não restringe mais). Inverso da is_subset_of.
+        let restrictive = PermissionSet {
+            file_read: FileReadPermission::None,
+            network: false,
+            python: RuntimePermission::None,
+            ..PermissionSet::default()
+        };
+        let default = PermissionSet::default();
+        assert_eq!(restrictive.merge(&default), restrictive);
+    }
+
+    #[test]
+    fn merge3_intersects_three_layers() {
+        // Triplo: user ∩ project ∩ assistant
+        // user = tudo permissivo, project = nega network, assistant = nega web_browse
+        // effective: network=false (nega), web_browse=false (nega), outros=true
+        let user = PermissionSet {
+            network: true,
+            web_browse: true,
+            file_read: FileReadPermission::WorkspacePlusApproved,
+            ..PermissionSet::default()
+        };
+        let project = PermissionSet {
+            network: false,
+            web_browse: true,
+            file_read: FileReadPermission::WorkspaceOnly,
+            ..PermissionSet::default()
+        };
+        let assistant = PermissionSet {
+            network: true,
+            web_browse: false,
+            file_read: FileReadPermission::WorkspaceOnly,
+            ..PermissionSet::default()
+        };
+        let effective = user.merge3(&project, &assistant);
+        assert!(!effective.network, "project nega network → effective nega");
+        assert!(
+            !effective.web_browse,
+            "assistant nega web_browse → effective nega"
+        );
+        assert_eq!(
+            effective.file_read,
+            FileReadPermission::WorkspaceOnly,
+            "WorkspaceOnly ∩ WorkspaceOnly = WorkspaceOnly"
+        );
+    }
+
+    #[test]
+    fn merge_preserves_is_subset_of_relation() {
+        // Para cada par (a, b) onde a.is_subset_of(b), vale
+        // a.merge(b) == a. Inverso: se a.merge(b) == a, então
+        // a é o mais restritivo.
+        let a = PermissionSet {
+            file_read: FileReadPermission::None,
+            network: false,
+            ..PermissionSet::default()
+        };
+        let b = PermissionSet {
+            file_read: FileReadPermission::WorkspacePlusApproved,
+            network: true,
+            ..PermissionSet::default()
+        };
+        assert!(a.is_subset_of(&b), "precondição");
+        assert_eq!(
+            a.merge(&b),
+            a,
+            "merge com mais permissivo = o mais restritivo"
+        );
+    }
+
+    #[test]
+    fn merge_fail_closed_unknown_field_does_not_leak_permissive_default() {
+        // Cenário crítico do PR 2: se um dos profiles não cita
+        // um campo, o effective **não herda** o valor permissivo
+        // de outro layer. Aqui, profile A (parsed de TOML) tem
+        // `network = false` (explícito), profile B tem
+        // `network` ausente (= `default()` = false). Effective
+        // continua false. **Nenhum caminho** transforma "ausente"
+        // em "true".
+        let a = PermissionSet {
+            network: false,
+            ..PermissionSet::default()
+        };
+        // b é exatamente default — sem o campo `network` setado
+        // (todos os outros campos idem).
+        let b = PermissionSet::default();
+        let merged = a.merge(&b);
+        assert!(!merged.network);
+        // Inverso: se b dissesse network=true, merged também true.
+        let b_with_network = PermissionSet {
+            network: true,
+            ..PermissionSet::default()
+        };
+        assert!(
+            !a.merge(&b_with_network).network,
+            "fail-closed: false em a nega mesmo se b=true"
         );
     }
 }

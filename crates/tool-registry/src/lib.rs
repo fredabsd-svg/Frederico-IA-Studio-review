@@ -60,6 +60,7 @@ pub mod error;
 pub mod jail_resolver;
 pub mod manifest;
 pub mod permission;
+pub mod permission_loader;
 pub mod registry;
 pub mod tools;
 pub mod validate;
@@ -91,6 +92,7 @@ pub use permission::{
     DocumentPermission, FileReadPermission, GitHubPermission, GitPermission, MemoryPermission,
     PermissionSet, RuntimePermission, TerminalMode,
 };
+pub use permission_loader::{PermissionLoadError, PermissionLoader};
 pub use registry::ToolRegistry;
 pub use tools::{FilesReadTool, Tool, ToolResult};
 pub use validate::{validate_tool_call, ToolCall, ValidationContext, ValidationOutcome};
