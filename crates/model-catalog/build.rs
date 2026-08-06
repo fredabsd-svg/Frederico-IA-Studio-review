@@ -5,7 +5,11 @@
 //! 3. Computa o `BLAKE3` do JSON canônico (hash do catálogo versionado).
 //! 4. Escreve uma cópia em `OUT_DIR/catalog.json` para o `include_str!`
 //!    do runtime.
-//! 5. Expõe `CATALOG_HASH` e `CATALOG_JSON_PATH` via env vars do compilador.
+//! 5. Carrega `data/specialists/default.toml` (Etapa 3 da Fase 6,
+//!    ADR-0030 §D1), valida via `parse_specialists_toml` (parse = validação
+//!    mínima — IDs únicos, sem campos obrigatórios faltando) e expõe o path
+//!    via `SPECIALISTS_TOML_PATH`.
+//! 6. Expõe `CATALOG_HASH` e `CATALOG_JSON_PATH` via env vars do compilador.
 //!
 //! Se a validação falhar, o build quebra — sem fallback.
 
@@ -19,6 +23,7 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo");
     let catalog_path = Path::new(&manifest_dir).join("data/catalog.json");
     let schema_path = Path::new(&manifest_dir).join("data/schema.json");
+    let specialists_toml_path = Path::new(&manifest_dir).join("data/specialists/default.toml");
 
     let catalog_text = fs::read_to_string(&catalog_path)
         .unwrap_or_else(|e| panic!("falha ao ler {}: {e}", catalog_path.display()));
@@ -54,13 +59,77 @@ fn main() {
     let out_schema_path = Path::new(&out_dir).join("schema.json");
     fs::write(&out_schema_path, &schema_text).expect("escrita do schema em OUT_DIR");
 
+    // --- Etapa 3 da Fase 6 (ADR-0030 §D1): specialists/default.toml ---
+    //
+    // Mesma estratégia do `catalog.json`: copia literal pro OUT_DIR
+    // e expõe o path via env var. O runtime faz `include_str!` no
+    // path exposto. Vantagem: o TOML continua legível (vs. embedded
+    // como `&'static str` direto no source) e os testes E2E podem
+    // apontar pra um path custom se necessário.
+    //
+    // **Por que parse inline em vez de reusar a função do lib:**
+    // `build.rs` roda **antes** do `lib.rs` ser compilado. Não
+    // dá pra importar `frederico_model_catalog::specialist::parse_specialists_toml`
+    // daqui. O parse inline é ~25 linhas — duplicação justificada
+    // (mesma estratégia do `validate_minimal` lá em cima, que também
+    // não chama o runtime). O parse do runtime é a fonte de verdade;
+    // se o build passar aqui e o runtime quebrar, é bug no parse
+    // inline que precisa de alinhamento (e o teste E2E pega).
+    let specialists_text = fs::read_to_string(&specialists_toml_path)
+        .unwrap_or_else(|e| panic!("falha ao ler {}: {e}", specialists_toml_path.display()));
+    // Validação mínima de parse: usa o mesmo `toml` crate (via
+    // `[build-dependencies]`) com a mesma estrutura `SpecialistsFile`
+    // que o runtime. Se o build passa e o runtime quebra, é
+    // divergência (o teste E2E `registry_loads_specialists_from_catalog`
+    // pega).
+    #[derive(serde::Deserialize)]
+    struct SpecialistsFileBuildOnly {
+        #[allow(dead_code)]
+        version: String,
+        #[serde(default)]
+        specialist: Vec<SpecialistDefBuildOnly>,
+    }
+    #[derive(serde::Deserialize)]
+    struct SpecialistDefBuildOnly {
+        id: String,
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        default_model: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        allowed_tools: Vec<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        denied_tools: Vec<String>,
+    }
+    let parsed: SpecialistsFileBuildOnly = match toml::from_str(&specialists_text) {
+        Ok(f) => f,
+        Err(e) => panic!("specialists/default.toml inválido: {e}"),
+    };
+    // Valida IDs únicos.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for def in &parsed.specialist {
+        if !seen.insert(def.id.as_str()) {
+            panic!("specialists/default.toml: ID duplicado '{}'", def.id);
+        }
+    }
+    let out_specialists_path = Path::new(&out_dir).join("specialists.toml");
+    fs::write(&out_specialists_path, &specialists_text)
+        .expect("escrita do specialists.toml em OUT_DIR");
+
     // Expõe as env vars.
     println!("cargo:rustc-env=CATALOG_JSON_PATH={}", out_path.display());
     println!("cargo:rustc-env=CATALOG_HASH={}", hash);
+    println!(
+        "cargo:rustc-env=SPECIALISTS_TOML_PATH={}",
+        out_specialists_path.display()
+    );
 
     // Re-executa o build se os arquivos de entrada mudarem.
     println!("cargo:rerun-if-changed=data/catalog.json");
     println!("cargo:rerun-if-changed=data/schema.json");
+    println!("cargo:rerun-if-changed=data/specialists/default.toml");
 }
 
 fn blake3_hash(bytes: &[u8]) -> String {

@@ -13,6 +13,30 @@ frederico-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `toml` é dep direta do model-catalog por causa da Etapa 3 da Fase 6
+# (ADR-0030 §D1 — `SpecialistDefinition` carregado de
+# `data/specialists/default.toml`). O projeto evitou `toml` para o
+# `eval.toml` da Fase 4 (4 chaves planas — manual parsing mais simples),
+# mas o `specialists.toml` tem 8 entries com arrays aninhados, então
+# o parse manual seria frágil. Justificado.
+toml = "0.8"
+# `directories` (Etapa 3 Fase 6) resolve `~/.config/frederico/`
+# (Unix) / `%APPDATA%\Frederico\` (Windows) pra path do override
+# `specialists.toml`. Já é dep transitiva do workspace (via
+# `frederico-app`), mas o `model-catalog` não pode assumir
+# transitive — declara como direta pra ser explícito.
+directories = { workspace = true }
+# `tracing` pros warnings de override fail-closed e override invade
+# bundled. Mesma justificativa.
+tracing = { workspace = true }
 
 [build-dependencies]
 serde_json = { workspace = true }
+# Parse mínimo do `specialists/default.toml` no `build.rs` (duplicação
+# proposital — o build.rs roda antes do lib.rs ser compilado, não dá
+# pra reusar `frederico_model_catalog::specialist::parse_specialists_toml`).
+# Mesma versão do `toml` em `[dependencies]` pra garantir que o shape
+# do parse bate entre build-time e runtime (se divergir, o teste E2E
+# `registry_loads_specialists_from_catalog` pega).
+toml = "0.8"
+serde = { workspace = true }

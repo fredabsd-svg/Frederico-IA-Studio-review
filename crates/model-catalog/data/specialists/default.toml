@@ -1,0 +1,160 @@
+# `default.toml` — 8 especialistas bundled no binário (Etapa 3 da Fase 6, ADR-0030 §D1).
+#
+# Carregado por `frederico-model-catalog::registry::DefaultSpecialistRegistry::load_bundled`
+# via `include_str!` no runtime (embed via `build.rs`, mesmo padrão do `data/catalog.json`).
+#
+# ## Versionamento
+#
+# `version` é a versão do schema deste arquivo. Mudanças
+# incompatíveis (renomear campo, mudar tipo) exigem migração +
+# bump de `version`. Adição de campo opcional é compatível (parse
+# tolera ausência via `#[serde(default)]`).
+#
+# ## Por que 8
+#
+# É o conjunto que cobre o caso de uso real do §9.1 do PROMPT MESTRE
+# ("orquestrador delega para até 8 especialistas") sem inflar.
+# Cada um tem propósito distinto; o usuário pode desabilitar/reescrever
+# via `~/.config/frederico/specialists.toml` (override). Pode
+# **adicionar** novos com IDs próprios, mas **não pode invadir** os
+# 8 bundled nem IDs que não existem — o `SpecialistRegistry::get(id)`
+# retorna erro com a lista de válidos (§9.2 zero fallback silencioso).
+#
+# ## Defaults
+#
+# Cada campo opcional (max_steps, timeout_ms, token_budget,
+# cost_budget_microcents) tem default no Rust
+# (`SpecialistMaxSteps::default() = 30`,
+# `SpecialistTimeoutMs::default() = 300_000`, `None` para os
+# outros). O que está aqui embaixo é a versão "completa" pra
+# referência e pros testes E2E.
+
+version = "1"
+
+# ----------------------------------------------------------------------------
+# revisor — lê código, emite diff de revisão
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "revisor"
+name = "Revisor de Código"
+description = "Lê o diff e aponta problemas concretos (bugs, race conditions, edge cases, testes faltando)."
+purpose = "Revisão de PR antes de merge. Lê o código alterado, consulta o contexto do projeto (memória + arquivos relacionados), e devolve uma lista priorizada de problemas com sugestão de fix."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["tools", "long-context"]
+allowed_tools = ["files.read", "files.list", "memory.retrieve"]
+denied_tools = ["terminal", "files.write", "files.delete", "network"]
+max_steps = 30
+timeout_ms = 300000
+token_budget = 50000
+
+# ----------------------------------------------------------------------------
+# pesquisador — busca em memória + web_browse
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "pesquisador"
+name = "Pesquisador"
+description = "Busca informação em memórias do projeto e na web, devolve resumo com fontes."
+purpose = "Pesquisa exploratória. Lê memórias do escopo do projeto, faz web_browse se necessário, sintetiza achados com referência às fontes."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["tools", "long-context"]
+allowed_tools = ["memory.retrieve", "web.browse", "web.download", "files.read"]
+denied_tools = ["terminal", "files.write", "files.delete"]
+max_steps = 25
+timeout_ms = 240000
+token_budget = 40000
+
+# ----------------------------------------------------------------------------
+# testador — roda testes via terminal sandboxes
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "testador"
+name = "Testador"
+description = "Roda a suíte de testes e devolve relatório do que passou/falhou com snippet do erro."
+purpose = "Execução de testes após mudança. Roda a suíte relevante (cargo test, npm test, pytest) dentro do sandbox, captura output, devolve diagnóstico."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["tools"]
+allowed_tools = ["terminal.run", "files.read"]
+denied_tools = ["files.write", "files.delete", "network", "credentials"]
+max_steps = 40
+timeout_ms = 600000
+token_budget = 30000
+
+# ----------------------------------------------------------------------------
+# validador — checa invariantes declaradas pelo pai
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "validador"
+name = "Validador"
+description = "Checa invariantes declaradas (ex.: 'esse JSON deve parsear', 'esse PDF deve ter N páginas') e devolve OK/FAIL com evidência."
+purpose = "Validação pós-geração. Recebe um artefato + invariantes, executa checks (parse, schema validation, contagem, formato), devolve resultado estruturado."
+default_model = "gpt-4o-mini"
+allowed_model_capabilities = ["tools"]
+allowed_tools = ["files.read", "json.validate", "pdf.audit"]
+denied_tools = ["terminal", "files.write", "files.delete", "network", "credentials"]
+max_steps = 15
+timeout_ms = 180000
+token_budget = 20000
+
+# ----------------------------------------------------------------------------
+# sumador — sumariza o output de outros especialistas
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "sumador"
+name = "Sumador"
+description = "Sumariza o output de outros especialistas em uma resposta coesa pro modelo principal."
+purpose = "Síntese final após paralelização. Recebe outputs de N especialistas, identifica convergências/divergências, devolve um sumário + recomendação."
+default_model = "gpt-4o-mini"
+allowed_model_capabilities = ["long-context"]
+allowed_tools = []
+denied_tools = ["terminal", "files.write", "files.read", "files.delete", "network", "credentials"]
+max_steps = 10
+timeout_ms = 120000
+token_budget = 30000
+
+# ----------------------------------------------------------------------------
+# arquiteto — projeta estrutura antes de implementar
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "arquiteto"
+name = "Arquiteto"
+description = "Projeta a estrutura de uma feature antes da implementação. Devolve plano de módulos, contratos, e sequência de execução."
+purpose = "Design pré-implementação. Recebe o problema, devolve: estrutura de pastas, interfaces, dependências, ordem de implementação. Não escreve código — só plano."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["long-context", "tools"]
+allowed_tools = ["files.read", "memory.retrieve", "files.list"]
+denied_tools = ["terminal", "files.write", "files.delete", "network", "credentials"]
+max_steps = 25
+timeout_ms = 300000
+token_budget = 60000
+
+# ----------------------------------------------------------------------------
+# critico — aponta fraquezas no plano
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "critico"
+name = "Crítico"
+description = "Aponta fraquezas, riscos, e casos não-cobertos no plano. Faz o papel de 'advogado do diabo'."
+purpose = "Crítica do plano. Recebe plano do arquiteto (ou do pai), identifica: casos de borda não tratados, premissas não verificadas, riscos de segurança/perf, alternativas descartadas sem justificativa."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["long-context", "tools"]
+allowed_tools = ["files.read", "memory.retrieve"]
+denied_tools = ["terminal", "files.write", "files.delete", "network", "credentials"]
+max_steps = 20
+timeout_ms = 240000
+token_budget = 40000
+
+# ----------------------------------------------------------------------------
+# executor — implementa o plano
+# ----------------------------------------------------------------------------
+[[specialist]]
+id = "executor"
+name = "Executor"
+description = "Implementa o plano aprovado: escreve código, roda testes, commita. Recebe plano detalhado do arquiteto + OK do crítico."
+purpose = "Execução do plano. Recebe: plano estruturado (do arquiteto), OK do crítico, e o objetivo original. Escreve arquivos, roda testes, itera até passar."
+default_model = "gpt-4o"
+allowed_model_capabilities = ["tools", "long-context"]
+allowed_tools = ["files.read", "files.write", "files.list", "terminal.run", "git.commit"]
+denied_tools = ["files.delete", "network", "credentials", "github.push"]
+max_steps = 50
+timeout_ms = 600000
+token_budget = 80000

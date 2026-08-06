@@ -9,11 +9,32 @@
 //!
 //! Atualizações são PRs normais — uma revisão, um merge, próximo
 //! release. Não há rede em runtime.
+//!
+//! ## Etapa 3 da Fase 6 (ADR-0030)
+//!
+//! A partir da Etapa 3, o crate também carrega o **registro de
+//! especialistas** (`SpecialistDefinition` + `SpecialistRegistry`),
+//! versionado em `data/specialists/default.toml` e bundled no
+//! binário. Ver [`specialist`] e [`registry`]. O registro é o
+//! complemento user-facing do catálogo: o catálogo diz "que modelos
+//! existem", o registro diz "que papéis (com quais ferramentas e
+//! restrições) esses modelos podem exercer". Mesma estratégia
+//! (bundled + override em `~/.config/frederico/specialists.toml`,
+//! zero rede em runtime, versão pinada).
 
 use std::sync::OnceLock;
 
 use frederico_core::{ModelId, ProviderId};
 use serde::{Deserialize, Serialize};
+
+pub mod registry;
+pub mod specialist;
+
+pub use registry::{DefaultSpecialistRegistry, RegistryError, SpecialistRegistry};
+pub use specialist::{
+    parse_specialists_toml, SpecialistDefinition, SpecialistId, SpecialistMaxSteps,
+    SpecialistSummary, SpecialistTimeoutMs, SpecialistTokenBudget,
+};
 
 /// Hash BLAKE3 (ou fallback FNV-64 se `blake3` crate não estiver
 /// disponível) do catálogo canônico, exposto pelo `build.rs`.

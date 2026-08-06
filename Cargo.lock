@@ -1257,10 +1257,13 @@ dependencies = [
 name = "frederico-model-catalog"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "frederico-core",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "toml 0.8.2",
+ "tracing",
 ]
 
 [[package]]
