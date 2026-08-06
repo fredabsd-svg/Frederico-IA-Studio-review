@@ -1184,6 +1184,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "frederico-agent-engine",
  "frederico-app",
  "frederico-core",
  "frederico-document-engine",
@@ -1225,6 +1226,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",

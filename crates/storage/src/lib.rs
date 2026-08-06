@@ -10,6 +10,7 @@
 //! `provider_configs`) e os repositórios correspondentes.
 
 use chrono::Utc;
+use frederico_agent_engine::{apply_transition as portao_apply_transition, RunEventKind, RunState};
 use frederico_core::{AppVersion, ConversationId, MessageId, ModelId, ProviderId, RunId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -35,6 +36,18 @@ pub enum StorageError {
     MessageNotFound(MessageId),
     #[error("run {0} não encontrado")]
     RunNotFound(RunId),
+    /// O portão [`frederico_agent_engine::apply_transition`]
+    /// rejeitou a transição solicitada. O caller deveria ter
+    /// passado a transição pelo `state_mapping` antes de
+    /// invocar este método — o erro aqui significa que o
+    /// estado real do run não bate com o `from` que o caller
+    /// assumiu.
+    #[error("portão `apply_transition` rejeitou: from={from} kind={kind} — {cause}")]
+    InvalidTransition {
+        from: String,
+        kind: String,
+        cause: String,
+    },
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -818,6 +831,33 @@ impl<'a> MessageEventRepo<'a> {
         }
         Ok(out)
     }
+
+    /// Seta `run_seq` em uma `MessageEvent` específica (identificada por
+    /// `message_id` + `message_seq`). Usado pelo `RunExecutor` para
+    /// preencher a coluna de join com `run_events` (Fase 6, Etapa 2,
+    /// ADR-0029 §D6). A coluna `run_seq` foi adicionada na migração
+    /// `0027_run_events.sql` e é `NULL` por padrão; este método é o
+    /// que materializa o vínculo entre as duas tabelas.
+    ///
+    /// Idempotente: re-chamar com o mesmo `run_seq` é no-op (o `UPDATE`
+    /// resulta em 0 linhas alteradas mas não falha).
+    pub async fn set_run_seq(
+        &self,
+        message_id: &MessageId,
+        message_seq: u32,
+        run_seq: u64,
+    ) -> StorageResult<()> {
+        sqlx::query(
+            "UPDATE message_events SET run_seq = ?1 \
+             WHERE message_id = ?2 AND seq = ?3",
+        )
+        .bind(run_seq as i64)
+        .bind(message_id.0.to_string())
+        .bind(message_seq as i64)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 /// Repositório de runs.
@@ -983,15 +1023,23 @@ impl<'a> RunRepo<'a> {
         Ok(())
     }
 
-    /// Atualiza a coluna `state` (22 valores do
-    /// `frederico_agent_engine::RunState`) **sozinha**. Usado
-    /// somente em testes e em fluxos legados; o caminho quente da
-    /// Etapa 5.x usa
-    /// [`set_state_and_heartbeat_tx`](Self::set_state_and_heartbeat_tx)
-    /// que agrupa `state` + `last_heartbeat_at` + `last_event_seq`
-    /// numa transação `BEGIN IMMEDIATE; ...; COMMIT;` (atomicidade
-    /// contra crash).
-    pub async fn set_state(
+    /// **Versão UNCHECKED**: atualiza a coluna `state` (22 valores
+    /// do `frederico_agent_engine::RunState`) **sozinha, sem
+    /// consultar o portão `apply_transition`**. **Não usar em
+    /// código de produção da Fase 6 em diante** — é API legada
+    /// mantida só pra testes que precisam forçar estados
+    /// (`setup_executor`, testes de recovery com banco
+    /// pré-migração).
+    ///
+    /// O caminho de produção da Etapa 2 da Fase 6 é
+    /// [`set_state_validated`](Self::set_state_validated) (valida
+    /// via `apply_transition` antes de gravar + grava `RunEvent`
+    /// atômico) ou
+    /// [`set_state_and_heartbeat_unchecked_tx`](Self::set_state_and_heartbeat_unchecked_tx)
+    /// (versão transacional, ainda unchecked, mantida por
+    /// compatibilidade até a Etapa 3 fechar a migração do
+    /// `RunExecutor`).
+    pub async fn set_state_unchecked(
         &self,
         id: &RunId,
         state: frederico_agent_engine::RunState,
@@ -1004,17 +1052,21 @@ impl<'a> RunRepo<'a> {
         Ok(())
     }
 
-    /// Atualiza `runs.state` + `last_heartbeat_at` + `last_event_seq`
-    /// numa **única transação** `BEGIN IMMEDIATE; ...; COMMIT;`. Isso
-    /// garante consistência contra crash: ou os 3 valores novos são
-    /// persistidos, ou nenhum é.
+    /// **Versão UNCHECKED**: atualiza `runs.state` +
+    /// `last_heartbeat_at` + `last_event_seq` numa **única
+    /// transação** `BEGIN IMMEDIATE; ...; COMMIT;`. Garante
+    /// consistência contra crash (ou os 3 valores novos são
+    /// persistidos, ou nenhum é), mas **não consulta o portão
+    /// `apply_transition`** — é API legada, mantida por
+    /// compatibilidade até a Etapa 3 da Fase 6 migrar o
+    /// `RunExecutor` pra
+    /// [`set_state_validated`](Self::set_state_validated).
     ///
     /// O `BEGIN IMMEDIATE` pega o write lock imediatamente (em vez
     /// de `BEGIN DEFERRED` que só pega no primeiro `WRITE`),
     /// evitando o `SQLITE_BUSY` quando vários executors estão
-    /// ativos. A Etapa 5.x introduz esse padrão; a Etapa 4 só
-    /// chamava `set_status` (que não é transacional).
-    pub async fn set_state_and_heartbeat_tx(
+    /// ativos.
+    pub async fn set_state_and_heartbeat_unchecked_tx(
         &self,
         id: &RunId,
         state: frederico_agent_engine::RunState,
@@ -1100,6 +1152,470 @@ impl<'a> RunRepo<'a> {
             .execute(self.pool)
             .await?;
         Ok(())
+    }
+
+    /// **Caminho validado de mudança de estado** (Fase 6, Etapa 2
+    /// — fechamento do portão, ADR-0029 §D1).
+    ///
+    /// O portão [`frederico_agent_engine::apply_transition`] é
+    /// consultado **antes** de qualquer gravação. Se a transição
+    /// `from → to` (via `kind`) não é uma aresta válida da tabela
+    /// `TRANSITIONS` / `GLOBAL_TRANSITIONS`, o método retorna
+    /// [`StorageError::InvalidTransition`] sem alterar nada no
+    /// banco. Caso contrário:
+    ///
+    /// 1. `runs.state` é atualizado pra `to` e `last_heartbeat_at` /
+    ///    `last_event_seq` são atualizados.
+    /// 2. Um [`RunEventRecord`] é gravado com `from = from`,
+    ///    `to = to`, `kind = kind`, `seq = last_event_seq + 1`
+    ///    e o `payload` fornecido.
+    ///
+    /// Os dois updates rodam na **mesma transação** `BEGIN
+    /// IMMEDIATE; ...; COMMIT;` — se qualquer um falhar, nada é
+    /// persistido (atomicidade contra crash).
+    ///
+    /// Retorna `(to, run_seq)` em sucesso. O `run_seq` é o `seq`
+    /// do `RunEvent` recém-gravado (o caller usa pra popular
+    /// `MessageEvent.run_seq` no mesmo round — Etapa 4 da Fase
+    /// de Ligação documenta a invariante "RunEvent gravado antes
+    /// de MessageEvent.emit" do ADR-0009 §D1).
+    ///
+    /// **Por que este método é a única via de produção pra
+    /// mudar `runs.state`:** o [`RunExecutor`] consome o walk
+    /// de [`crate::state_mapping::run_state_for_event`] (que já
+    /// validou cada aresta) e passa cada `RunStateTransition`
+    /// por aqui. Se o caminho de validação driftar (regressão
+    /// em `state_mapping`), o portão no `apply_transition`
+    /// dentro deste método é a **segunda linha de defesa** —
+    /// `from` precisa bater com o estado persistido do run
+    /// (lido de `runs.state`), e `kind` precisa ter aresta pra
+    /// `to`. Se o `state_mapping` esqueceu de consultar o
+    /// portão, este método pega.
+    ///
+    /// [`RunExecutor`]: ../../execution_engine/executor/struct.RunExecutor.html
+    pub async fn set_state_validated(
+        &self,
+        id: &RunId,
+        from: RunState,
+        kind: RunEventKind,
+        payload: serde_json::Value,
+    ) -> StorageResult<(RunState, u64)> {
+        // 1. Portão: aplica a transição via `apply_transition` (puro).
+        //    Se a tabela `TRANSITIONS` rejeita, nada é gravado.
+        let to =
+            portao_apply_transition(from, kind).map_err(|e| StorageError::InvalidTransition {
+                from: from.as_str().to_string(),
+                kind: kind.as_str().to_string(),
+                cause: format!("{e:?}"),
+            })?;
+
+        // 2. Tudo numa única transação. Se o `INSERT` em
+        //    `run_events` falhar (e.g. UNIQUE(run_id, seq) batido
+        //    por race), o `UPDATE` em `runs` é desfeito.
+        let mut tx = self.pool.begin().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        let now_rfc = Utc::now().to_rfc3339();
+
+        // Próximo `seq` do journal (monotônico por `run_id`).
+        // Lemos o `last_event_seq` do `runs` na **mesma** transação
+        // pra evitar race com outro executor do mesmo run (a Etapa
+        // 4 garante que cada run tem 1 executor, mas a defesa em
+        // profundidade não custa nada).
+        let current_last_seq: i64 =
+            sqlx::query_scalar("SELECT last_event_seq FROM runs WHERE id = ?1")
+                .bind(id.0.to_string())
+                .fetch_one(&mut *tx)
+                .await?;
+        let new_seq = (current_last_seq as u64) + 1;
+
+        // 3. Insere o `RunEvent` (UNIQUE(run_id, seq) garante
+        //    monotonicidade mecânica).
+        let event_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO run_events (event_id, run_id, seq, kind, from_state, to_state, \
+             timestamp_ms, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(&event_id)
+        .bind(id.0.to_string())
+        .bind(new_seq as i64)
+        .bind(kind.as_str())
+        .bind(from.as_str())
+        .bind(to.as_str())
+        .bind(now_ms)
+        .bind(payload.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        // 4. Atualiza `runs.state` + `last_heartbeat_at` + `last_event_seq`.
+        sqlx::query(
+            "UPDATE runs SET state = ?1, last_heartbeat_at = ?2, last_event_seq = ?3 \
+             WHERE id = ?4",
+        )
+        .bind(to.as_str())
+        .bind(&now_rfc)
+        .bind(new_seq as i64)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok((to, new_seq))
+    }
+}
+
+/// Repositório do journal de transições do `Run` (Fase 6, Etapa 2).
+///
+/// Cada [`RunEvent`] que o [`RunExecutor`] emite (via
+/// `state_mapping::run_state_for_event` consultando o portão único
+/// `apply_transition`) é gravado aqui **na mesma transação** que o
+/// `RunRepo::set_state_and_heartbeat_tx`. A invariante "transição gravada
+/// antes de retornar" (ADR-0009 §D1) fica mantida.
+///
+/// [`RunEvent`]: frederico_agent_engine::RunEvent
+pub struct RunEventRepo<'a> {
+    pool: &'a sqlx::SqlitePool,
+}
+
+/// Row bruta de `run_events`. Tipo de domínio: [`RunEventRecord`].
+type RunEventRow = (
+    String,         // event_id
+    String,         // run_id
+    i64,            // seq
+    String,         // kind
+    Option<String>, // from_state
+    Option<String>, // to_state
+    i64,            // timestamp_ms
+    String,         // payload_json
+);
+
+/// Linha do `run_events` parseada do SQLite. O domínio [`RunEvent`]
+/// da `agent-engine` é a fonte de verdade (com `payload: serde_json::Value`);
+/// este struct carrega os campos brutos do banco.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunEventRecord {
+    pub event_id: String,
+    pub run_id: String,
+    pub seq: u64,
+    pub kind: String,
+    pub from_state: Option<String>,
+    pub to_state: Option<String>,
+    pub timestamp_ms: i64,
+    pub payload_json: String,
+}
+
+impl RunEventRecord {
+    fn from_row(row: RunEventRow) -> Self {
+        let (event_id, run_id, seq, kind, from_state, to_state, timestamp_ms, payload_json) = row;
+        Self {
+            event_id,
+            run_id,
+            seq: seq as u64,
+            kind,
+            from_state,
+            to_state,
+            timestamp_ms,
+            payload_json,
+        }
+    }
+}
+
+impl<'a> RunEventRepo<'a> {
+    #[must_use]
+    pub fn new(db: &'a Database) -> Self {
+        Self { pool: &db.pool }
+    }
+
+    /// Anexa um evento de transição ao journal. Retorna o `seq`
+    /// usado. O `seq` é monotônico por `run_id` (garantido pelo
+    /// `UNIQUE(run_id, seq)` no SQLite).
+    ///
+    /// O `timestamp_ms` é gerado aqui (`chrono::Utc::now()` em
+    /// milissegundos desde a epoch). O `event_id` é um `Uuid::new_v4()`.
+    /// `from_state` e `to_state` são opcionais — eventos sem mudança
+    /// de estado (ex.: `Usage` no stream) gravam ambos como
+    /// `Some(current)` (igual a `current`).
+    ///
+    /// O `payload` é `serde_json::Value` opaco (mesma estratégia do
+    /// `RunEvent.payload` na `agent-engine`).
+    pub async fn append(
+        &self,
+        run_id: &RunId,
+        kind: frederico_agent_engine::RunEventKind,
+        from_state: Option<frederico_agent_engine::RunState>,
+        to_state: Option<frederico_agent_engine::RunState>,
+        payload: serde_json::Value,
+    ) -> StorageResult<u64> {
+        // Calcula o próximo `seq` para o run.
+        let next_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = ?1",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_one(self.pool)
+        .await?;
+
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let ts_ms = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO run_events (event_id, run_id, seq, kind, from_state, to_state, timestamp_ms, payload_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(&event_id)
+        .bind(run_id.0.to_string())
+        .bind(next_seq)
+        .bind(kind.as_str())
+        .bind(from_state.map(|s| s.as_str().to_string()))
+        .bind(to_state.map(|s| s.as_str().to_string()))
+        .bind(ts_ms)
+        .bind(payload.to_string())
+        .execute(self.pool)
+        .await?;
+
+        Ok(next_seq as u64)
+    }
+
+    /// Lista todos os eventos de um run, em ordem de `seq`. Usado pelo
+    /// `recovery.rs` (carrega o último estado válido) e pela UI do
+    /// Modo Equipe (linha do tempo de estados, Etapa 6).
+    pub async fn list_for_run(&self, run_id: &RunId) -> StorageResult<Vec<RunEventRecord>> {
+        let rows: Vec<RunEventRow> = sqlx::query_as(
+            "SELECT event_id, run_id, seq, kind, from_state, to_state, timestamp_ms, payload_json \
+             FROM run_events WHERE run_id = ?1 ORDER BY seq ASC",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows.into_iter().map(RunEventRecord::from_row).collect())
+    }
+
+    /// Retorna o último evento do run (maior `seq`). `None` se o run
+    /// ainda não tem eventos no journal (run criado antes da Etapa 2
+    /// da Fase 6, ou run em estado `Created` que ainda não foi
+    /// enfileirado). Usado pelo `recovery.rs` como fonte primária
+    /// do estado (em vez do `last_heartbeat_at` heurístico).
+    pub async fn latest_for_run(&self, run_id: &RunId) -> StorageResult<Option<RunEventRecord>> {
+        let row: Option<RunEventRow> = sqlx::query_as(
+            "SELECT event_id, run_id, seq, kind, from_state, to_state, timestamp_ms, payload_json \
+             FROM run_events WHERE run_id = ?1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(row.map(RunEventRecord::from_row))
+    }
+
+    /// Retorna o maior `seq` registrado para o run. `0` se não há
+    /// eventos. Usado pelo `RunRepo::set_state_and_heartbeat_tx`
+    /// para atualizar `last_event_seq` atomicamente com a mudança
+    /// de estado.
+    pub async fn last_seq(&self, run_id: &RunId) -> StorageResult<u64> {
+        let seq: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(seq) FROM run_events WHERE run_id = ?1")
+                .bind(run_id.0.to_string())
+                .fetch_one(self.pool)
+                .await?;
+        Ok(seq.unwrap_or(0) as u64)
+    }
+}
+
+#[cfg(test)]
+mod run_event_repo_tests {
+    use super::*;
+    use frederico_agent_engine::{RunEventKind, RunState};
+    use frederico_core::ModelId;
+
+    fn tempdir() -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let unique = format!(
+            "frederico-runevent-{}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            n,
+        );
+        let dir = base.join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn append_assigns_monotonic_seq() {
+        let db = Database::open(&tempdir().join("re1.db")).await.unwrap();
+        let conv = ConversationRepo::new(&db)
+            .create(&ProviderId::new("p"), &ModelId::new("m"), None)
+            .await
+            .unwrap();
+        let msg = MessageRepo::new(&db)
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = RunRepo::new(&db).create(&conv.id, &msg.id).await.unwrap();
+        let re = RunEventRepo::new(&db);
+
+        let s1 = re
+            .append(
+                &run.id,
+                RunEventKind::Enqueue,
+                Some(RunState::Created),
+                Some(RunState::Queued),
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        let s2 = re
+            .append(
+                &run.id,
+                RunEventKind::Dequeue,
+                Some(RunState::Queued),
+                Some(RunState::PreparingContext),
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        let s3 = re
+            .append(
+                &run.id,
+                RunEventKind::FirstToken,
+                Some(RunState::CallingModel),
+                Some(RunState::Streaming),
+                serde_json::json!({"first_chunk": "hello"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!((s1, s2, s3), (1, 2, 3));
+    }
+
+    #[tokio::test]
+    async fn latest_for_run_returns_highest_seq() {
+        let db = Database::open(&tempdir().join("re2.db")).await.unwrap();
+        let conv = ConversationRepo::new(&db)
+            .create(&ProviderId::new("p"), &ModelId::new("m"), None)
+            .await
+            .unwrap();
+        let msg = MessageRepo::new(&db)
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = RunRepo::new(&db).create(&conv.id, &msg.id).await.unwrap();
+        let re = RunEventRepo::new(&db);
+
+        re.append(
+            &run.id,
+            RunEventKind::Enqueue,
+            None,
+            None,
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+        re.append(
+            &run.id,
+            RunEventKind::Dequeue,
+            None,
+            None,
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+        re.append(
+            &run.id,
+            RunEventKind::FirstToken,
+            None,
+            None,
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+
+        let latest = re.latest_for_run(&run.id).await.unwrap().unwrap();
+        assert_eq!(latest.kind, "first_token");
+        assert_eq!(latest.seq, 3);
+    }
+
+    #[tokio::test]
+    async fn latest_for_run_returns_none_when_empty() {
+        let db = Database::open(&tempdir().join("re3.db")).await.unwrap();
+        let conv = ConversationRepo::new(&db)
+            .create(&ProviderId::new("p"), &ModelId::new("m"), None)
+            .await
+            .unwrap();
+        let msg = MessageRepo::new(&db)
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = RunRepo::new(&db).create(&conv.id, &msg.id).await.unwrap();
+        let re = RunEventRepo::new(&db);
+
+        let latest = re.latest_for_run(&run.id).await.unwrap();
+        assert!(latest.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_for_run_returns_all_in_order() {
+        let db = Database::open(&tempdir().join("re4.db")).await.unwrap();
+        let conv = ConversationRepo::new(&db)
+            .create(&ProviderId::new("p"), &ModelId::new("m"), None)
+            .await
+            .unwrap();
+        let msg = MessageRepo::new(&db)
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = RunRepo::new(&db).create(&conv.id, &msg.id).await.unwrap();
+        let re = RunEventRepo::new(&db);
+
+        for kind in [
+            RunEventKind::Enqueue,
+            RunEventKind::Dequeue,
+            RunEventKind::ContextReady,
+        ] {
+            re.append(&run.id, kind, None, None, serde_json::Value::Null)
+                .await
+                .unwrap();
+        }
+        let events = re.list_for_run(&run.id).await.unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, "enqueue");
+        assert_eq!(events[1].kind, "dequeue");
+        assert_eq!(events[2].kind, "context_ready");
+    }
+
+    #[tokio::test]
+    async fn last_seq_zero_when_empty_and_monotonic_when_populated() {
+        let db = Database::open(&tempdir().join("re5.db")).await.unwrap();
+        let conv = ConversationRepo::new(&db)
+            .create(&ProviderId::new("p"), &ModelId::new("m"), None)
+            .await
+            .unwrap();
+        let msg = MessageRepo::new(&db)
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = RunRepo::new(&db).create(&conv.id, &msg.id).await.unwrap();
+        let re = RunEventRepo::new(&db);
+
+        assert_eq!(re.last_seq(&run.id).await.unwrap(), 0);
+
+        re.append(
+            &run.id,
+            RunEventKind::Enqueue,
+            None,
+            None,
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+        re.append(
+            &run.id,
+            RunEventKind::Dequeue,
+            None,
+            None,
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(re.last_seq(&run.id).await.unwrap(), 2);
     }
 }
 

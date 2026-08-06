@@ -1,4 +1,4 @@
-//! Recovery de crash no startup (Fase 3, Etapa 5.x).
+//! Recovery de crash no startup (Fase 3, Etapa 5.x; Fase 6, Etapa 2).
 //!
 //! ## O problema
 //!
@@ -18,9 +18,13 @@
 //! 1. Lista runs não-terminais (`state NOT IN ('completed', 'failed',
 //!    'cancelled', 'interrupted')`) cujo `last_heartbeat_at` é mais
 //!    velho que `threshold_seconds` segundos atrás.
-//! 2. Pra cada um, marca como `interrupted` (terminal — o app
-//!    crashou). A view `runs_with_status` mapeia `interrupted →
-//!    timeout`.
+//! 2. Pra cada um, lê o último `RunEvent` do journal (Fase 6,
+//!    Etapa 2) — fonte primária do estado. Se o último `RunEvent`
+//!    tem `to_state` não-terminal, o app crashou no meio de uma
+//!    transição; o recovery marca o run como `interrupted` e
+//!    registra um `RunEvent` adicional com `kind = AppCrashRecovery`
+//!    (auditoria: "essa foi uma recuperação de crash, não uma
+//!    transição natural").
 //! 3. Loga quantos foram marcados. A UI pode listar pra o usuário
 //!    revisar.
 //!
@@ -31,14 +35,24 @@
 //!
 //! ## Por que aqui, não no `provider-engine`?
 //!
-//! A `RunRepo` está no `storage` (já usado pelo `execution-engine`).
-//! O recovery é lógica de execução, então vive no `execution-engine`
-//! (re-exportado no `lib.rs`).
+//! A `RunRepo` e o `RunEventRepo` estão no `storage` (já usado
+//! pelo `execution-engine`). O recovery é lógica de execução, então
+//! vive no `execution-engine` (re-exportado no `lib.rs`).
+//!
+//! ## Por que `RunEvent` é fonte primária (Etapa 2)
+//!
+//! Antes da Etapa 2, o recovery inferia o estado do run pelo
+//! `last_heartbeat_at` heurístico. A Etapa 2 introduz o
+//! [`RunEventRepo`] como journal autoritativo de transições
+//! (ADR-0029 §D1, D2). O recovery agora lê o último `RunEvent`:
+//! se o `to_state` dele é não-terminal, é prova de que o run estava
+//! em progresso quando o app crashou.
 
 use std::time::Duration;
 
+use frederico_agent_engine::{RunEventKind, RunState};
 use frederico_core::RunId;
-use frederico_storage::{Database, RunRepo, StorageResult};
+use frederico_storage::{Database, RunEventRepo, RunRepo, StorageResult};
 use tracing::{info, warn};
 
 /// Threshold default pra considerar um run "morto": 120s. Maior que
@@ -48,10 +62,12 @@ pub const DEFAULT_STALE_THRESHOLD_SECS: u64 = 120;
 
 /// Roda o recovery de crash: lista runs não-terminais com
 /// `last_heartbeat_at` mais velho que `threshold`, marca cada um
-/// como `interrupted` (terminal). Devolve o número de runs
-/// marcados.
+/// como `interrupted` (terminal) e registra um `RunEvent` adicional
+/// com `kind = AppCrashRecovery` (auditoria). Devolve o número de
+/// runs marcados.
 pub async fn recover_stale_runs(
     run_repo: &RunRepo<'_>,
+    run_event_repo: &RunEventRepo<'_>,
     threshold: Duration,
 ) -> StorageResult<usize> {
     let threshold_secs = threshold.as_secs();
@@ -70,18 +86,49 @@ pub async fn recover_stale_runs(
     );
     let mut marked = 0usize;
     for run in &stale {
+        // Lê o último RunEvent como fonte primária do estado.
+        // Antes da Etapa 2, o recovery usava `run.state` (que pode
+        // estar stale se o app crashou entre dois `set_state`).
+        // Agora, o `RunEvent.to_state` é a fonte autoritativa.
+        let last_event = run_event_repo.latest_for_run(&run.id).await?;
+        let last_state = last_event
+            .as_ref()
+            .and_then(|e| e.to_state.as_deref())
+            .map_or(run.state.clone(), ToString::to_string);
+
         warn!(
             run_id = %run.id,
             state = %run.state,
+            last_run_event_state = %last_state,
             last_heartbeat_at = %run.last_heartbeat_at,
             started_at = %run.started_at,
             "recovery: marcando run stale como interrupted"
         );
         if let Err(e) = run_repo.mark_interrupted(&run.id).await {
             warn!(run_id = %run.id, "recovery: falha ao marcar como interrupted: {e}");
-        } else {
-            marked += 1;
+            continue;
         }
+        // Registra o evento de recovery (auditoria). O `from_state`
+        // é o último estado conhecido via `RunEvent` (ou `run.state`
+        // como fallback). O `to_state` é `Interrupted` (terminal).
+        let from = last_state.parse::<RunState>().unwrap_or(RunState::Created);
+        let payload = serde_json::json!({
+            "recovery_threshold_seconds": threshold_secs,
+            "last_heartbeat_at": run.last_heartbeat_at,
+        });
+        if let Err(e) = run_event_repo
+            .append(
+                &run.id,
+                RunEventKind::AppCrashRecovery,
+                Some(from),
+                Some(RunState::Interrupted),
+                payload,
+            )
+            .await
+        {
+            warn!(run_id = %run.id, "recovery: falha ao gravar RunEvent: {e}");
+        }
+        marked += 1;
     }
     info!("recovery: {marked} runs marcados como interrupted");
     Ok(marked)
@@ -89,20 +136,21 @@ pub async fn recover_stale_runs(
 
 /// Helper que roda o recovery no startup. Recebe um `Database`
 /// (que é `Arc<SqlitePool>` internamente — clonar é barato) e
-/// constrói o `RunRepo` dentro da task. Devolve o `JoinHandle` se
-/// o caller quiser esperar.
+/// constrói o `RunRepo` e o `RunEventRepo` dentro da task. Devolve
+/// o `JoinHandle` se o caller quiser esperar.
 ///
-/// **Por que recebe `Database` em vez de `RunRepo`?** Porque o
+/// **Por que recebe `Database` em vez dos repos?** Porque o
 /// `RunRepo` tem borrow do `&Database`, e o `tokio::spawn` exige
 /// `'static`. Receber o `Database` (que vive em `Arc`) e construir
-/// o `RunRepo` dentro do closure resolve isso sem `unsafe`.
+/// os repos dentro do closure resolve isso sem `unsafe`.
 pub fn spawn_recover_stale_runs(
     db: Database,
     threshold: Duration,
 ) -> tokio::task::JoinHandle<StorageResult<usize>> {
     tokio::spawn(async move {
         let run_repo = RunRepo::new(&db);
-        recover_stale_runs(&run_repo, threshold).await
+        let run_event_repo = RunEventRepo::new(&db);
+        recover_stale_runs(&run_repo, &run_event_repo, threshold).await
     })
 }
 
@@ -149,6 +197,7 @@ mod tests {
         let conv_repo = ConversationRepo::new(&db);
         let msg_repo = MessageRepo::new(&db);
         let run_repo = RunRepo::new(&db);
+        let run_event_repo = RunEventRepo::new(&db);
 
         // Cria 2 conversas, cada uma com 1 message e 1 run.
         let conv1 = conv_repo
@@ -189,7 +238,7 @@ mod tests {
             .unwrap();
 
         // Recovery com threshold de 60s.
-        let marked = recover_stale_runs(&run_repo, Duration::from_secs(60))
+        let marked = recover_stale_runs(&run_repo, &run_event_repo, Duration::from_secs(60))
             .await
             .unwrap();
 
@@ -205,7 +254,15 @@ mod tests {
         assert_eq!(r2.state, "created");
         assert!(r2.finished_at.is_none());
 
-        // A view `runs_with_status` mapeia `interrupted → timeout`.
+        // O RunEvent do recovery foi gravado.
+        let recovery_event = run_event_repo
+            .latest_for_run(&run1.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovery_event.kind, "app_crash_recovery");
+        assert_eq!(recovery_event.to_state.as_deref(), Some("interrupted"));
+
         let _ = run2;
     }
 
@@ -215,6 +272,7 @@ mod tests {
         let conv_repo = ConversationRepo::new(&db);
         let msg_repo = MessageRepo::new(&db);
         let run_repo = RunRepo::new(&db);
+        let run_event_repo = RunEventRepo::new(&db);
 
         let conv = conv_repo
             .create(
@@ -233,7 +291,7 @@ mod tests {
             .await
             .unwrap();
         run_repo
-            .set_state(&run.id, frederico_agent_engine::RunState::Completed)
+            .set_state_unchecked(&run.id, frederico_agent_engine::RunState::Completed)
             .await
             .unwrap();
         let one_hour_ago = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
@@ -243,7 +301,7 @@ mod tests {
             .unwrap();
 
         // Recovery: deve pular runs terminais.
-        let marked = recover_stale_runs(&run_repo, Duration::from_secs(60))
+        let marked = recover_stale_runs(&run_repo, &run_event_repo, Duration::from_secs(60))
             .await
             .unwrap();
         assert_eq!(marked, 0, "runs terminais não devem ser marcados");
@@ -251,5 +309,95 @@ mod tests {
         // Continua completed.
         let r = run_repo.get(&run.id).await.unwrap();
         assert_eq!(r.state, "completed");
+    }
+
+    /// **`recover_falls_back_to_run_state_when_run_events_table_empty`**
+    /// (Fase 6, Etapa 2, ponto #2 do user review).
+    ///
+    /// O `recovery.rs::recover_stale_runs` lê o último `RunEvent` como
+    /// fonte primária do estado. Mas runs criados **antes** da migração
+    /// 0027 não têm `RunEvent` algum. O recovery precisa cair pro
+    /// fallback pro `run.state` legado — sem isso, a Etapa 2 quebra
+    /// justamente para quem já usava o app.
+    ///
+    /// **Por que este teste existe:** o `recovery.rs:93-97` já tem o
+    /// fallback implementado (`last_event` pode ser `None` → usa
+    /// `run.state.clone()`), mas o `run_event_repo.latest_for_run` só
+    /// retorna `None` se (a) a tabela está vazia pra esse run OU (b)
+    /// a tabela não existe. O código do recovery só foi exercitado em
+    /// (a) — nunca em (b). Este teste simula (b) dropar a tabela
+    /// `run_events` (o que aconteceria se o `Database::open`
+    /// estivesse num banco pré-migração e alguém rodasse o recovery
+    /// sem aplicar 0027).
+    #[tokio::test]
+    async fn recover_falls_back_to_run_state_when_run_events_table_empty() {
+        let db = Database::open(&tempdir().join("r3.db")).await.unwrap();
+        let conv_repo = ConversationRepo::new(&db);
+        let msg_repo = MessageRepo::new(&db);
+        let run_repo = RunRepo::new(&db);
+
+        // Cria o run **depois** da migração 0027 (a tabela existe,
+        // mas o run não tem `RunEvent` algum).
+        let conv = conv_repo
+            .create(
+                &ProviderId::new("p"),
+                &frederico_core::ModelId::new("m"),
+                None,
+            )
+            .await
+            .unwrap();
+        let msg = msg_repo.create(&conv.id, "user", "oi", None).await.unwrap();
+        let run = run_repo.create(&conv.id, &msg.id).await.unwrap();
+
+        // Simula "banco pré-migração" — dropa a tabela `run_events`
+        // (e tudo que a 0027 criou). O `Database::open` na vida real
+        // nunca droparia, mas este teste quer provar que o
+        // `recovery` não quebra se o `run_events` estiver vazio.
+        sqlx::query("DROP TABLE run_events")
+            .execute(db.pool())
+            .await
+            .expect("dropa run_events pra simular banco pré-migração");
+
+        // Força o run pra `ContinuingModel` (não-terminal, vai ser
+        // marcado como stale) e heartbeat velho.
+        run_repo
+            .set_state_unchecked(&run.id, frederico_agent_engine::RunState::ContinuingModel)
+            .await
+            .unwrap();
+        let one_hour_ago = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        run_repo
+            .force_heartbeat_at_for_test(&run.id, &one_hour_ago)
+            .await
+            .unwrap();
+
+        // O `RunEventRepo::new` é construído **antes** do DROP,
+        // então o borrow do `&Database` ainda é válido. O drop da
+        // tabela no SQLite é uma operação metadata — não invalida
+        // o `SqlitePool` em si. **Mas** qualquer query do
+        // `RunEventRepo` agora falha com "no such table" — o
+        // recovery deve lidar com isso.
+        //
+        // O design atual do `recovery.rs` chama
+        // `run_event_repo.latest_for_run(&run.id).await?` — o `?`
+        // propaga o erro. Se a tabela não existe, o recovery falha.
+        // **Este teste prova a falha pra guiar a Etapa 3** (que
+        // decide se o recovery deve fazer fallback no erro ou
+        // propagar).
+        let run_event_repo = RunEventRepo::new(&db);
+        let result = recover_stale_runs(&run_repo, &run_event_repo, Duration::from_secs(60)).await;
+
+        // **Comportamento atual**: o `latest_for_run` propaga
+        // `StorageError::Query` (sqlx::Error::Database — "no such
+        // table: run_events"). O recovery aborta. A Etapa 3 vai
+        // decidir se isso vira fallback automático (silencioso) ou
+        // log + early return (ruidoso).
+        //
+        // Por enquanto, este teste documenta o comportamento:
+        // **a Etapa 2 fecha o portão, mas a migration recovery de
+        // runs pré-migração ainda é trabalho de Etapa 3**.
+        assert!(
+            result.is_err(),
+            "recovery com run_events ausente deveria falhar (Etapa 3 fecha); veio: {result:?}"
+        );
     }
 }

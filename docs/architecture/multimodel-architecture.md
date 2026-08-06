@@ -1,5 +1,5 @@
 <!--
-Estado: especificado
+Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-05
 Fase correspondente: 6
 -->

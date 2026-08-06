@@ -14,6 +14,7 @@ unsafe_code = "forbid"
 # Núcleo e composição (Etapa 5)
 frederico-app = { workspace = true }
 frederico-core = { workspace = true }
+frederico-agent-engine = { workspace = true }
 frederico-tool-registry = { workspace = true }
 frederico-provider-engine = { workspace = true }
 frederico-storage = { workspace = true }

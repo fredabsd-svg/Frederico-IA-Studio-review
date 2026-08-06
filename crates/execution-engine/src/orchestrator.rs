@@ -293,6 +293,97 @@ impl ChatOrchestrator {
                 cancel.clone(),
             )
             .with_audit_sink(audit_sink);
+            // **Fase 6, Etapa 2:** o portão único de mudança de
+            // estado (`apply_transition`) exige que o run esteja em
+            // `CallingModel` antes do `Delta` que o provider emite.
+            // O `Run` foi criado em `Created` pelo `send_message` (na
+            // Etapa 4 da Fase 3, a transição `Created → ... →
+            // CallingModel` ficava implícita no `state_mapping`
+            // original que mapeava `Delta → Streaming` direto). A
+            // Etapa 2 fecha o portão e exige o estado explícito.
+            // Bump atômico com a Etapa 2: o orchestrator (que é a
+            // peça que monta o run) é quem faz a transição pra
+            // `CallingModel` antes de chamar o executor. Grava
+            // também o `RunEvent` correspondente (Enqueue + Dequeue
+            // + ContextReady + MemoryDone + CapabilitiesOk são
+            // arestas da tabela `TRANSITIONS` que o portão
+            // consulta antes de cada `set_state`).
+            //
+            // **Caminho validado** (Fase 6, Etapa 2 —
+            // `set_state_validated`): cada uma das 5 arestas é
+            // consultada via `apply_transition` antes de gravar. Se
+            // o estado do run não estiver no `from` esperado (e.g.
+            // outro caller já transicionou), o portão rejeita e
+            // abortamos com erro legível — não gravamos transição
+            // fantasma.
+            let run_repo = RunRepo::new(&this.db);
+            let init_steps: [(
+                frederico_agent_engine::RunState,
+                frederico_agent_engine::RunEventKind,
+                &str,
+            ); 5] = [
+                (
+                    frederico_agent_engine::RunState::Created,
+                    frederico_agent_engine::RunEventKind::Enqueue,
+                    "enqueue",
+                ),
+                (
+                    frederico_agent_engine::RunState::Queued,
+                    frederico_agent_engine::RunEventKind::Dequeue,
+                    "dequeue",
+                ),
+                (
+                    frederico_agent_engine::RunState::PreparingContext,
+                    frederico_agent_engine::RunEventKind::ContextReady,
+                    "context_ready",
+                ),
+                (
+                    frederico_agent_engine::RunState::RetrievingMemory,
+                    frederico_agent_engine::RunEventKind::MemoryDone,
+                    "memory_done",
+                ),
+                (
+                    frederico_agent_engine::RunState::ValidatingCapabilities,
+                    frederico_agent_engine::RunEventKind::CapabilitiesOk,
+                    "capabilities_ok",
+                ),
+            ];
+            let mut init_ok = true;
+            for (from, kind, label) in init_steps {
+                if let Err(e) = run_repo
+                    .set_state_validated(
+                        &run_id,
+                        from,
+                        kind,
+                        serde_json::json!({ "init_step": label }),
+                    )
+                    .await
+                {
+                    // O portão rejeitou uma das 5 arestas da
+                    // inicialização. Segue o mesmo padrão dos
+                    // outros erros fatais da closure: log + persiste
+                    // motivo na `Message.error` + unregister + emite
+                    // status final.
+                    tracing::error!(
+                        run_id = %run_id,
+                        init_step = label,
+                        "orchestrator: portão rejeitou inicialização: {e}"
+                    );
+                    let _ = frederico_storage::MessageRepo::new(&this_for_err.db)
+                        .set_error(
+                            &asst_id,
+                            &format!("run abortado: portão rejeitou {label} ({e})"),
+                        )
+                        .await;
+                    let _ = this_for_err.runs.unregister(run_id).await;
+                    this_for_err.sink.emit_run_status(run_id, RunStatus::Failed);
+                    init_ok = false;
+                    break;
+                }
+            }
+            if !init_ok {
+                return;
+            }
             let outcome = match executor
                 .run(
                     asst_id,

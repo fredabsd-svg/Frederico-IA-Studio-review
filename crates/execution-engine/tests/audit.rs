@@ -165,7 +165,14 @@ async fn audit_records_files_read_execution() {
         .create(&conv.id, "assistant", "", None)
         .await
         .unwrap();
-    let run = RunRepo::new(&db).create(&conv.id, &asst.id).await.unwrap();
+    let run_repo = RunRepo::new(&db);
+    let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
+    // Fase 6, Etapa 2: portão único exige `CallingModel` para
+    // o `Delta` virar `Streaming`. Simula o orquestrador.
+    run_repo
+        .set_state_unchecked(&run.id, frederico_agent_engine::RunState::CallingModel)
+        .await
+        .unwrap();
 
     let perms = PermissionSet {
         file_read: FileReadPermission::WorkspaceOnly,
