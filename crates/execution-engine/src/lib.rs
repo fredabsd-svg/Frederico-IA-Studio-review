@@ -49,6 +49,7 @@ pub mod orchestrator;
 pub mod persist;
 pub mod recovery;
 pub mod state_mapping;
+pub mod subagent_runner;
 pub mod tool_definitions;
 
 pub use audit_sink::DbAuditSink;
@@ -58,4 +59,5 @@ pub use orchestrator::{ChatOrchestrator, ChatOrchestratorError, ChatOrchestrator
 pub use persist::persist_journal;
 pub use recovery::{recover_stale_runs, spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS};
 pub use state_mapping::run_state_for_event;
+pub use subagent_runner::{SubagentHandle, SubagentRunner, MAX_DEPTH, MAX_SUBAGENTS_PER_RUN};
 pub use tool_definitions::tools_to_descriptors;

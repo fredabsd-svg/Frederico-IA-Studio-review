@@ -78,6 +78,8 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         vec![],
         frederico_tool_registry::PermissionSet::default(),
         None, // memory_extractor (Etapa 5 da Fase 4)
+        Arc::new(frederico_model_catalog::DefaultSpecialistRegistry::load()),
+        Arc::new(frederico_tool_registry::PermissionLoader::new()),
     );
     (Arc::new(orch), dir, sink)
 }

@@ -1,6 +1,6 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-06
+Verificado contra o código em: 2026-08-07
 Fase correspondente: 3 (Etapa 1) + Fase de Ligação (Etapa 4 — ADR-0025) + Fase 6 (Etapa 1 ADR-0027 + Etapa 4 PR 1)
 -->
 

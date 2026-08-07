@@ -460,6 +460,25 @@ fn main() {
                 frederico_app::composition::build_memory_extractor(&db, &cfg, key)
             });
 
+            // SpecialistRegistry (Etapa 3 PR 1 da Fase 6, ADR-0030)
+            // + PermissionLoader (Etapa 3 PR 2). O
+            // `ChatOrchestrator` consome ambos pra montar o
+            // `SubagentRunner` interno (Etapa 4 PR 2,
+            // ADR-0027). Reusamos o `specialist_bundle` que o
+            // Tauri command `list_specialists` já consome
+            // (criado na Etapa 3 — mesma `Arc<Catalog>` que o
+            // orchestrator).
+            let specialist_registry = specialist_bundle.registry.clone();
+            // `PermissionLoader::new()` é stateless do ponto
+            // de vista do caller — o cache é em memória,
+            // chaveado por `(path, content_hash)`. A casca
+            // guarda a mesma instância no `AppState` e o
+            // `ChatOrchestrator` (e o `SubagentRunner`)
+            // consomem o mesmo loader (sem re-parse
+            // redundante).
+            let permission_loader =
+                std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
+
             // Composição centralizada no `frederico-app` (Etapa 1
             // da Fase de Ligação, ADR-0022 §D4). Esta é a
             // **mesma função** que os E2E da raiz chamam
@@ -478,6 +497,8 @@ fn main() {
                 allowed_for_run,
                 permission_set,
                 memory_extractor: memory_extractor_handle,
+                specialist_registry,
+                permission_loader,
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 

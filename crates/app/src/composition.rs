@@ -689,6 +689,18 @@ pub struct ChatOrchestratorParts {
     /// memórias; `Some(h)` enfileira um `MemoryExtractionJob`
     /// após o run finalizar.
     pub memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
+    /// `Arc<dyn SpecialistRegistry>` (Etapa 4 da Fase 6, ADR-0030).
+    /// Consumido pelo `SubagentRunner` no caminho de
+    /// produção. A casca Tauri constrói via
+    /// `build_specialist_registry` (mesma fábrica que o
+    /// `ListSpecialists` Tauri command usa).
+    pub specialist_registry: std::sync::Arc<dyn frederico_model_catalog::SpecialistRegistry>,
+    /// `Arc<PermissionLoader>` (Etapa 3 PR 2). Consumido pelo
+    /// `SubagentRunner` pra carregar o `PermissionSet` efetivo
+    /// (`merge3(user, project, assistant)`) do pai. A casca
+    /// Tauri constrói via `PermissionLoader::new()` e o
+    /// guarda no `AppState`.
+    pub permission_loader: std::sync::Arc<frederico_tool_registry::PermissionLoader>,
 }
 
 /// Constrói o `ChatOrchestrator` a partir de `parts`.
@@ -722,6 +734,8 @@ pub fn build_chat_orchestrator(
         parts.allowed_for_run,
         parts.permission_set,
         parts.memory_extractor,
+        parts.specialist_registry,
+        parts.permission_loader,
     )
 }
 
