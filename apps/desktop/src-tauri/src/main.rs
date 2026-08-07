@@ -576,6 +576,9 @@ fn main() {
             document_worker_invoke,
             document_worker_reset,
             list_specialists,
+            start_pipeline,
+            cancel_pipeline,
+            list_resumable_pipelines,
         ])
         .run(tauri::generate_context!())
         .expect("falha ao rodar app Tauri");
@@ -1257,4 +1260,74 @@ async fn list_specialists(
     state: State<'_, AppState>,
 ) -> Result<Vec<frederico_model_catalog::SpecialistSummary>, String> {
     Ok(state.specialist_bundle.list_summaries())
+}
+
+// ============================================================================
+// Pipeline Sequencial (Fase 6, Etapa 5/6, ADR-0028)
+// ============================================================================
+
+/// `tauri::command` que inicia um pipeline multimodelo
+/// sequencial (Etapa 6 do Modo Equipe). Recebe uma lista de
+/// `StageSpec` (model_id, provider_id, input) e o
+/// `parent_run_id` (= `RunId` da conversa atual), delega pro
+/// `ChatOrchestrator::start_pipeline` e devolve o `pipeline_id`
+/// (= `MultimodelRun.id`).
+///
+/// **Por que separado do `ipc_dispatch`:** o pipeline é uma
+/// operação assíncrona (executa em background via `tokio::spawn`).
+/// O `ipc_dispatch` enfileira no mesmo canal do orchestrator;
+/// um comando dedicado evita disputa com o `MessageSend` e
+/// permite polling simples (a UI faz `list_resumable_pipelines`
+/// no startup).
+///
+/// **Por que `Result<String, String>` e não um tipo de
+/// `shared-contracts`:** o erro é propagado como string
+/// (legível pela UI). A UI discrimina por substring
+/// ("não encontrado", "provider", "modelo"). A Etapa 6 (UI)
+/// pluga uma view estruturada se necessário.
+#[tauri::command]
+async fn start_pipeline(
+    parent_run_id: String,
+    stages: Vec<frederico_execution_engine::pipeline_orchestrator::StageSpec>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .orch
+        .start_pipeline(&parent_run_id, stages)
+        .map_err(|e| format!("{e}"))
+}
+
+/// `tauri::command` que cancela um pipeline em curso (D7 do
+/// ADR-0028). Cascateia o `CancellationToken` pro `RunExecutor`
+/// do stage em curso; stages futuros são marcados `Cancelled`
+/// direto pelo loop.
+#[tauri::command]
+async fn cancel_pipeline(pipeline_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .orch
+        .cancel_pipeline(&pipeline_id)
+        .map_err(|e| format!("{e}"))
+}
+
+/// `tauri::command` que lista os `MultimodelRun`s em estado
+/// `Running` ou `PartiallyCompleted` (D5 do ADR-0028: a UI
+/// carrega esses no startup e oferece "retomar pipeline
+/// interrompido"). Devolve `Vec<MultimodelRun>` direto (sem
+/// view no `shared-contracts` — a Etapa 6 consome no
+/// frontend via `dispatch<ListResumablePipelinesView[]>`).
+///
+/// **Por que separado do `ipc_dispatch`:** o `ipc_dispatch`
+/// enfileira no canal do orchestrator; um comando dedicado é
+/// mais barato e não disputa com `MessageSend` no startup
+/// (que já chama `list_conversations` + `list_specialists` +
+/// agora `list_resumable_pipelines` em paralelo).
+#[tauri::command]
+async fn list_resumable_pipelines(
+    state: State<'_, AppState>,
+) -> Result<Vec<frederico_storage::MultimodelRun>, String> {
+    use frederico_storage::PipelineRepo;
+    PipelineRepo::new(&state.db)
+        .list_resumable()
+        .await
+        .map_err(|e| format!("{e}"))
 }

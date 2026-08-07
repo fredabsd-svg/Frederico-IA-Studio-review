@@ -109,6 +109,7 @@ use frederico_storage::{
     RunStatus,
 };
 use frederico_tool_registry::{JailResolver, PermissionSet, Tool, ToolRegistry};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -125,7 +126,13 @@ use crate::executor::RunExecutor;
 /// max_tokens/tools — a Etapa 6 da Fase 6 (UI) pluga esses
 /// controles no `StageSpec` quando o Modo Equipe ganhar o
 /// formulário de criação.
-#[derive(Debug, Clone)]
+///
+/// **Por que `Serialize` + `Deserialize`:** o Tauri command
+/// `start_pipeline` (Etapa 6) recebe `Vec<StageSpec>` via
+/// `tauri::ipc::Invoke` — o frontend manda o JSON, o backend
+/// desserializa. Sem `Deserialize`, o `tauri::command` não
+/// compila.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageSpec {
     pub model_id: String,
     pub provider_id: String,
@@ -468,26 +475,91 @@ impl MultimodelOrchestrator {
                 continue;
             }
 
-            // D6 — reuso por output_hash. **Desabilitado no PR 2**:
-            // a semântica do ADR-0028 §D6 ("input_hash do próximo
-            // stage = output_hash do anterior") não fecha com
-            // `list_reusable_stages` no **próprio** stage que
-            // está prestes a rodar (ele ainda não tem output).
-            // A Etapa 6 (UI) re-implementa o reuso com a
-            // semântica correta: checa `input_hash` matching no
-            // stage atual **antes** de criar o stage (não no
-            // mesmo stage). Por enquanto, sempre roda o stage
-            // (custo > 0).
+            // D6 — reuso efetivo (Etapa 6, ADR-0028 §D6).
             //
-            // A primitiva `PipelineRepo::list_reusable_stages`
-            // continua implementada (Etapa 5 PR 1) e é exercitada
-            // pelo `e2e_pipeline_sequencial_e2e.rs` (PR 1) — a
-            // Etapa 6 pluga o consumer real.
+            // **Semântica correta (revista da Etapa 5 PR 2):**
+            // o `list_reusable_stages(run_id, output_hash)` busca
+            // no **stage atual** que está prestes a rodar. Mas o
+            // stage atual ainda não tem `output_hash` (ele vai
+            // produzir SÓ DEPOIS de rodar). A semântica certa é
+            // "skip se existe stage completed com `output_hash`
+            // igual ao `input_hash` que o stage atual vai
+            // consumir". O `input_hash` é o hash do `stage_input`
+            // (= `prev_output + spec.input` concatenado, mesmo
+            // formato que `run_one_stage` passa pro provider).
             //
-            // (Deixar o bloco `if reused_artifact` aqui é só
-            // pra documentar a intenção. Removido do path pra
-            // não bloquear o loop.)
-            let _reused: Option<String> = None;
+            // **Por que busca no mesmo `run_id`:** o D6 é sobre
+            // reuso **dentro de um pipeline** (não cross-pipeline).
+            // Se o usuário re-corre o pipeline com mesmo input,
+            // o `list_resumable` + a Etapa 6 (UI) plugam o
+            // carregamento de runs `Running`/`PartiallyCompleted`
+            // do startup (cross-restart é D5, não D6).
+            //
+            // **Por que `cost_microcents = 0` no reuso:** D6 do
+            // ADR-0028 diz "Stages pulados mantêm `state ==
+            // Completed` e não incrementam `cost_microcents` (o
+            // reuso é gratuito, como esperado)".
+            let stage_input = match &prev_output {
+                Some(prev) if !prev.is_empty() => format!(
+                    "[output do stage anterior]\n{prev}\n\n[seu turno]\n{}",
+                    spec.input
+                ),
+                _ => spec.input.clone(),
+            };
+            let stage_input_hash = if stage_input.is_empty() {
+                None
+            } else {
+                Some(format!("fnv:{}", fnv_hash(&stage_input)))
+            };
+            let reused_artifact: Option<String> = if let Some(input_hash) = &stage_input_hash {
+                let reusable = repo.list_reusable_stages(pipeline_id, input_hash).await?;
+                reusable.first().and_then(|s| s.output_artifact_id.clone())
+            } else {
+                None
+            };
+
+            if let Some(reused_id) = &reused_artifact {
+                // Pula o stage: cria um `MultimodelStage` com
+                // `state = "completed"`, `cost = 0`, e reusa o
+                // `output_artifact_id` do stage completed.
+                let now = Utc::now().to_rfc3339();
+                let reused_stage = MultimodelStage {
+                    id: frederico_storage::new_stage_id(),
+                    run_id: pipeline_id.to_string(),
+                    seq: (idx as i64) + 1,
+                    model_id: spec.model_id.clone(),
+                    provider_id: spec.provider_id.clone(),
+                    state: "completed".to_string(),
+                    input_artifact_id: prev_artifact_id.clone(),
+                    output_artifact_id: Some(reused_id.clone()),
+                    input_hash: stage_input_hash.clone(),
+                    output_hash: stage_input_hash.clone(),
+                    cost_microcents: 0,
+                    tools_used_json: "[]".to_string(),
+                    validation_json: None,
+                    started_at: Some(now.clone()),
+                    finished_at: Some(now),
+                };
+                repo.create_stage(&reused_stage).await?;
+                tracing::info!(
+                    pipeline_id = %pipeline_id,
+                    stage_seq = idx + 1,
+                    "stage pulado via D6 (input_hash={} ja computado, reusa artifact {})",
+                    stage_input_hash.as_deref().unwrap_or("?"),
+                    reused_id
+                );
+                results.push(StageResult {
+                    stage_id: reused_stage.id.clone(),
+                    output_text: prev_output.clone().unwrap_or_default(),
+                    cost_microcents: 0,
+                    reused: true,
+                });
+                // Não atualiza `prev_output` (é o mesmo do
+                // stage reusado).
+                continue;
+            }
+
+            // Não reusado — executa o stage de fato.
             let stage_result = self
                 .run_one_stage(
                     pipeline_id,
