@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-27
-Fase correspondente: 1
+Verificado contra o código em: 2026-08-07
+Fase correspondente: 1 + 2 + 3 + 4 + 5 + 6 (Etapa 5 PR 1 — PipelineRepo)
 -->
 
 # Módulo `storage`
