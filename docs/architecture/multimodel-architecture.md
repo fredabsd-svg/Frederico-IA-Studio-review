@@ -1,7 +1,7 @@
 <!--
-Estado: parcialmente implementado
+Estado: implementado
 Verificado contra o código em: 2026-08-07
-Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 fechadas; Etapa 6 pendente)
+Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 + Etapa 6 fechadas — 6 de 6 etapas)
 -->
 
 # Arquitetura Multimodelo
@@ -182,6 +182,8 @@ Conforme o gate de E2E (ADR-0026) e a regra de "cada etapa nomeia seu E2E desde 
 A tabela acima é **alvo declarado na Etapa 1**. Conforme cada etapa mergea, a coluna "E2E de cobertura" e "Passo CI" do `docs/status.md` linha 33 (Fase 6) é atualizada no mesmo commit (REGRA §3.4 do `REGRAS-DO-PROJETO.md`).
 
 **Status da Etapa 5 (atualizado em 2026-08-07 — Etapa 5 PR 2):** os 5 E2E da Etapa 5 existem em `crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs` (Etapa 5 PR 1, persistência) e mais 5 E2E em `crates/e2e/tests/e2e_pipeline_sequencial_e2e_orchestrator.rs` (Etapa 5 PR 2, execução real via `MultimodelOrchestrator` + `ChatOrchestrator::start_pipeline`). O `MultimodelOrchestrator` (`crates/execution-engine/src/pipeline_orchestrator.rs`, ~600 linhas) fecha o caminho de execução (D5/D7 do ADR-0028) — o D6 (reuso por `output_hash`) tem a primitiva `list_reusable_stages` no `PipelineRepo` (Etapa 5 PR 1) mas o **reuso efetivo** entre stages do mesmo pipeline fica pra Etapa 6 (UI) — a semântica do `list_reusable_stages` precisa ser revisada (busca no stage que está prestes a rodar, não no anterior).
+
+**Status da Etapa 6 (atualizado em 2026-08-07 — Etapa 6 fecha a Fase 6):** D6 reuso efetivo re-implementado no `MultimodelOrchestrator` (busca `input_hash` matching no stage atual **antes** de criar o stage — fecha a regra de memória cross-project de 2026-08-07). 3 Tauri commands novos (`start_pipeline` + `cancel_pipeline` + `list_resumable_pipelines`) ligam a casca ao backend (consomem `ChatOrchestrator::start_pipeline` / `cancel_pipeline` + `PipelineRepo::list_resumable`). 2 E2E novos (`pipeline_d6_reuso_does_not_panic_when_no_reusable_stage` + `list_resumable_returns_only_running_pipelines`) fecham o caminho de produção. A UI do Modo Equipe (sidebar com lista de pipelines resumable + botão "retomar") é trabalho da **Etapa 7** (UI/Polish do plano mestre) — o backend está pronto, a Etapa 7 pluga o frontend.
 
 ## Referências
 
