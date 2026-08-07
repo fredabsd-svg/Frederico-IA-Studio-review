@@ -1,7 +1,7 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-03
-Fase correspondente: 3 (Etapa 4 + 4.x + 4.x.y) + Fase de Ligação (Etapa 1)
+Verificado contra o código em: 2026-08-06
+Fase correspondente: 3 (Etapa 4 + 4.x + 4.x.y) + Fase de Ligação (Etapa 1) + Fase 6 (Etapa 2 PR 1 + Etapa 4 PR 1 pendente)
 -->
 
 # `frederico-execution-engine` — RunExecutor

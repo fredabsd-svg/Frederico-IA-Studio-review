@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-04
-Fase correspondente: 3 (Etapa 1) + Fase de Ligação (Etapa 4 — ADR-0025)
+Verificado contra o código em: 2026-08-06
+Fase correspondente: 3 (Etapa 1) + Fase de Ligação (Etapa 4 — ADR-0025) + Fase 6 (Etapa 1 ADR-0027 + Etapa 4 PR 1)
 -->
 
 # `frederico-agent-engine`
@@ -182,6 +182,15 @@ Cobertura por par atual (em `crates/agent-engine/src/transition.rs`):
   entram na Etapa 5. O `agent-engine` apenas modela os estados
   `paused`, `cancelled` e `interrupted` — quem dispara a transição
   é código fora daqui.
+- **Não conhece subagentes, mas modela a infra necessária pra eles**
+  (Fase 6 Etapa 4 PR 1). O `Run` carrega `subagent_count`,
+  `depth`, `parent_run_id`, `spent` (cópia em memória do
+  `SpentBudget`). O `SubagentError` enum e o `SubagentBudgetLedger`
+  ficam no `agent-engine` (puro, sem I/O) porque mantêm a fronteira
+  crítica do ADR-0025 §D1. **A Etapa 4 PR 2** entrega o
+  `SubagentRunner` (no `execution-engine`, que precisa do
+  `ChatOrchestrator`) que consome tudo isso. Ver [ADR-0027](../decisions/0027-subagent-budget-inheritance-and-explosion-cap.md)
+  + [`subagent-architecture.md`](../architecture/subagent-architecture.md).
 - **Não tem `set_state`, `bump_step` ou `append_event` no
   `Run`.** A Etapa 4 (integração) vai criar o `RunExecutor` que
   monta a transação SQL `BEGIN IMMEDIATE; ...; COMMIT;` e usa o

@@ -195,6 +195,31 @@ pub struct Run {
     pub model_id: String,
     /// Assistente (Fase 3 Etapa 6). Nullable até lá.
     pub assistant_id: Option<String>,
+
+    // ---- Etapa 4 da Fase 6: subagente (ADR-0027) ----
+    /// Contador global de subagentes vivos (D1 do ADR-0027: teto
+    /// de 8). Espelha `runs.subagent_count`. Lido/escrito pelo
+    /// `RunRepo::increment_subagent_count` /
+    /// `decrement_subagent_count` (Etapa 4 PR 1).
+    pub subagent_count: u32,
+    /// Profundidade na árvore de subagentes (D2 do ADR-0027).
+    /// Espelha `runs.depth`.
+    pub depth: u32,
+    /// `RunId` do pai se o Run é um subagente (espelha
+    /// `runs.parent_run_id`).
+    pub parent_run_id: Option<RunId>,
+    /// Custo efetivo em microcents (espelha
+    /// `runs.spent_microcents`). Faz parte do `SpentBudget`
+    /// do `Run` em memória.
+    pub spent_microcents: u64,
+    /// Tokens de entrada efetivos (espelha
+    /// `runs.spent_tokens_in`).
+    pub spent_tokens_in: u64,
+    /// Tokens de saída efetivos (espelha
+    /// `runs.spent_tokens_out`).
+    pub spent_tokens_out: u64,
+    /// Passos efetivos do loop (espelha `runs.spent_steps`).
+    pub spent_steps: u32,
 }
 
 /// Configuração pública de um provedor.
@@ -362,24 +387,44 @@ type MessageEventRow = (
 );
 
 /// Row bruta de `runs`. Tipo de domínio: [`Run`].
-type RunRow = (
-    String,         // id
-    String,         // conversation_id
-    String,         // message_id
-    String,         // status (Fase 2, derivado)
-    String,         // state (Fase 3, canônico)
-    String,         // started_at
-    Option<String>, // finished_at
-    Option<String>, // cancellation_requested_at
-    i64,            // current_step
-    String,         // budget_json
-    String,         // allowed_tools_json
-    String,         // last_heartbeat_at
-    i64,            // last_event_seq
-    String,         // provider_id
-    String,         // model_id
-    Option<String>, // assistant_id
-);
+///
+/// **Por que é uma struct e não uma tupla:** o `sqlx::FromRow`
+/// deriva `FromRow` automaticamente para tuplas até 9 elementos
+/// (regra do `sqlx` 0.8); acima disso precisa struct com
+/// `#[derive(FromRow)]` (ou `#[sqlx(FromRow)]` na forma
+/// explícita). A Etapa 4 da Fase 6 bumpou de 16 pra 23 colunas
+/// (subagent_count + depth + parent_run_id + spent_*), então
+/// migramos pra struct.
+///
+/// **Campos: 1:1 com a tabela `runs` em ordem do `SELECT`.** O
+/// `row_to_run` (private) consome este struct e devolve `Run`.
+#[derive(sqlx::FromRow)]
+struct RunRow {
+    id: String,
+    conversation_id: String,
+    message_id: String,
+    status: String,
+    state: String,
+    started_at: String,
+    finished_at: Option<String>,
+    cancellation_requested_at: Option<String>,
+    current_step: i64,
+    budget_json: String,
+    allowed_tools_json: String,
+    last_heartbeat_at: String,
+    last_event_seq: i64,
+    provider_id: String,
+    model_id: String,
+    assistant_id: Option<String>,
+    // ---- Etapa 4 da Fase 6: subagente + spent ----
+    subagent_count: i64,
+    depth: i64,
+    parent_run_id: Option<String>,
+    spent_microcents: i64,
+    spent_tokens_in: i64,
+    spent_tokens_out: i64,
+    spent_steps: i64,
+}
 
 /// Row bruta de `provider_configs`. Tipo de domínio: [`ProviderConfig`].
 type ProviderConfigRow = (
@@ -910,6 +955,13 @@ impl<'a> RunRepo<'a> {
             provider_id: String::new(),
             model_id: String::new(),
             assistant_id: None,
+            subagent_count: 0,
+            depth: 0,
+            parent_run_id: None,
+            spent_microcents: 0,
+            spent_tokens_in: 0,
+            spent_tokens_out: 0,
+            spent_steps: 0,
         })
     }
 
@@ -917,7 +969,9 @@ impl<'a> RunRepo<'a> {
         let row: Option<RunRow> = sqlx::query_as(
             "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
                     cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
-                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id, \
+                    subagent_count, depth, parent_run_id, spent_microcents, spent_tokens_in, \
+                    spent_tokens_out, spent_steps \
              FROM runs WHERE id = ?1",
         )
         .bind(id.0.to_string())
@@ -930,7 +984,9 @@ impl<'a> RunRepo<'a> {
         let row: Option<RunRow> = sqlx::query_as(
             "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
                     cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
-                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id, \
+                    subagent_count, depth, parent_run_id, spent_microcents, spent_tokens_in, \
+                    spent_tokens_out, spent_steps \
              FROM runs WHERE message_id = ?1",
         )
         .bind(message_id.0.to_string())
@@ -942,51 +998,47 @@ impl<'a> RunRepo<'a> {
         }
     }
 
-    /// Converte uma `RunRow` (tupla do `sqlx::query_as`) no tipo de
-    /// domínio [`Run`]. Centralizado porque `get` e `get_by_message`
-    /// precisam do mesmo parsing.
+    /// Converte uma `RunRow` (struct do `sqlx::FromRow`) no tipo de
+    /// domínio [`Run`]. Centralizado porque `get`, `get_by_message`
+    /// e `list_stale_heartbeats` precisam do mesmo parsing.
     fn row_to_run(row: RunRow) -> StorageResult<Run> {
-        let (
-            id_s,
-            conv,
-            msg,
-            status,
-            state,
-            started_at,
-            finished_at,
-            cancellation_requested_at,
-            current_step,
-            budget_json,
-            allowed_tools_json,
-            last_heartbeat_at,
-            last_event_seq,
-            provider_id,
-            model_id,
-            assistant_id,
-        ) = row;
         Ok(Run {
-            id: RunId(uuid::Uuid::parse_str(&id_s).map_err(|e| {
+            id: RunId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
                 StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
             })?),
-            conversation_id: ConversationId(uuid::Uuid::parse_str(&conv).map_err(|e| {
+            conversation_id: ConversationId(uuid::Uuid::parse_str(&row.conversation_id).map_err(
+                |e| StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into())),
+            )?),
+            message_id: MessageId(uuid::Uuid::parse_str(&row.message_id).map_err(|e| {
                 StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
             })?),
-            message_id: MessageId(uuid::Uuid::parse_str(&msg).map_err(|e| {
-                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
-            })?),
-            status,
-            state,
-            started_at,
-            finished_at,
-            cancellation_requested_at,
-            current_step: current_step as u32,
-            budget_json,
-            allowed_tools_json,
-            last_heartbeat_at,
-            last_event_seq: last_event_seq as u64,
-            provider_id,
-            model_id,
-            assistant_id,
+            status: row.status,
+            state: row.state,
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            cancellation_requested_at: row.cancellation_requested_at,
+            current_step: row.current_step as u32,
+            budget_json: row.budget_json,
+            allowed_tools_json: row.allowed_tools_json,
+            last_heartbeat_at: row.last_heartbeat_at,
+            last_event_seq: row.last_event_seq as u64,
+            provider_id: row.provider_id,
+            model_id: row.model_id,
+            assistant_id: row.assistant_id,
+            subagent_count: row.subagent_count as u32,
+            depth: row.depth as u32,
+            parent_run_id: match row.parent_run_id {
+                Some(s) if !s.is_empty() => {
+                    Some(RunId(uuid::Uuid::parse_str(&s).map_err(|e| {
+                        StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+                    })?))
+                }
+                _ => None,
+            },
+            spent_microcents: row.spent_microcents as u64,
+            spent_tokens_in: row.spent_tokens_in as u64,
+            spent_tokens_out: row.spent_tokens_out as u64,
+            spent_steps: row.spent_steps as u32,
         })
     }
 
@@ -1103,7 +1155,9 @@ impl<'a> RunRepo<'a> {
         let rows: Vec<RunRow> = sqlx::query_as(
             "SELECT id, conversation_id, message_id, status, state, started_at, finished_at, \
                     cancellation_requested_at, current_step, budget_json, allowed_tools_json, \
-                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id \
+                    last_heartbeat_at, last_event_seq, provider_id, model_id, assistant_id, \
+                    subagent_count, depth, parent_run_id, spent_microcents, spent_tokens_in, \
+                    spent_tokens_out, spent_steps \
              FROM runs \
              WHERE state NOT IN ('completed', 'failed', 'cancelled', 'interrupted') \
                AND datetime(last_heartbeat_at) < datetime('now', ?1) \
@@ -1260,6 +1314,313 @@ impl<'a> RunRepo<'a> {
 
         tx.commit().await?;
         Ok((to, new_seq))
+    }
+
+    // ============================================================================
+    // Etapa 4 da Fase 6 — Subagente (ADR-0027)
+    //
+    // Os métodos abaixo manipulam os campos novos da tabela
+    // `runs` introduzidos pela migração `0029_subagent_runs.sql`:
+    // `subagent_count`, `depth`, `parent_run_id`, `spent_*`. O
+    // `SubagentRunner` (Etapa 4 PR 2) consome estes métodos no
+    // caminho de produção; o PR 1 entrega só a infra.
+    // ============================================================================
+
+    /// **Incrementa** o contador global de subagentes vivos
+    /// (`subagent_count` no banco) e devolve o novo valor. Usado
+    /// pelo `SubagentRunner::try_spawn` no momento do spawn.
+    ///
+    /// **Por que método atômico e não `set_subagent_count`:** a
+    /// incrementação precisa ser atômica entre o "caller checa
+    /// `subagent_count < 8`" e o "caller grava `subagent_count + 1`"
+    /// (race condition entre dois spawns concorrentes do mesmo pai
+    /// — mesmo que a Etapa 4 PR 1 não tenha paralelização, o
+    /// PR 2 vai ter; o método já fica pronto).
+    ///
+    /// **SQLite sem `RETURNING`:** o `RETURNING` não é suportado em
+    /// todas as versões do SQLite (incluindo a que `sqlx` 0.8
+    /// usa em alguns runners), então fazemos `UPDATE ... SET ...
+    /// = col + 1` e depois `SELECT col` em duas queries. A
+    /// transação (`BEGIN IMMEDIATE`) garante que outro spawn
+    /// simultâneo vê o valor já incrementado.
+    pub async fn increment_subagent_count(&self, id: &RunId) -> StorageResult<u32> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE runs SET subagent_count = subagent_count + 1 WHERE id = ?1")
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let new_count: i64 = sqlx::query_scalar("SELECT subagent_count FROM runs WHERE id = ?1")
+            .bind(id.0.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(new_count as u32)
+    }
+
+    /// **Decrementa** o contador global de subagentes vivos. Usado
+    /// pelo `SubagentRunner` quando um subagente termina
+    /// (sucesso/falha/cancelamento). Saturado em 0 — se já está
+    /// em 0 (não deveria acontecer, mas defendemos em
+    /// profundidade), `UPDATE` seta 0 e segue.
+    pub async fn decrement_subagent_count(&self, id: &RunId) -> StorageResult<u32> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE runs SET subagent_count = MAX(0, subagent_count - 1) WHERE id = ?1")
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let new_count: i64 = sqlx::query_scalar("SELECT subagent_count FROM runs WHERE id = ?1")
+            .bind(id.0.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(new_count as u32)
+    }
+
+    /// **Seta** a profundidade do `Run` (D2 do ADR-0027). Chamado
+    /// uma vez, na criação do subagente (`Run::new_subagent`
+    /// define `depth = parent.depth + 1`). O portão `try_spawn`
+    /// (Etapa 4 PR 2) rejeita antes de chamar.
+    ///
+    /// **Por que método em vez de incluir no `create`:** o `create`
+    /// é raiz (`depth = 0`); subagentes são criados pelo
+    /// `SubagentRunner` (Etapa 4 PR 2) numa segunda chamada, com
+    /// `parent_run_id` + `depth` populados separadamente.
+    pub async fn set_depth(
+        &self,
+        id: &RunId,
+        depth: u32,
+        parent_run_id: Option<RunId>,
+    ) -> StorageResult<()> {
+        sqlx::query("UPDATE runs SET depth = ?1, parent_run_id = ?2 WHERE id = ?3")
+            .bind(depth as i64)
+            .bind(parent_run_id.map(|p| p.0.to_string()))
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// **Acumula** gasto no `SpentBudget` do `Run` (Etapa 4
+    /// D3 do ADR-0027). Soma `delta` aos 4 campos `spent_*` no
+    /// banco. Saturado em `i64::MAX` (defesa contra overflow).
+    ///
+    /// **Por que método separado e não `record_run_step` que
+    /// faz tudo:** a Etapa 5 (watchdog) pode chamar isso
+    /// independentemente do `RunExecutor` (e.g. pra registrar
+    /// gasto de uma operação I/O que falhou sem step
+    /// completo). Cada eixo do `SpentBudget` é granular e
+    /// pode ser atualizado por origens diferentes.
+    pub async fn add_spent(
+        &self,
+        id: &RunId,
+        delta: &frederico_agent_engine::SpentBudget,
+    ) -> StorageResult<()> {
+        sqlx::query(
+            "UPDATE runs SET \
+             spent_microcents = spent_microcents + ?1, \
+             spent_tokens_in = spent_tokens_in + ?2, \
+             spent_tokens_out = spent_tokens_out + ?3, \
+             spent_steps = spent_steps + ?4 \
+             WHERE id = ?5",
+        )
+        .bind(delta.cost_microcents as i64)
+        .bind(delta.tokens_in as i64)
+        .bind(delta.tokens_out as i64)
+        .bind(delta.steps as i64)
+        .bind(id.0.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Registro de um subagente específico (Etapa 4 da Fase 6,
+/// ADR-0027 + migração `0029_subagent_runs.sql`).
+///
+/// Cada subagente tem uma linha na tabela `subagent_runs` (1:1 com
+/// `runs` quando `runs.parent_run_id IS NOT NULL`). O
+/// `SubagentRunRecord` carrega o que é **específico** do subagente
+/// (parent_run_id, specialist_id, allocation, spent_microcents)
+/// — o resto (state, started_at, finished_at) é denormalizado da
+/// `runs` pra queries agregadas sem JOIN.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SubagentRunRecord {
+    /// `RunId` do subagente (PK = FK pra `runs.id`).
+    pub id: RunId,
+    /// `RunId` do pai (FK pra `runs.id` com `ON DELETE CASCADE`).
+    pub parent_run_id: RunId,
+    /// `SpecialistId` que o subagente está executando (resolve
+    /// via `SpecialistRegistry`, Etapa 3 da Fase 6). `None`
+    /// durante a Etapa 4 PR 1 (sem spawn real ainda); a Etapa 4
+    /// PR 2 popula no `try_spawn`.
+    pub specialist_id: Option<String>,
+    /// Profundidade (1 = filho direto, 2 = neto bloqueado pelo
+    /// portão). Espelha `runs.depth`.
+    pub depth: u32,
+    /// `BudgetAllocation` que o pai liberou pro filho (D5 do
+    /// ADR-0027). Serializado em JSON na tabela.
+    pub allocation: frederico_agent_engine::BudgetAllocation,
+    /// Gasto efetivo (espelha `runs.spent_*`).
+    pub spent: frederico_agent_engine::SpentBudget,
+    /// Instante do spawn (criação da linha).
+    pub started_at: String,
+    /// Instante do término (sucesso, falha, cancelamento).
+    /// `None` enquanto o subagente está vivo.
+    pub finished_at: Option<String>,
+    /// Estado do subagente (23 valores, mesmo enum `RunState`).
+    pub state: String,
+}
+
+/// Repositório da tabela `subagent_runs` (Etapa 4 da Fase 6).
+///
+/// O `SubagentRunner::try_spawn` (Etapa 4 PR 2) consome este repo
+/// pra registrar cada subagente no momento do spawn (portão D1 +
+/// D2 + D3 do ADR-0027) e o `SubagentRunner::on_subagent_done`
+/// consome `complete` pra marcar o término (libera o budget do
+/// pai). **PR 1 só entrega a infra** (struct + repo + unit tests
+/// básicos); a Etapa 4 PR 2 pluga o runner.
+pub struct SubagentRunRepo<'a> {
+    pool: &'a sqlx::SqlitePool,
+}
+
+/// Row bruta de `subagent_runs`. Tipo de domínio:
+/// [`SubagentRunRecord`].
+#[derive(sqlx::FromRow)]
+struct SubagentRunRow {
+    id: String,
+    parent_run_id: String,
+    specialist_id: Option<String>,
+    depth: i64,
+    allocation_json: String,
+    spent_microcents: i64,
+    spent_tokens_in: i64,
+    spent_tokens_out: i64,
+    spent_steps: i64,
+    started_at: String,
+    finished_at: Option<String>,
+    state: String,
+}
+
+impl<'a> SubagentRunRepo<'a> {
+    /// Cria o repo a partir do `Database`.
+    #[must_use]
+    pub fn new(db: &'a Database) -> Self {
+        Self { pool: &db.pool }
+    }
+
+    /// **Registra** um subagente no momento do spawn. Cria a
+    /// linha em `subagent_runs` (1:1 com `runs.id`). O `runs`
+    /// correspondente já foi criado pelo `RunRepo::create`
+    /// antes (a Etapa 4 PR 2 segue essa ordem:
+    /// `RunRepo::create` → `SubagentRunRepo::record` →
+    /// `RunRepo::increment_subagent_count`).
+    ///
+    /// **Falha** se já existe um `subagent_runs` com o mesmo
+    /// `id` (UNIQUE violation) — o `SubagentRunner` da Etapa 4
+    /// PR 2 trata isso como `InternalError` (anti-exploit do
+    /// spawn otimista rejeitado pela Etapa 1, alt 4 do
+    /// ADR-0027).
+    pub async fn record(&self, record: &SubagentRunRecord) -> StorageResult<()> {
+        let allocation_json = serde_json::to_string(&record.allocation).map_err(|e| {
+            StorageError::Query(sqlx::Error::Decode(
+                format!("bad allocation json: {e}").into(),
+            ))
+        })?;
+        sqlx::query(
+            "INSERT INTO subagent_runs (id, parent_run_id, specialist_id, depth, \
+             allocation_json, spent_microcents, spent_tokens_in, spent_tokens_out, \
+             spent_steps, started_at, finished_at, state) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )
+        .bind(record.id.0.to_string())
+        .bind(record.parent_run_id.0.to_string())
+        .bind(&record.specialist_id)
+        .bind(record.depth as i64)
+        .bind(&allocation_json)
+        .bind(record.spent.cost_microcents as i64)
+        .bind(record.spent.tokens_in as i64)
+        .bind(record.spent.tokens_out as i64)
+        .bind(record.spent.steps as i64)
+        .bind(&record.started_at)
+        .bind(&record.finished_at)
+        .bind(&record.state)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// **Marca** o término de um subagente (sucesso, falha ou
+    /// cancelamento). Seta `finished_at` e `state`. Idempotente
+    /// — chamar 2x com o mesmo `id` é no-op (defesa contra
+    /// cleanup duplicado).
+    pub async fn complete(
+        &self,
+        id: &RunId,
+        final_state: &str,
+        finished_at: &str,
+    ) -> StorageResult<()> {
+        sqlx::query(
+            "UPDATE subagent_runs SET state = ?1, finished_at = ?2 \
+             WHERE id = ?3 AND finished_at IS NULL",
+        )
+        .bind(final_state)
+        .bind(finished_at)
+        .bind(id.0.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// **Lista** os subagentes vivos de um Run pai.
+    ///
+    /// Filtra por `state` não-terminal + `finished_at IS NULL`. Usado
+    /// pelo portão D1 do ADR-0027 pra consulta rápida ("quantos
+    /// subagentes ativos este pai tem agora?") e pela UI do Modo
+    /// Equipe (Etapa 6).
+    pub async fn list_active_for_parent(
+        &self,
+        parent_run_id: &RunId,
+    ) -> StorageResult<Vec<SubagentRunRecord>> {
+        let rows: Vec<SubagentRunRow> = sqlx::query_as(
+            "SELECT id, parent_run_id, specialist_id, depth, allocation_json, \
+                    spent_microcents, spent_tokens_in, spent_tokens_out, spent_steps, \
+                    started_at, finished_at, state \
+             FROM subagent_runs \
+             WHERE parent_run_id = ?1 AND finished_at IS NULL",
+        )
+        .bind(parent_run_id.0.to_string())
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter().map(Self::row_to_record).collect()
+    }
+
+    fn row_to_record(row: SubagentRunRow) -> StorageResult<SubagentRunRecord> {
+        let allocation: frederico_agent_engine::BudgetAllocation =
+            serde_json::from_str(&row.allocation_json).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(
+                    format!("bad allocation json: {e}").into(),
+                ))
+            })?;
+        Ok(SubagentRunRecord {
+            id: RunId(uuid::Uuid::parse_str(&row.id).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            parent_run_id: RunId(uuid::Uuid::parse_str(&row.parent_run_id).map_err(|e| {
+                StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+            })?),
+            specialist_id: row.specialist_id,
+            depth: row.depth as u32,
+            allocation,
+            spent: frederico_agent_engine::SpentBudget {
+                cost_microcents: row.spent_microcents as u64,
+                tokens_in: row.spent_tokens_in as u64,
+                tokens_out: row.spent_tokens_out as u64,
+                steps: row.spent_steps as u32,
+            },
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            state: row.state,
+        })
     }
 }
 

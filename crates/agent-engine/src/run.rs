@@ -16,6 +16,7 @@ use frederico_core::{AssistantId, ConversationId, ModelId, ProjectId, ProviderId
 use serde::{Deserialize, Serialize};
 
 use crate::budget::Budget;
+use crate::budget_allocation::SpentBudget;
 use crate::state::RunState;
 
 /// Estado vivo de um `Run` em memória. A fonte da verdade em disco é
@@ -54,6 +55,38 @@ pub struct Run {
     pub last_heartbeat_at: DateTime<Utc>,
     /// Próximo `seq` a usar no journal. Monotônico por `run_id`.
     pub last_event_seq: u64,
+
+    // ---- Etapa 4 da Fase 6: subagente (ADR-0027) ----
+    /// **Contador global de subagentes vivos** deste `Run` (D1 do
+    /// ADR-0027: teto de 8). O `SubagentRunner::try_spawn`
+    /// consulta `parent.subagent_count + 1 <= 8` antes de
+    /// spawnar. **Incrementa** antes do spawn; **decrementa**
+    /// quando o subagente termina.
+    ///
+    /// Por que é `u32` (e não `u8`): o cabeçalho do campo é
+    /// alinhado com a coluna do SQLite (mesmo tipo), e o
+    /// `BTreeMap` keyed por `RunId` no `SubagentBudgetLedger`
+    /// tem no máximo 8 entradas — `u32` é mais que
+    /// suficiente. Zero overhead de memória na prática.
+    pub subagent_count: u32,
+
+    /// **Profundidade** na árvore de subagentes (D2 do ADR-0027:
+    /// 0 pra Run raiz, 1 pra filho direto, 2 bloqueado). O
+    /// `SubagentRunner::try_spawn` rejeita se
+    /// `parent.depth + 1 > 2`.
+    pub depth: u32,
+
+    /// **Pai** do `Run`. `None` se `depth == 0` (raiz). `Some(p)`
+    /// se `depth >= 1` (subagente). FK opcional pra `runs.id`
+    /// (a constraint está no SQLite, não no tipo).
+    pub parent_run_id: Option<RunId>,
+
+    /// **Gasto efetivo** do `Run` (Etapa 4, ADR-0027 D3). É a
+    /// fonte da verdade em memória do que o executor já
+    /// consumiu. O invariante de soma do D3 ("Σ filhos ≤
+    /// pai.remaining_inicial − pai.gasto_atual") lê daqui
+    /// via `Budget::remaining(&self.spent)`.
+    pub spent: SpentBudget,
 }
 
 impl Run {
@@ -61,6 +94,12 @@ impl Run {
     /// `current_step = 0` e `last_heartbeat_at = started_at`. O
     /// `current_step` é incrementado pelo executor a cada iteração do
     /// loop; o `last_event_seq` é incrementado a cada evento gravado.
+    ///
+    /// **Etapa 4 (Fase 6)**: o `Run` novo é **raiz** por default
+    /// (`subagent_count = 0`, `depth = 0`, `parent_run_id = None`,
+    /// `spent = SpentBudget::default()`). O `SubagentRunner.new`
+    /// constrói o `Run` filho a partir de um pai via
+    /// [`Run::new_subagent`] (Etapa 4 PR 2).
     #[must_use]
     pub fn new(
         conversation_id: ConversationId,
@@ -83,6 +122,43 @@ impl Run {
             allowed_tools: Vec::new(),
             last_heartbeat_at: now,
             last_event_seq: 0,
+            subagent_count: 0,
+            depth: 0,
+            parent_run_id: None,
+            spent: SpentBudget::default(),
+        }
+    }
+
+    /// Constrói um `Run` **subagente** a partir de um pai. Usado pelo
+    /// `SubagentRunner::try_spawn` (Etapa 4 PR 2). Bumps
+    /// `parent.subagent_count` automaticamente (não commita no DB —
+    /// o `SubagentRunner` faz o `UPDATE` depois).
+    ///
+    /// **Invariante:** `child.depth = parent.depth + 1` e
+    /// `child.parent_run_id = Some(parent.id)`. O `try_spawn` é o
+    /// portão que rejeita `child.depth > 2` antes de chamar este
+    /// construtor (D2 do ADR-0027).
+    #[must_use]
+    pub fn new_subagent(parent: &Run) -> Self {
+        let now = Utc::now();
+        Self {
+            id: RunId::new(),
+            conversation_id: parent.conversation_id,
+            project_id: parent.project_id,
+            assistant_id: parent.assistant_id,
+            provider_id: parent.provider_id.clone(),
+            model_id: parent.model_id.clone(),
+            started_at: now,
+            state: RunState::Created,
+            current_step: 0,
+            budget: parent.budget, // sobrescrito pelo `Budget::try_allocate` no try_spawn
+            allowed_tools: parent.allowed_tools.clone(), // ∩ com specialist.allowed_tools no try_spawn
+            last_heartbeat_at: now,
+            last_event_seq: 0,
+            subagent_count: 0,
+            depth: parent.depth + 1,
+            parent_run_id: Some(parent.id),
+            spent: SpentBudget::default(),
         }
     }
 
@@ -91,6 +167,12 @@ impl Run {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.state.is_terminal()
+    }
+
+    /// `true` se o `Run` é um **subagente** (tem pai).
+    #[must_use]
+    pub fn is_subagent(&self) -> bool {
+        self.parent_run_id.is_some()
     }
 
     /// Avança o `last_event_seq` e devolve o novo valor. O journal
@@ -105,6 +187,24 @@ impl Run {
     /// bump.
     pub fn heartbeat(&mut self) {
         self.last_heartbeat_at = Utc::now();
+    }
+
+    /// Acumula gasto no `spent`. Saturado em `u64::MAX` (defesa
+    /// contra overflow — o `BudgetEnforcer` da Fase 3 Etapa 4
+    /// barra antes de overflowar).
+    ///
+    /// **Por que método e não setter direto:** a atualização
+    /// atômica do `spent` é uma operação que o executor faz a
+    /// cada round. Métodos facilitam logging, profiling, e
+    /// invariantes (ex.: "spent.steps <= budget.max_steps").
+    pub fn record_spent(&mut self, delta: SpentBudget) {
+        self.spent.cost_microcents = self
+            .spent
+            .cost_microcents
+            .saturating_add(delta.cost_microcents);
+        self.spent.tokens_in = self.spent.tokens_in.saturating_add(delta.tokens_in);
+        self.spent.tokens_out = self.spent.tokens_out.saturating_add(delta.tokens_out);
+        self.spent.steps = self.spent.steps.saturating_add(delta.steps);
     }
 
     /// Aplica uma transição no estado em memória. Aplica

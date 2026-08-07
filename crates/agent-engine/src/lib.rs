@@ -32,15 +32,21 @@
 #![deny(missing_docs)]
 
 pub mod budget;
+pub mod budget_allocation;
 pub mod error;
 pub mod event;
 pub mod run;
 pub mod state;
+pub mod subagent_budget;
+pub mod subagent_error;
 pub mod transition;
 
 pub use budget::Budget;
+pub use budget_allocation::{AllocationError, BudgetAllocation, SpentBudget};
 pub use error::{RunEventKindParseError, RunStateParseError, TransitionError};
 pub use event::{RunEvent, RunEventKind};
 pub use run::Run;
 pub use state::RunState;
+pub use subagent_budget::{BudgetAllocationSum, LedgerError, SubagentBudgetLedger};
+pub use subagent_error::SubagentError;
 pub use transition::{apply_transition, Transition, GLOBAL_TRANSITIONS, TRANSITIONS};
