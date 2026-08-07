@@ -69,15 +69,16 @@
 use std::sync::Arc;
 
 use crate::executor::ExecutorError;
+use crate::subagent_runner::SubagentRunner;
 use frederico_agent_engine::Budget;
 use frederico_core::{ConversationId, MessageId, RunId, ToolId};
-use frederico_model_catalog::Catalog;
+use frederico_model_catalog::{Catalog, SpecialistRegistry};
 use frederico_provider_engine::event_sink::EventSink;
 use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
 use frederico_security::Clock;
 use frederico_storage::{Database, RunStatus};
-use frederico_tool_registry::{JailResolver, PermissionSet, Tool, ToolRegistry};
+use frederico_tool_registry::{JailResolver, PermissionLoader, PermissionSet, Tool, ToolRegistry};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -166,6 +167,13 @@ pub struct ChatOrchestrator {
     /// gerada antes do timeout). `None` desabilita a
     /// classificação automática (modo legado).
     pub memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
+    /// `Arc<SubagentRunner>` (Etapa 4 PR 2, ADR-0027). O
+    /// `ChatOrchestrator` expõe o `try_spawn` via este
+    /// campo público (mesma forma que o resto da
+    /// composição). O runner é construído pelo
+    /// `build_chat_orchestrator` a partir das parts
+    /// (registry + loader + db).
+    pub subagent_runner: Arc<SubagentRunner>,
 }
 
 impl ChatOrchestrator {
@@ -184,7 +192,14 @@ impl ChatOrchestrator {
         allowed_for_run: Vec<ToolId>,
         permission_set: PermissionSet,
         memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
+        specialist_registry: Arc<dyn SpecialistRegistry>,
+        permission_loader: Arc<PermissionLoader>,
     ) -> Self {
+        let subagent_runner = Arc::new(SubagentRunner::new(
+            specialist_registry,
+            permission_loader,
+            db.clone(),
+        ));
         Self {
             providers,
             runs,
@@ -198,6 +213,7 @@ impl ChatOrchestrator {
             tools,
             allowed_for_run,
             memory_extractor,
+            subagent_runner,
         }
     }
 

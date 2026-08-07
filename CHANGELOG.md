@@ -1,5 +1,31 @@
 ## [Não publicado]
 
+### Fechado — Fase 6, Etapa 4 PR 2 (`SubagentRunner` real consumindo `ChatOrchestrator` + `SpecialistRegistry` + `PermissionLoader`, ADR-0027 + ADR-0030) (2026-08-07)
+
+- **`SubagentRunner` real no caminho de produção** (novo módulo `crates/execution-engine/src/subagent_runner.rs`, ~700 linhas, 5 testes unit + 6 E2E). O portão `try_spawn` valida as 4 regras do ADR-0027 em ordem — §9.2 (registry) → D2 (depth 2) → D1 (8 global) → D3 (allocation + soma) → `PermissionDenied` (denylist) — e devolve `Err(SubagentError)` estruturado em qualquer falha (D4: nunca panic, nunca silent fail).
+  - **§9.2 / D4 (registry):** `SpecialistRegistry::validate_id` + `get` retornam `Err(SubagentError::UnknownSpecialist { requested, valid })` com a lista dos 8 bundled. `valid` é o que o modelo do pai usa pra escolher outro (zero fallback silencioso).
+  - **D2 (depth):** `parent.depth + 1 > 2` rejeita com `SubagentError::DepthExceeded { current, max }` antes do increment. Sem janela de privilégio parcial.
+  - **D1 (8 global):** `parent.subagent_count + 1 > 8` rejeita com `SubagentError::GlobalLimitReached { current, max, next }` antes do increment.
+  - **D3 (budget):** `Budget::try_allocate(parent_remaining, requested)` falha em eixo-a-eixo com `AllocationError::ExceedsParent { axis, requested, available }`; o portão empacota em `SubagentError::AllocationExceedsParent { cause }`. Em seguida, `SubagentBudgetLedger::try_record` falha com a invariante de soma (Σ alocações vivas ≤ pai.remaining_inicial − pai.gasto_atual). **Ordem atômica:** o `try_record` é chamado **antes** do `parent.subagent_count += 1` — se falhar, o contador não mexe. Efeito colateral zero.
+  - **PermissionDenied:** a allowlist do filho é `parent_allowed_for_run ∩ (specialist.allowed_tools - specialist.denied_tools)`. Se o pai tem tools mas a interseção é vazia, falha com `SubagentError::PermissionDenied { reason }` (texto legível pelo modelo, mesmo padrão do `RegistryError::UnknownSpecialist` da Etapa 3).
+- **`SubagentHandle`** (struct nova, retornada em caso de sucesso): carrega `child_run: Run` (depth+1, parent_run_id setado), `effective_budget: Budget` (= `min(parent_remaining, requested)`), `effective_permissions: PermissionSet` (idêntico ao pai nesta versão — invariante "subagente ⊆ pai" garantida por `is_subset_of`), `effective_allowed_for_run: Vec<ToolId>` (interseção de 4 camadas), `specialist_definition: Arc<SpecialistDefinition>`, `cancel_token: CancellationToken` (derivado do pai via `child_token()`). O orchestrator usa este handle pra spawnar o `RunExecutor` em background (Etapa 5/6).
+- **Cancelamento hierárquico** (pro D3 §"CancellationToken"): o `cancel_token` do filho é `parent_cancel_token.child_token()`. Quando o pai cancela, **todos** os filhos cascateiam via `tokio_util::sync::CancellationToken::child_token()`. O E2E `subagent_inherits_cancellation_token` prova com 3 subagentes em paralelo.
+- **`ChatOrchestrator` ganha campo `subagent_runner: Arc<SubagentRunner>`** (público, mesma forma que o resto da composição). Construído por `build_chat_orchestrator` a partir das parts (registry + loader + db).
+- **`ChatOrchestratorParts` ganha 2 campos novos** (`specialist_registry: Arc<dyn SpecialistRegistry>` + `permission_loader: Arc<PermissionLoader>`). A casca Tauri e os E2E passam via a mesma factory (`build_chat_orchestrator`).
+- **Suite workspace:** 5 testes unit do `SubagentRunner` (D1, D2, D3, §9.2, happy path) + 6 E2E no caminho de produção (consumindo `build_chat_orchestrator`, mesma factory que a casca Tauri):
+  - `subagent_runs_with_reduced_permissions` (4ª camada da hierarquia: `effective_permissions` é subset do `parent_permissions`).
+  - `subagent_inherits_cancellation_token` (cancelar pai cascateia pros 3 filhos).
+  - `subagent_budget_discounted_from_parent_in_real_path` (D3: filho recebe `min(parent_remaining, requested)`, ledger registra a alocação).
+  - `subagent_explosion_cap_8_rejects_ninth` (D1: 8º passa, 9º falha com efeito colateral zero).
+  - `subagent_depth_cap_2_rejects_grandchild` (D2: neto bloqueado, bisneto testado).
+  - `subagent_budget_sum_never_exceeds_parent` (D3 invariante de soma **no caminho real** — não só na função pura testada em PR 1).
+- **Documentação atualizada:**
+  - `docs/architecture/subagent-architecture.md`: carimbo atualizado pra `parcialmente implementado` em 2026-08-07 (fase 6 com Etapa 1 + Etapa 4 PR 1 + Etapa 4 PR 2 fechadas).
+  - `docs/modules/agent-engine.md` + `docs/modules/execution-engine.md`: carimbo atualizado.
+  - `docs/status.md` linha 33: Etapa 4 PR 2 marcada como fechada (2/2 PRs); linha 6 (E2E de cobertura) atualizada com os 6 testes novos.
+  - `CHANGELOG.md`: entrada detalhada (esta).
+- **Por que essa entrega fecha a Etapa 4:** o `SubagentRunner` é o **único caminho** pelo qual um subagente pode ser criado (gate, validações, hierarquia de permission, cancelamento). A Etapa 5/6 (anti-explosão no `run_state_for_event` + pipeline sequencial multimodelo) consome este gate. Cortar na fronteira "infra pura vs. integração com orchestrator" (mesma lição do PR #25 e do PR #34) — o PR 1 fecha a infra testável em isolamento, o PR 2 fecha o portão no caminho de produção, sem mexer no `permission_loader` ou no `SpecialistRegistry`.
+
 ### Fechado — Fase 6, Etapa 4 PR 1 (infra de subagente + invariantes do ADR-0027, sem spawn real) (2026-08-06)
 
 - **Backend de subagente: infra de budget + invariantes prontos para o `SubagentRunner` da Etapa 4 PR 2.** Etapa 4 da Fase 6 PR 1 entrega a infra pura (sem I/O) que o runner consome - 4 pecas no `frederico-agent-engine` + 1 migracao SQLite + 1 struct storage nova.

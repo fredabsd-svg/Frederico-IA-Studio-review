@@ -48,5 +48,5 @@ pub use event::{RunEvent, RunEventKind};
 pub use run::Run;
 pub use state::RunState;
 pub use subagent_budget::{BudgetAllocationSum, LedgerError, SubagentBudgetLedger};
-pub use subagent_error::SubagentError;
+pub use subagent_error::{SubagentError, UnknownSpecialistDetail};
 pub use transition::{apply_transition, Transition, GLOBAL_TRANSITIONS, TRANSITIONS};

@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-06
-Fase correspondente: 6 (Etapa 1 + Etapa 4 PR 1 fechadas; Etapa 4 PR 2 pendente)
+Verificado contra o código em: 2026-08-07
+Fase correspondente: 6 (Etapa 1 + Etapa 4 PR 1 + Etapa 4 PR 2 fechadas; Etapa 5 e 6 pendentes)
 -->
 
 # Arquitetura de Subagentes
@@ -125,7 +125,7 @@ E2E em `crates/e2e/tests/e2e_subagent_e2e.rs::subagent_inherits_cancellation_tok
 
 ## SubagentRunner
 
-`crates/execution-engine/src/subagent_runner.rs` (novo, ADR-0027 + ADR-0030):
+`crates/execution-engine/src/subagent_runner.rs` (Etapa 4 PR 2, **implementado**, ADR-0027 + ADR-0030):
 
 ```rust
 impl SubagentRunner {
@@ -225,6 +225,7 @@ Mesmo formato do `multimodel-architecture.md` §"E2E de cobertura planejado por 
 |-------|--------------------------|----------|
 | 1 | — (sem código) | — |
 | 4 | `crates/e2e/tests/e2e_subagent_e2e.rs::subagent_runs_with_reduced_permissions`, `::subagent_inherits_cancellation_token`, `::subagent_budget_discounted_from_parent_in_real_path`, `::subagent_explosion_cap_8_rejects_ninth`, `::subagent_depth_cap_2_rejects_grandchild`, `::subagent_budget_sum_never_exceeds_parent` | `cargo test --workspace` |
+| 4 (status 2026-08-07) | **todos os 6 testes fechados em PR 2** ✓ | `cargo test --workspace` |
 
 (E2E das Etapas 2, 3, 5, 6 listados no spec `multimodel-architecture.md` e no `status.md`.)
 

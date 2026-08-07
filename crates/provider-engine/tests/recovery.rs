@@ -94,6 +94,8 @@ fn build_orchestrator(
         vec![],
         frederico_tool_registry::PermissionSet::default(),
         None, // memory_extractor (Etapa 5 da Fase 4)
+        Arc::new(frederico_model_catalog::DefaultSpecialistRegistry::load()),
+        Arc::new(frederico_tool_registry::PermissionLoader::new()),
     ))
 }
 

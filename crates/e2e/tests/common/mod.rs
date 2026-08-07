@@ -317,13 +317,22 @@ pub async fn build_orchestrator(
         sink: sink.clone() as Arc<dyn EventSink>,
         db: db.clone(),
         clock,
-        catalog,
+        catalog: catalog.clone(),
         tool_registry,
         jail_resolver,
         tools,
         allowed_for_run,
         permission_set,
         memory_extractor: None,
+        // SpecialistRegistry (Etapa 3 PR 1) + PermissionLoader
+        // (Etapa 3 PR 2) — Etapa 4 PR 2 fecha o portão do
+        // subagente consumindo esses dois via
+        // `SubagentRunner`. Mesma factory que a casca Tauri
+        // chama (`build_specialist_registry`) e o Tauri
+        // command `list_specialists` consome.
+        specialist_registry: frederico_app::composition::build_specialist_registry(catalog)
+            .registry,
+        permission_loader: Arc::new(frederico_tool_registry::PermissionLoader::new()),
     };
 
     let orchestrator = Arc::new(build_chat_orchestrator(parts));
