@@ -8,6 +8,12 @@
 //! `0002_chat_core.sql` com as tabelas do motor de chat
 //! (`conversations`, `messages`, `message_events`, `runs`,
 //! `provider_configs`) e os repositórios correspondentes.
+//!
+//! A Fase 6 Etapa 5 adiciona `0030_multimodel.sql` (Pipeline
+//! Sequencial — ver [`multimodel`] e o `docs/architecture/multimodel-architecture.md`).
+//! A Etapa 5 PR 1 entrega só o [`PipelineRepo`] (persistência + tipos);
+//! o `MultimodelOrchestrator` que consome o repo pra spawnar stages em
+//! background (D5/D6/D7 do ADR-0028) é a Etapa 5 PR 2.
 
 use chrono::Utc;
 use frederico_agent_engine::{apply_transition as portao_apply_transition, RunEventKind, RunState};
@@ -15,6 +21,23 @@ use frederico_core::{AppVersion, ConversationId, MessageId, ModelId, ProviderId,
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+// ============================================================================
+// Submódulo de Pipeline Sequencial (Etapa 5 da Fase 6, ADR-0028)
+// ============================================================================
+//
+// Re-exports específicos em vez de `pub use multimodel::*` pra deixar
+// explícito o que o `frederico_storage` exporta (mesma família do
+// `pub use` seletivo que o `agent-engine` faz pros seus submódulos).
+// O [`MultimodelError`] não é re-exportado porque o caller consome via
+// [`StorageError::Multimodel`] — o `From<MultimodelError> for StorageError`
+// colapsa o erro no envelope de storage.
+mod multimodel;
+pub use multimodel::{
+    hash_file, new_artifact_id, new_run_id, new_stage_id, MultimodelArtifact,
+    MultimodelArtifactKind, MultimodelError, MultimodelMode, MultimodelRun, MultimodelStage,
+    MultimodelState, PipelineRepo,
+};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -48,6 +71,14 @@ pub enum StorageError {
         kind: String,
         cause: String,
     },
+    /// Erro específico do `PipelineRepo` (Etapa 5 da Fase 6,
+    /// ADR-0028). O `MultimodelOrchestrator` (Etapa 5 PR 2)
+    /// consome via `?` — o `Display` da variante inclui
+    /// contexto suficiente pro caller discriminar "não
+    /// encontrado" vs "duplicado" vs "schema inválido" sem
+    /// ter que inspecionar o tipo.
+    #[error("erro do PipelineRepo: {0}")]
+    Multimodel(#[from] crate::multimodel::MultimodelError),
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;

@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-05
-Fase correspondente: 6
+Verificado contra o código em: 2026-08-07
+Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 fechadas; Etapa 5 PR 2 e Etapa 6 pendentes)
 -->
 
 # Arquitetura Multimodelo
@@ -180,6 +180,8 @@ Conforme o gate de E2E (ADR-0026) e a regra de "cada etapa nomeia seu E2E desde 
 | 6 | `crates/e2e/tests/e2e_team_mode_ui_e2e.rs::team_mode_sidebar_renders_specialists`, `::memory_control_in_ui` | `cargo test --workspace` |
 
 A tabela acima é **alvo declarado na Etapa 1**. Conforme cada etapa mergea, a coluna "E2E de cobertura" e "Passo CI" do `docs/status.md` linha 33 (Fase 6) é atualizada no mesmo commit (REGRA §3.4 do `REGRAS-DO-PROJETO.md`).
+
+**Status da Etapa 5 (atualizado em 2026-08-07 — Etapa 5 PR 1):** os 5 E2E da Etapa 5 existem em `crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs` e cobrem o `PipelineRepo` (persistência). O `MultimodelOrchestrator` que **executa** os stages em background (passa o artefato real do stage 1 pro stage 2 via `RunExecutor`, propaga cancel, reutiliza stage quando `output_hash` não muda) é trabalho da **Etapa 5 PR 2** — até lá, os testes validam o caminho de persistência (roundtrip, listagem, custo, integridade), não o caminho de execução.
 
 ## Referências
 
