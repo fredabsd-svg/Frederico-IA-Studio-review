@@ -39,6 +39,7 @@ use frederico_app::composition::{
 use frederico_app::jail::FileSystemJailResolver;
 use frederico_core::{EmbeddingStatus, MemoryId, ModelId, ProviderId};
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
+use frederico_execution_engine::pipeline_orchestrator::MultimodelOrchestrator;
 use frederico_memory::memory_repo::MemoryRepo;
 use frederico_model_catalog::Catalog;
 use frederico_process_architecture::{FakeWorkerConfig, WorkerManager, WorkerSpawnConfig};
@@ -311,6 +312,24 @@ pub async fn build_orchestrator(
     let jail_resolver: Arc<dyn frederico_tool_registry::JailResolver> =
         Arc::new(FileSystemJailResolver::new(workspace.workspaces_root()));
 
+    // `MultimodelOrchestrator` (Etapa 5 PR 2 da Fase 6,
+    // ADR-0028). Mesmo factory que a casca Tauri chama.
+    // Os E2E de pipeline (`e2e_pipeline_sequencial_e2e.rs`)
+    // consomem via `orchestrator.start_pipeline(...)`.
+    let multimodel_orchestrator = Arc::new(MultimodelOrchestrator::new(
+        db.clone(),
+        runs.clone(),
+        sink.clone() as Arc<dyn EventSink>,
+        catalog.clone(),
+        clock.clone(),
+        providers.clone(),
+        tool_registry.clone(),
+        jail_resolver.clone(),
+        tools.clone(),
+        allowed_for_run.clone(),
+        permission_set.clone(),
+    ));
+
     let parts = ChatOrchestratorParts {
         providers,
         runs,
@@ -333,6 +352,10 @@ pub async fn build_orchestrator(
         specialist_registry: frederico_app::composition::build_specialist_registry(catalog)
             .registry,
         permission_loader: Arc::new(frederico_tool_registry::PermissionLoader::new()),
+        // `MultimodelOrchestrator` (Etapa 5 PR 2). O
+        // `ChatOrchestrator::start_pipeline` / `cancel_pipeline`
+        // delegam pra ele.
+        multimodel_orchestrator: Some(multimodel_orchestrator),
     };
 
     let orchestrator = Arc::new(build_chat_orchestrator(parts));

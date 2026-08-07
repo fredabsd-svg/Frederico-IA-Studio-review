@@ -1,5 +1,65 @@
 ## [Não publicado]
 
+### Fechado — Fase 6, Etapa 5 PR 2 (MultimodelOrchestrator real consumindo `RunExecutor` no caminho de produção, ADR-0028 D5/D7) (2026-08-07)
+
+- **Backend de pipeline: executor sequencial de stages pronto para a Etapa 6 (UI).** Etapa 5 da Fase 6 PR 2 entrega o runner real que consome o `PipelineRepo` da Etapa 5 PR 1 + `RunExecutor` da Fase 3 Etapa 4 no caminho de produção. 1 módulo novo + 5 E2E no caminho de produção + bumps atômicos no `ChatOrchestrator` (12 → 14 args) + Tauri `main.rs`.
+- **`MultimodelOrchestrator`** (novo em `crates/execution-engine/src/pipeline_orchestrator.rs`, ~600 linhas) com **2 métodos principais**:
+  - **`start_pipeline(parent_run_id: &str, stages: Vec<StageSpec>) -> PipelineResult<String>`** — persiste o `MultimodelRun` (state=Running) ANTES de spawnar, retorna imediatamente o `pipeline_id` (= `MultimodelRun.id`). Spawna a task em background via `tokio::spawn`; a UI da Etapa 6 consome o ID e faz polling via `PipelineRepo`.
+  - **`cancel_pipeline(pipeline_id: &str) -> PipelineResult<()>`** — cascateia o `CancellationToken` pro `RunExecutor` do stage em curso. D7 do ADR-0028: stages futuros não iniciados são marcados `Cancelled` direto pelo loop (sem chamar o modelo); o trabalho feito não se desfaz (stages já completed permanecem completed, mesma regra do WAL do SQLite).
+  - **Loop sequencial de stages** (pra cada `StageSpec`):
+    1. D7: checa `is_cancelled()` no início; se sim, marca stage `Cancelled` sem chamar modelo.
+    2. **D6 reuso desabilitado no PR 2** (a semântica do `list_reusable_stages` precisa ser revisada — Etapa 6 pluga com a correta: checa `input_hash` matching **antes** de criar o stage).
+    3. Cria `MultimodelStage` (state=pending) via `PipelineRepo::create_stage`.
+    4. Cria `Message` (assistant) + `Run` (com `parent_run_id` do pipeline) via `MessageRepo::create` + `RunRepo::create`.
+    5. Aplica as 5 arestas de inicialização (`Created → Queued → PreparingContext → RetrievingMemory → ValidatingCapabilities`, Etapa 2 da Fase 6) via `RunRepo::set_state_validated` — mesmo padrão do `ChatOrchestrator::send_message`.
+    6. Busca adapter do `ProviderMap` e descriptor do `Catalog`. Se adapter ou descriptor não existe, marca stage `failed` (custo = -1) e propaga erro.
+    7. Monta `RunExecutor` (mesma configuração do `send_message` — `permission_set`, `allowed_for_run`, `tools`, `jail_resolver`, `DbAuditSink`).
+    8. Chama `executor.run(msg_id, run_id, model_id, [ChatMessage::user(input)])` com o input do stage (encadeado com o output do stage anterior no formato `[output do stage anterior]\n{prev}\n\n[seu turno]\n{input}`).
+    9. Calcula `cost_microcents` via `descriptor.cost_microcents(p, c)`; persiste via `MessageRepo::set_usage_and_cost` + `ConversationRepo::add_cost` + `complete_stage` (state=completed/failed/cancelled, cost, output_artifact_id, output_hash) + `add_cost` no `MultimodelRun` + `create_artifact` (Text) com o output.
+  - **Estado final do pipeline**: `Cancelled` se D7 cascateou, `Completed` se todos os stages processados sem falha (`cost_microcents >= 0`), `PartiallyCompleted` caso contrário. `set_state` final via `PipelineRepo::set_state`; a task spawned faz fallback de `set_state(Failed)` se o loop morrer antes do `set_state` final (defesa em profundidade).
+  - **`PipelineError`** com 5 variantes: `RunNotFound(String)` / `StageNotFound(String)` / `ArtifactNotFound(String)` / `DuplicateStage { run_id, seq }` / `InvalidValue { column, value }`. **Re-exportado** no `frederico_storage` pra que callers usem `?` sem boxing. O `From<MultimodelError> for StorageError` já existia (Etapa 5 PR 1) — o PR 2 adiciona `?` e `From` no caller.
+  - **`StageSpec`** (input do `start_pipeline`): 3 campos — `model_id`, `provider_id`, `input` (texto). A Etapa 6 (UI) pluga temperature/max_tokens/tools quando o Modo Equipe ganhar o formulário de criação.
+- **Integração com `ChatOrchestrator`** (bump atômico de 12 → 14 args, mesmo padrão do `subagent_runner` da Etapa 4 PR 2):
+  - `ChatOrchestrator::new` ganha `multimodel_orchestrator: Option<Arc<MultimodelOrchestrator>>` (Option pra retrocompatibilidade com testes que constroem `parts` manualmente sem orchestrator).
+  - `ChatOrchestrator` ganha 2 métodos de delegação: `start_pipeline(parent_run_id, stages)` e `cancel_pipeline(pipeline_id)`, ambos `-> ChatOrchestratorResult<...>` (que faz `map_err` para o envelope `ChatOrchestratorError`).
+  - `ChatOrchestrator::multimodel_orchestrator: Option<Arc<...>>` (público, mesma forma que `subagent_runner`).
+  - `ChatOrchestratorError` ganha variante `Pipeline(#[from] PipelineError)` com `#[error("pipeline: {0}")]` — a UI discrimina por variante.
+  - `ChatOrchestratorParts` (struct de composição) ganha `multimodel_orchestrator: Option<...>` — a casca Tauri e os E2E passam via a mesma `build_chat_orchestrator` factory.
+- **Integração Tauri** (`apps/desktop/src-tauri/src/main.rs`):
+  - Constrói o `MultimodelOrchestrator` antes do `ChatOrchestrator`, reusando o `Arc<Database>`, `Arc<RunRegistry>`, `Arc<Catalog>`, `ProviderMap`, `ToolRegistry`, `JailResolver`, `tools`, `allowed_for_run`, `permission_set` — sem duplicar pool, sem fork.
+  - 2 Tauri commands novos (`start_pipeline` + `cancel_pipeline`) são trabalho da **Etapa 6 (UI)** — o PR 2 entrega o backend pronto; a UI consome via `ChatOrchestrator::start_pipeline` / `cancel_pipeline` direto (camada de Tauri é só wrapper fino).
+- **Suite workspace: 5 E2E novos** em `crates/e2e/tests/e2e_pipeline_sequencial_e2e_orchestrator.rs` (complementam os 5 de `e2e_pipeline_sequencial_e2e.rs` da Etapa 5 PR 1 — esses cobrem persistência, o novo cobre execução real):
+  - **`pipeline_two_stages_executes_via_orchestrator`** (D5: 2 stages executam sequencialmente via `ChatOrchestrator::start_pipeline`; `MultimodelRun.state = Completed`; `total_cost_microcents >= 0`; `provider.call_count == 2` — 1 round por stage).
+  - **`cancel_pipeline_not_found_returns_structured_error`** (mecanismo: `cancel_pipeline` em ID inexistente retorna `Err(NotFound)` com `Display` legível pelo modelo).
+  - **`start_pipeline_empty_stages_returns_error`** (validação síncrona: `stages` vazio rejeita com `Err(ProviderFailed)`).
+  - **`start_pipeline_unknown_provider_fails_at_stage`** (validação assíncrona: provider inexistente → `start_pipeline` retorna `Ok` (validação é no `RunExecutor`); o stage 1 é persistido com `state=failed` e o pipeline termina como `PartiallyCompleted`).
+  - **`pipeline_error_display_includes_context`** (todos os variantes de `PipelineError` têm `Display` legível: nome + IDs + ação).
+- **Atualizações em callers** (bump atômico, mesma fronteira do PR #36):
+  - `crates/execution-engine/tests/integration_orchestrator.rs`: passa `None` pro novo arg `multimodel_orchestrator` (test de integração não exercita pipeline).
+  - `crates/provider-engine/tests/recovery.rs`: passa `None` (recovery test não exercita pipeline).
+  - `crates/e2e/tests/common/mod.rs`: constrói o `MultimodelOrchestrator` no `build_orchestrator` (helper compartilhado) — todos os E2E ganham o orchestrator automaticamente. Mesma factory que a casca Tauri.
+- **Decisões**:
+  - **`cancel_tokens: Mutex<HashMap<String, CancellationToken>>`** (sem `Arc`) — a cleanup do `cancel_pipeline` remove o token (idempotente: 2° `cancel` retorna `Err(NotFound)`).
+  - **`start_pipeline` não checa provider** — a validação é no `RunExecutor` (que precisa do `ProviderMap` no momento da execução). A UI consome o `MultimodelStage.state = "failed"` pra mostrar o erro por stage.
+  - **`cost_microcents: i64` no `MultimodelStage`**, mas o `RunExecutor` devolve `u64` (vindo de `descriptor.cost_microcents` que retorna `u64`). Conversão via `as i64` — a Etapa 5 PR 1 mantêm `i64` (D7 do ADR-0028: rollback negativo).
+  - **D6 reuso desabilitado** (TODO pra Etapa 6) — a primitiva `PipelineRepo::list_reusable_stages` está em produção (Etapa 5 PR 1) e é exercitada pelo `e2e_pipeline_sequencial_e2e.rs` (PR 1). O consumer real (skip do stage quando input não muda) precisa de uma nova primitiva que cheque `input_hash` matching **antes** de criar o stage — semantica mais simples que `list_reusable_stages`.
+  - **`hash_file` (Etapa 5 PR 1) usa `DefaultHasher` (FNV)**; aqui o `output_hash` do stage usa `fnv:{}` com `DefaultHasher` direto (string em memória, não arquivo). Suficiente pra chave de reuso do D6 quando a Etapa 6 plugar; troca por SHA-256 se precisar de integridade criptográfica.
+  - **Bump atômico do `Cargo.toml`** do `execution-engine` ganha `uuid = { workspace = true }` (necessário pra parsear o `parent_run_id` em `RunId`).
+- **Documentação atualizada**:
+  - `docs/architecture/multimodel-architecture.md`: carimbo atualizado pra `parcialmente implementado` 2026-08-07 (fase 6 com Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 fechadas; Etapa 6 pendente); nota na §"E2E de cobertura planejado por etapa" explicitando que a Etapa 5 PR 1 cobre `PipelineRepo` e a Etapa 5 PR 2 cobre o `MultimodelOrchestrator` (execução real).
+  - `docs/status.md` linha 33: Etapa 5 PR 2 marcada como fechada (Etapa 5 2/2 PRs fechadas); coluna E2E de cobertura atualizada com os 5 testes novos.
+  - `CHANGELOG.md`: entrada detalhada (esta).
+- **Verificações locais (todas verdes)**:
+  - `cargo fmt --all -- --check` ✓
+  - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::await_holding_lock` ✓ (1 `#[allow(clippy::doc_lazy_continuation)]` no `pipeline_orchestrator.rs` justificada pela quantidade de `///` detalhados)
+  - `cargo test -p frederico-execution-engine` (37/37 — 26 lib + 11 tests) ✓
+  - `cargo test -p frederico-e2e` (28/28 — 5 novos do orchestrator + 5 de persistência + 18 outros) ✓
+  - `cargo test --workspace --exclude frederico-process-architecture` ✓
+  - `scripts/check-core-purity.ps1` ✓
+  - `scripts/check-e2e-gate.ps1` ✓ (7 fases concluídas com cobertura E2E consistente)
+  - `node scripts/check-docs.mjs` ✓
+- **Por que 2 PRs na Etapa 5 (mesma fronteira do PR #25 e do PR #34)**: PR 1 = `PipelineRepo` infra (testável sem I/O de orchestrator), PR 2 = `MultimodelOrchestrator` real consumindo `RunExecutor` + `SubagentRunner` da Etapa 4 + cancel propagation D7 + cost per stage + restart após app close D5. Cortar na fronteira "infra de storage vs. integração com orchestrator" é a mesma lição — sem janela de privilégio intermediária entre os PRs.
+
 ### Fechado — Fase 6, Etapa 5 PR 1 (PipelineRepo infra: persistência do Pipeline Sequencial, ADR-0028 D5/D6/D7) (2026-08-07)
 
 - **Backend de pipeline: persistência do `MultimodelRun` (sequência de `MultimodelStage`s) pronta para o `MultimodelOrchestrator` da Etapa 5 PR 2.** Etapa 5 da Fase 6 PR 1 entrega a infra de storage (sem I/O de orchestrator) que o runner consome — 1 migração SQLite + 1 módulo novo + 1 variante nova no `StorageError` + 5 E2E no caminho de produção.

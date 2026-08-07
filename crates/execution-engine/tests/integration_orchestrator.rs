@@ -80,6 +80,7 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         None, // memory_extractor (Etapa 5 da Fase 4)
         Arc::new(frederico_model_catalog::DefaultSpecialistRegistry::load()),
         Arc::new(frederico_tool_registry::PermissionLoader::new()),
+        None, // multimodel_orchestrator (Etapa 5 PR 2 da Fase 6) — não exercitado neste teste
     );
     (Arc::new(orch), dir, sink)
 }

@@ -69,6 +69,7 @@
 use std::sync::Arc;
 
 use crate::executor::ExecutorError;
+use crate::pipeline_orchestrator::{MultimodelOrchestrator, StageSpec};
 use crate::subagent_runner::SubagentRunner;
 use frederico_agent_engine::Budget;
 use frederico_core::{ConversationId, MessageId, RunId, ToolId};
@@ -111,6 +112,12 @@ pub enum ChatOrchestratorError {
         provider: frederico_core::ProviderId,
         model: frederico_core::ModelId,
     },
+    /// Erro do `MultimodelOrchestrator` (Etapa 5 PR 2, ADR-0028).
+    /// A casca Tauri e a Etapa 6 (UI) discriminam por variante
+    /// (`Storage`/`ProviderNotFound`/`Cancelled`/etc) pra
+    /// dar mensagem legível ao usuário.
+    #[error("pipeline: {0}")]
+    Pipeline(#[from] crate::pipeline_orchestrator::PipelineError),
 }
 
 /// `Result` padrão do `ChatOrchestrator`.
@@ -174,6 +181,14 @@ pub struct ChatOrchestrator {
     /// `build_chat_orchestrator` a partir das parts
     /// (registry + loader + db).
     pub subagent_runner: Arc<SubagentRunner>,
+    /// `Option<Arc<MultimodelOrchestrator>>` (Etapa 5 PR 2,
+    /// ADR-0028). O `ChatOrchestrator` expõe `start_pipeline` e
+    /// `cancel_pipeline` que delegam pro orchestrator. `Option`
+    /// pra retrocompatibilidade com testes que constroem
+    /// `parts` manualmente sem o orchestrator (a Etapa 6 da
+    /// Fase 6 fecha a UI que consome; até lá, o pipeline pode
+    /// ser desabilitado por configuração).
+    pub multimodel_orchestrator: Option<Arc<MultimodelOrchestrator>>,
 }
 
 impl ChatOrchestrator {
@@ -194,6 +209,7 @@ impl ChatOrchestrator {
         memory_extractor: Option<Arc<frederico_memory::MemoryExtractorHandle>>,
         specialist_registry: Arc<dyn SpecialistRegistry>,
         permission_loader: Arc<PermissionLoader>,
+        multimodel_orchestrator: Option<Arc<MultimodelOrchestrator>>,
     ) -> Self {
         let subagent_runner = Arc::new(SubagentRunner::new(
             specialist_registry,
@@ -214,6 +230,7 @@ impl ChatOrchestrator {
             allowed_for_run,
             memory_extractor,
             subagent_runner,
+            multimodel_orchestrator,
         }
     }
 
@@ -521,6 +538,41 @@ impl ChatOrchestrator {
         RunRepo::new(&self.db).request_cancellation(&run_id).await?;
         self.runs.cancel(run_id).await;
         Ok(())
+    }
+
+    /// Inicia um pipeline multimodelo (Etapa 5 PR 2, ADR-0028).
+    /// Retorna o `pipeline_id` (= `MultimodelRun.id`) que o
+    /// `cancel_pipeline` aceita. A execução é em background via
+    /// `tokio::spawn`; o progresso vem via `PipelineRepo`
+    /// (a UI da Etapa 6 da Fase 6 faz polling).
+    ///
+    /// **Erros:**
+    /// - `MultimodelOrchestrator ausente` (`multimodel_orchestrator = None`)
+    ///   — o pipeline não foi configurado na composição (a casca
+    ///   Tauri sempre passa; testes podem omitir).
+    /// - `stages` vazio — `PipelineError::ProviderFailed`.
+    /// - Storage/provider — `PipelineError::Storage` /
+    ///   `PipelineError::ProviderNotFound` / `ModelNotFound`.
+    pub fn start_pipeline(
+        self: &Arc<Self>,
+        parent_run_id: &str,
+        stages: Vec<StageSpec>,
+    ) -> ChatOrchestratorResult<String> {
+        let orchestrator = self.multimodel_orchestrator.as_ref().ok_or_else(|| {
+            ChatOrchestratorError::Storage(frederico_storage::StorageError::AppInfoMissing)
+        })?;
+        Ok(orchestrator.start_pipeline(parent_run_id, stages)?)
+    }
+
+    /// Cancela um pipeline em curso (D7 do ADR-0028). Cascateia
+    /// o `CancellationToken` pro `RunExecutor` do stage atual;
+    /// stages futuros (não iniciados) são marcados `Cancelled`
+    /// direto pelo loop.
+    pub fn cancel_pipeline(self: &Arc<Self>, pipeline_id: &str) -> ChatOrchestratorResult<()> {
+        let orchestrator = self.multimodel_orchestrator.as_ref().ok_or_else(|| {
+            ChatOrchestratorError::Storage(frederico_storage::StorageError::AppInfoMissing)
+        })?;
+        Ok(orchestrator.cancel_pipeline(pipeline_id)?)
     }
 
     /// Lê eventos do journal de uma mensagem (reload de janela).
