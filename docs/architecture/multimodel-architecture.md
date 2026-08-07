@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-07
-Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 fechadas; Etapa 5 PR 2 e Etapa 6 pendentes)
+Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 fechadas; Etapa 6 pendente)
 -->
 
 # Arquitetura Multimodelo
@@ -181,7 +181,7 @@ Conforme o gate de E2E (ADR-0026) e a regra de "cada etapa nomeia seu E2E desde 
 
 A tabela acima é **alvo declarado na Etapa 1**. Conforme cada etapa mergea, a coluna "E2E de cobertura" e "Passo CI" do `docs/status.md` linha 33 (Fase 6) é atualizada no mesmo commit (REGRA §3.4 do `REGRAS-DO-PROJETO.md`).
 
-**Status da Etapa 5 (atualizado em 2026-08-07 — Etapa 5 PR 1):** os 5 E2E da Etapa 5 existem em `crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs` e cobrem o `PipelineRepo` (persistência). O `MultimodelOrchestrator` que **executa** os stages em background (passa o artefato real do stage 1 pro stage 2 via `RunExecutor`, propaga cancel, reutiliza stage quando `output_hash` não muda) é trabalho da **Etapa 5 PR 2** — até lá, os testes validam o caminho de persistência (roundtrip, listagem, custo, integridade), não o caminho de execução.
+**Status da Etapa 5 (atualizado em 2026-08-07 — Etapa 5 PR 2):** os 5 E2E da Etapa 5 existem em `crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs` (Etapa 5 PR 1, persistência) e mais 5 E2E em `crates/e2e/tests/e2e_pipeline_sequencial_e2e_orchestrator.rs` (Etapa 5 PR 2, execução real via `MultimodelOrchestrator` + `ChatOrchestrator::start_pipeline`). O `MultimodelOrchestrator` (`crates/execution-engine/src/pipeline_orchestrator.rs`, ~600 linhas) fecha o caminho de execução (D5/D7 do ADR-0028) — o D6 (reuso por `output_hash`) tem a primitiva `list_reusable_stages` no `PipelineRepo` (Etapa 5 PR 1) mas o **reuso efetivo** entre stages do mesmo pipeline fica pra Etapa 6 (UI) — a semântica do `list_reusable_stages` precisa ser revisada (busca no stage que está prestes a rodar, não no anterior).
 
 ## Referências
 

@@ -479,6 +479,29 @@ fn main() {
             let permission_loader =
                 std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
 
+            // `MultimodelOrchestrator` (Etapa 5 PR 2 da Fase 6,
+            // ADR-0028). Mesmo factory que os E2E da raiz
+            // chamam (`crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs`).
+            // O `ChatOrchestrator::start_pipeline` /
+            // `cancel_pipeline` delegam pra ele.
+            let tool_registry_for_orchestrator =
+                frederico_app::composition::build_tool_registry(&tools);
+            let multimodel_orchestrator = std::sync::Arc::new(
+                frederico_execution_engine::pipeline_orchestrator::MultimodelOrchestrator::new(
+                    db.clone(),
+                    runs.clone(),
+                    sink.clone(),
+                    catalog.clone(),
+                    clock.clone(),
+                    providers.clone(),
+                    tool_registry_for_orchestrator.clone(),
+                    jail_resolver.clone(),
+                    tools.clone(),
+                    allowed_for_run.clone(),
+                    permission_set.clone(),
+                ),
+            );
+
             // Composição centralizada no `frederico-app` (Etapa 1
             // da Fase de Ligação, ADR-0022 §D4). Esta é a
             // **mesma função** que os E2E da raiz chamam
@@ -491,7 +514,7 @@ fn main() {
                 db: db.clone(),
                 clock: clock.clone(),
                 catalog: catalog.clone(),
-                tool_registry: frederico_app::composition::build_tool_registry(&tools),
+                tool_registry: tool_registry_for_orchestrator,
                 jail_resolver: jail_resolver.clone(),
                 tools,
                 allowed_for_run,
@@ -499,6 +522,7 @@ fn main() {
                 memory_extractor: memory_extractor_handle,
                 specialist_registry,
                 permission_loader,
+                multimodel_orchestrator: Some(multimodel_orchestrator),
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 

@@ -47,6 +47,7 @@ pub mod budget;
 pub mod executor;
 pub mod orchestrator;
 pub mod persist;
+pub mod pipeline_orchestrator;
 pub mod recovery;
 pub mod state_mapping;
 pub mod subagent_runner;
@@ -57,6 +58,9 @@ pub use budget::BudgetEnforcer;
 pub use executor::{RunExecutor, RunOutcome};
 pub use orchestrator::{ChatOrchestrator, ChatOrchestratorError, ChatOrchestratorResult};
 pub use persist::persist_journal;
+pub use pipeline_orchestrator::{
+    MultimodelOrchestrator, PipelineError, PipelineResult, StageResult, StageSpec,
+};
 pub use recovery::{recover_stale_runs, spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS};
 pub use state_mapping::run_state_for_event;
 pub use subagent_runner::{SubagentHandle, SubagentRunner, MAX_DEPTH, MAX_SUBAGENTS_PER_RUN};

@@ -701,6 +701,16 @@ pub struct ChatOrchestratorParts {
     /// Tauri constrói via `PermissionLoader::new()` e o
     /// guarda no `AppState`.
     pub permission_loader: std::sync::Arc<frederico_tool_registry::PermissionLoader>,
+    /// `Option<Arc<MultimodelOrchestrator>>` (Etapa 5 PR 2,
+    /// ADR-0028). Quando `Some`, o `ChatOrchestrator` expõe
+    /// `start_pipeline` + `cancel_pipeline` que delegam pro
+    /// runner. `None` desabilita pipeline (modo legado —
+    /// testes que não precisam de pipeline podem omitir).
+    /// A casca Tauri sempre passa `Some` (a Etapa 6 da Fase 6
+    /// fecha a UI que consome).
+    pub multimodel_orchestrator: Option<
+        std::sync::Arc<frederico_execution_engine::pipeline_orchestrator::MultimodelOrchestrator>,
+    >,
 }
 
 /// Constrói o `ChatOrchestrator` a partir de `parts`.
@@ -736,6 +746,7 @@ pub fn build_chat_orchestrator(
         parts.memory_extractor,
         parts.specialist_registry,
         parts.permission_loader,
+        parts.multimodel_orchestrator,
     )
 }
 
