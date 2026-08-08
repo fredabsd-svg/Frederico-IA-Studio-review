@@ -1,70 +1,234 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-08-08
 Fase correspondente: 7
 -->
 
-# Design do Sandbox Windows (stub)
+> Aprofundado na **Etapa 1 da Fase 7** (este PR de planejamento, 2026-08-08). Aprofundamento guiado pelo ADR-0031 (modelo de isolamento), ADR-0033 (política de rede) e ADR-0036 (SecurityJailResolver). O estado é `parcialmente implementado` (não `especificado`) porque a Fase 7 já está `em andamento` no `docs/status.md` (regra da trava do §1.13): o planejamento cobre as 3 camadas (Jail + Job Object + Restricted Token + env zeroed), os trade-offs explícitos do que o sandbox **não** protege, e o mapa de E2E planejado por etapa com 12 testes de negação nomeados. **Sem código de produção** — a Etapa 2 da Fase 7 implementa o `SecurityJailResolver` e os testes de regressão, e nessa hora o carimbo `Verificado contra o código em` ganha a data do merge.
 
-> Stub criado na Fase 0. Será aprofundado antes do início da Fase 7 (Modo desenvolvedor) — sandbox é estrutural, retrofit é caríssimo.
+# Design do Sandbox Windows
 
-> **Alterado em relação ao plano original:** o cabeçalho dizia `Fase correspondente: 3`. A Fase 3 (Motor de execução e ferramentas) fechou entregando o `Jail` — o ponto único de normalização de caminho que cobre a ameaça I3 — mas **não** o sandbox descrito aqui (AppContainer/RestrictedToken/JobObject, proxy de rede local, env por allowlist). O `development-roadmap.md` posiciona o sandbox na Fase 7, e é essa a fase correspondente correta. A troca desfaz a violação da trava do §1.13, que acusava um spec `especificado` cuja fase já estava concluída.
+> **Alterado em relação ao plano original:** o cabeçalho deste spec dizia `Fase correspondente: 3`. A Fase 3 (Motor de execução e ferramentas) fechou entregando o `Jail` (Fase 6 Etapa 5.X, PR #25) — o ponto único de normalização de caminho que cobre a ameaça I3 — mas **não** o sandbox descrito aqui. O `development-roadmap.md` posiciona o sandbox na Fase 7, e é essa a fase correspondente correta. A troca desfaz a violação da trava do §1.13, que acusava um spec `especificado` cuja fase já estava concluída. A Etapa 1 da Fase 7 (este PR) conserta o cabeçalho e aprofunda o spec.
 
-## Decisão tomada
+## Visão geral
+
+O **sandbox do Modo Desenvolvedor** isola a execução de ferramentas perigosas (`exec.python`, `exec.node`, `exec.shell`, `files.write`, `files.edit`) em uma camada de processo Windows. A Fase 7 fecha quando as 3 camadas combinadas (Jail + Job Object + Restricted Token + env zeroed, ADR-0031 D1) estão implementadas, testadas com **teste de negação** (regra do user, 2026-08-08), e integradas ao `RunExecutor` da Fase 3.
+
+A combinação é **deliberada**, não cumulativa: cada camada cobre uma classe de ameaça diferente, e juntas formam o mínimo que cobre as ameaças documentadas no `security-threat-model.md` para as ferramentas que a Fase 7 introduz. O `PROMPT MESTRE` §22 fixa a restrição: **sem Docker, sem WSL, sem `PATH` global alterado** — primitivas do Windows.
+
+A Fase 6 já entregou a **barreira primária** de path safety (Etapa 5.X, PR #25): o `Jail` do `frederico-tool-registry` (`crates/tool-registry/src/workspace.rs`) rejeita `..`/absoluto/UNC/letra de unidade/symlink, e é invocado em **toda** operação de filesystem antes de qualquer I/O. A Fase 7 **adiciona** camadas (processo, privilégio, env, rede) — não substitui.
+
+## Decisões tomadas
 
 - **Sem Docker, sem WSL, sem `PATH` global alterado** (`PROMPT MESTRE` §5.2, §22). Isolamento via primitivas do Windows.
 - **Workspace em `%LOCALAPPDATA%\FredericoAIStudio\workspaces\`** (`PROMPT MESTRE` §22.2) — agente não acessa diretamente documentos pessoais, área de trabalho, credenciais, navegador, registro, pastas de sistema, outros projetos.
-- **Acesso externo ao workspace só com**: seleção pelo usuário, concessão de permissão, definição de leitura/escrita, registro, possibilidade de revogação (`PROMPT MESTRE` §22.3).
-- **Python e Node como pacotes gerenciados**, não como dependência de instalação do usuário (`PROMPT MESTRE` §22.4). Não alterar `PATH` global.
-- **Env do processo filho zerado e reconstruído por allowlist**; ambiente do app nunca é herdado (`PROMPT MESTRE` §22.5).
-- **Teste automatizado obrigatório**: nenhuma variável de ambiente de processo do sandbox contém valor de credencial cadastrada (`PROMPT MESTRE` §22.5).
-- **Rede do sandbox só através de proxy local do app**, com allowlist e registro de URLs visível ao usuário na conversa (`PROMPT MESTRE` §22.5).
-- **Comandos aprovados são exibidos ao usuário exatamente como serão executados, sem abreviação** (`PROMPT MESTRE` §22.5 final).
+- **Acesso externo ao workspace só com**: seleção pelo usuário, concessão de permissão, definição de leitura/escrita, registro, possibilidade de revogação (`PROMPT MESTRE` §22.3). Mecanismo: `ApprovalScope` no `PermissionSet` (ADR-0034).
+- **Python e Node como pacotes gerenciados** (Etapa 3 da Fase 7, `runtimes-architecture.md`), não como dependência de instalação do usuário (`PROMPT MESTRE` §22.4). Não alterar `PATH` global.
+- **Env do processo filho zerado e reconstruído por allowlist**; ambiente do app nunca é herdado (`PROMPT MESTRE` §22.5, ADR-0031 D5, ADR-0033 D2). A allowlist tem subenum `REQUIRED` (não-editável: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `PATH` do runtime portátil, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `PYTHONHOME`, `PYTHONPATH`, `NODE_PATH`, `HOME`, `USERPROFILE`) e `ALLOWED` (configurável pelo usuário, versionada).
+- **Teste automatizado obrigatório**: nenhuma variável de ambiente de processo do sandbox contém valor de credencial cadastrada (`PROMPT MESTRE` §22.5, ADR-0031 D5). O teste está em `crates/security/tests/env_isolation.rs::child_env_does_not_contain_parent_secrets`.
+- **Rede do sandbox só através de proxy local do app**, com allowlist (deny-by-default) e registro de URLs visível ao usuário na conversa (`PROMPT MESTRE` §22.5, ADR-0033).
+- **Comandos aprovados são exibidos ao usuário exatamente como serão executados, sem abreviação** (`PROMPT MESTRE` §22.5 final, ADR-0034 D5). A invariante tem teste em `crates/e2e/tests/e2e_approval_display.rs::approved_command_matches_actual_invocation`.
+- **Sandbox é opt-in por feature flag** durante a Etapa 2-6 da Fase 7 (`FREDERICO_SANDBOX_V1`, ADR-0031 D7). A Etapa 7 (Fase 7 concluída) remove a flag.
+
+## As 3 camadas (ADR-0031 D1)
+
+| Camada | Função | Ferramentas que usam | Implementação |
+|---|---|---|---|
+| **Jail** (Fase 6 Etapa 5.X) | Barreira primária de path safety | todas as de filesystem | `crates/tool-registry/src/workspace.rs::Jail` (existente) |
+| **Job Object** | Tree-kill garantido (mesmo em `kill -9`), limite de memória por processo e total | `exec.python`, `exec.node`, `exec.shell` | `crates/security/src/windows/job_object.rs` (novo, Etapa 2) |
+| **Restricted Token** | Descarte de 6 privilégios elevados (SeDebug, SeBackup, SeRestore, SeTakeOwnership, SeLoadDriver, SeShutdown) | `exec.python`, `exec.node`, `exec.shell` | `crates/security/src/windows/restricted_token.rs` (novo, Etapa 2) |
+| **Env zeroed + allowlist** | Fecha `I1` do threat model (env leak) | `exec.python`, `exec.node`, `exec.shell` | `crates/security/src/env_filter.rs` (novo, Etapa 2) |
+| **Proxy local de rede** | Rede do sandbox passa por allowlist + log visível (fecha SSRF reverso + DNS exfiltration) | `exec.python`, `exec.node`, quando precisam de rede (pip install, npm install) | `crates/security/src/network.rs` + `crates/security/src/dns_intercept.rs` (novos, Etapa 7 da Fase 7) |
+
+A Etapa 2 da Fase 7 implementa as 4 camadas de processo (Job Object, Restricted Token, Env Filter, e o orquestrador `SecurityJailResolver`). A Etapa 7 da Fase 7 (rede) fecha o proxy local — o `exec.python`/`exec.node` da Etapa 4 já funciona **sem rede** nesse meio tempo (degradação declarada: `pip install` falha com mensagem clara, `python main.py` que não precisa de rede funciona normal).
+
+`files.write` / `files.edit` / `files.list` **não** rodam sob Job Object + Restricted Token (não há spawn de processo). Usam só o `Jail` + protocolo atômico (ADR-0035 D1) + backup (D3) + audit (D6).
+
+`AppContainer` (a primitiva mais forte do Windows) é **adiada** para Fase 8+ (ADR-0031 D6) — quebra rotinas comuns de Python/Node, e o custo de fazer funcionar é desproporcional ao ganho.
 
 ## Contrato previsto
 
+### `SandboxConfig` (entrada do `SecurityJailResolver::spawn`)
+
 ```rust
 struct SandboxConfig {
-    isolation: IsolationLevel,        // AppContainer | RestrictedToken | JobObject
-    resources: ResourceLimits,        // cpu, mem, processes, wall_clock
-    network: NetworkPolicy,           // None | Allowlist(Vec<String>)
-    env: EnvPolicy,                   // None (zerado) | Allowlist(Vec<String>)
-    workspace_root: AppPath,          // %LOCALAPPDATA%\FredericoAIStudio\workspaces\<id>
-    external_mounts: Vec<ExternalMount>,  // pastas externas concedidas pelo usuário
+    /// Ferramenta que está sendo executada. Cada uma tem um nível default de sandbox.
+    tool: ToolId,
+    /// Permissões herdadas do `PermissionSet` da execução. Subagente ⊆ pai.
+    permissions: PermissionSet,
+    /// Allowlist de rede efetiva (do `NetworkAllowlist` global + escopo da execução).
+    network_allowlist: NetworkAllowlist,
+    /// Workdir (validado pelo Jail antes de qualquer coisa).
+    workdir: CanonicalPath,
+    /// Args a passar para o executável (do tool_call, validado pelo `validate_tool_call`).
+    args: Vec<String>,
+    /// Timeout de wall-clock. Default 60s; configurável por tool.
+    wall_clock: Duration,
+    /// Limite de memória por processo (default 2 GB) e total (default 4 GB).
+    memory_limits: MemoryLimits,
+    /// Variáveis de ambiente adicionais permitidas (além do `EnvAllowlist::REQUIRED`).
+    /// Vazio por default; a Etapa 4 da Fase 7 pluga com `PermissionSet::extra_env`.
+    extra_env: Vec<(String, String)>,
+    /// Stdin a passar pro filho (None = /dev/null).
+    stdin: Option<Vec<u8>>,
 }
 
-struct ResourceLimits {
-    max_cpu_pct: u8,                  // 0-100
-    max_memory_mb: u32,
-    max_processes: u32,
-    max_wall_clock: Duration,
+struct MemoryLimits {
+    per_process_bytes: u64,   // default 2 GB
+    total_bytes: u64,          // default 4 GB (soma da árvore)
+}
+
+struct NetworkAllowlist {
+    entries: Vec<NetworkEntry>,  // hostname + ttl (OneExecution, OneSession, Forever)
+    default: AllowOrDeny,         // Deny (nada passa se a allowlist está vazia)
+}
+
+enum AllowOrDeny { Allow, Deny }
+```
+
+### `SandboxedProcess` (saída do `SecurityJailResolver::spawn`)
+
+```rust
+struct SandboxedProcess {
+    /// PID do processo filho (atribuído ao Job Object antes de ResumeThread).
+    pid: u32,
+    /// Handle do Job Object específico desse spawn (o `JobHandle` é droppado no fim, e o `KILL_ON_JOB_CLOSE` dispara).
+    job_handle: JobHandle,
+    /// Streams async para I/O (stdout, stderr) — coletados pela Etapa 4 da Fase 7.
+    stdout: BoxStream<Vec<u8>>,
+    stderr: BoxStream<Vec<u8>>,
+    /// Cancelamento (cascateia do `CancellationToken` do `Run`).
+    cancel_token: CancellationToken,
+}
+
+impl Drop for SandboxedProcess {
+    fn drop(&mut self) {
+        // Fecha o job_handle → KILL_ON_JOB_CLOSE derruba a árvore
+        // (mesmo que o pai tenha crashado — o handle vive no app, não no filho)
+    }
 }
 ```
 
+### `SecurityJailResolver` (orquestrador)
+
+```rust
+pub struct SecurityJailResolver {
+    file_system_jail: FileSystemJailResolver,  // PR #25, Fase 6 Etapa 5.X
+    root_job: JobObject,                         // vive até o app morrer
+    env_filter: EnvFilter,                       // EnvAllowlist::REQUIRED + ALLOWED
+    active_jobs: Mutex<HashMap<u32, JobHandle>>,
+    next_id: AtomicU64,
+}
+
+impl SecurityJailResolver {
+    pub fn new(file_system_jail: FileSystemJailResolver) -> Result<Arc<Self>, JailError>;
+    pub fn spawn(&self, config: SandboxConfig) -> Result<SandboxedProcess, SpawnError>;
+    pub fn cancel(&self, pid: u32) -> Result<(), CancelError>;
+    pub fn alive_pids(&self) -> Vec<u32>;
+    pub fn cleanup_orphans(&self) -> Result<u32, CleanupError>;  // Etapa 7 da Fase 7
+}
+
+impl Drop for SecurityJailResolver {
+    fn drop(&mut self) {
+        // Fecha active_jobs (KILL_ON_JOB_CLOSE) e root_job.
+        // Garante tree-kill no shutdown normal, panic, e TerminateProcess.
+    }
+}
+```
+
+## Comportamento por tipo de execução
+
+| Tool | Jail | Job Object | Restricted Token | Env filter | Proxy rede | Approval |
+|---|---|---|---|---|---|---|
+| `files.read` | sim | — | — | — | — | nunca |
+| `files.list` | sim | — | — | — | — | nunca (dentro do workspace) |
+| `files.write` / `files.edit` | sim | — | — | — | — | D2 do ADR-0034 (escopo `OneTurn` default) |
+| `exec.python` | sim (workdir) | sim | sim | sim | sim (quando precisa) | D2 do ADR-0034 (escopo `OneTurn` default) |
+| `exec.node` | sim (workdir) | sim | sim | sim | sim (quando precisa) | D2 do ADR-0034 (escopo `OneTurn` default) |
+| `exec.shell` | sim (workdir) | sim | sim | sim | sim (quando precisa) | D3 do ADR-0034 (sempre `OneExecution`) |
+| `web.fetch` / `web.search` | — | — | — | — | sim | nunca (tool de leitura, sem side-effect) |
+
+`files.write` e `files.edit` rodam **dentro do processo do app** (sem spawn, sem sandbox de processo) — ADR-0035 D7. O ganho de segurança do sandbox de processo **não se aplica** (não há execução de código arbitrário, só `std::fs::write` em Rust). A barreira é Jail + atomicidade + backup + audit.
+
 ## Não-objetivos
 
-- Sandboxing de GPU.
-- Anti-debug, anti-tamper.
-- "Browser sandbox" completo (o `browser-worker` é separado, fora do sandbox principal).
-- Suporte a sandbox em macOS/Linux na v1 (a arquitetura está pronta, mas a implementação Windows é a única da v1).
+- **Sandboxing de GPU.** Fora de escopo (uso sensível não previsto na v1).
+- **Anti-debug, anti-tamper.** O sandbox não tenta defender contra o usuário que tenta ativamente bypassar (root, kernel debugger, etc.) — é defesa contra o **filho do sandbox**, não contra o usuário.
+- **"Browser sandbox" completo.** O `browser-worker` é separado, fora do sandbox principal (mesma lógica da Fase 5).
+- **Suporte a sandbox em macOS/Linux na v1.** A interface Rust é simétrica (linux retorna `Err(NotSupported)` com degradação declarada, mesma regra da Etapa 2.A da Fase 5). Implementação Windows é a única da v1.
+- **AppContainer** (a primitiva mais forte de isolamento) é adiada para Fase 8+ (ADR-0031 D6). Razão: quebra rotinas comuns de Python/Node.
+- **Sandboxing de certificate pinning bypass** (filho que ignora `HTTPS_PROXY` e conecta via `socket.socket` raw). Documentado como lacuna no `security-threat-model.md`; defesa via `Windows Defender Application Control` é roadmap de Fase 8+.
+- **HTTP/3 (QUIC)** — o proxy fala TCP+TLS; filhos que tentam QUIC bypassam. Documentado como lacuna.
 
-## Aprofundar antes da Fase 3
+## Trade-offs explícitos (a parte "NÃO protege" do sandbox)
 
-- **Mecanismo de isolamento por tipo de execução**: quando AppContainer vs. Restricted Token vs. Job Object. AppContainer é mais isolado mas quebra alguns runtimes Python; Restricted Token é mais compatível mas isola menos; Job Object é leve e bom para limites de recursos mas não isola filesystem. Decidir com base no tipo de execução (`exec.python` é mais restritivo que `files.read`).
-- **Mecanismo de kill em árvore**: como garantir que subprocessos do subprocesso são encerrados quando o sandbox é destruído (Job Object no Windows resolve; documentar).
-- **Proxy de rede local**: como implementar, onde roda, o que registra.
-- **Estratégia de provisionamento do workspace**: quando criar, quando limpar, como sobreviver a crash do app.
-- **Política de revogação** de acesso externo: o que acontece com arquivos em uso quando o usuário revoga.
-- **Detecção de "tentativa de fuga"**: o que medir (acesso a `C:\Users\<outro>`, leitura de `SAM`, etc.) e o que fazer.
-- **Testes de sandbox em CI**: como reproduzir Windows real no CI runner (a maioria dos runners é Linux); alternativa é um conjunto de testes de integração que não isola de fato mas valida as primitivas.
+A REGRA 1.1 e a honestidade do `SECURITY.md` exigem que o documento diga **o que o sandbox não protege**. O sandbox da Fase 7 é defesa em profundidade contra **ameaças documentadas no threat model**, não garantia absoluta:
 
-## Decisões
+| Cenário | Protege? | Por quê |
+|---|---|---|
+| Filho lê arquivo fora do workspace | **sim** | Jail (Fase 6 Etapa 5.X) + filesystem do OS |
+| Filho cria neto que sobrevive ao `kill -9` do app | **sim** | Job Object (D2 do ADR-0031, D6 do ADR-0036) |
+| Filho herda privilégio de admin | **não** | Restricted Token descarta 6 privilégios, mas **outros** privilégios (SeNetworkLogonRight, SeInteractiveLogonRight etc.) permanecem. Defesa contra elevação requer AppContainer (Fase 8+) ou conta de usuário separada (Fase 8+). |
+| Filho lê credencial em cache de DLL/TLS | **parcialmente** | Env filter zera env (D5 do ADR-0031, ADR-0036 D5), mas a credencial pode estar em (a) estrutura de adapter em memória, (b) TLS handshake cache, (c) `~/.netrc` do usuário. Defesa em profundidade: ferramentas que lidam com credencial não passam pelo sandbox (worker de provider, Fase 2). |
+| Filho conecta direto via `socket.socket(AF_INET, SOCK_STREAM)` raw, ignorando `HTTPS_PROXY` | **não** | Sem firewall no nível de processo (WDAC é Fase 8+). O filho pode chamar `connect()` direto, bypassando o proxy. **Lacuna documentada.** |
+| Filho tenta QUIC | **não** | Proxy é TCP+TLS. QUIC bypassa. **Lacuna documentada.** |
+| Filho exfiltra via DNS | **sim** | `netsh dns set` força DNS via proxy, que valida hostname **antes** de resolver (ADR-0033 D5). |
+| Filho lê `SAM` (Windows Security Account Manager) | **sim** | SeBackup removido (Restricted Token, ADR-0036 D4). |
+| Filho faz `rm -rf /` no host | **não** (dentro do sandbox: sim) | O filho roda sob usuário limitado + Restricted Token, mas `rm -rf` no workdir (que é o workspace) **funciona** (é o diretório do usuário). Defesa: `exec.shell` com `Denylist` (Etapa 6 da Fase 7) proíbe; `exec.python` requer aprovação. |
+| Usuário malicioso bypassa o sandbox | **não** | Sandbox é defesa contra o **filho**, não contra o usuário. Usuário admin pode matar o app, debugar o processo, editar config. **Esperado e documentado.** |
 
-Nenhuma nova. Decisões serão tomadas quando o spec for aprofundado (especificamente: combinação de primitivas por tipo de execução, e o destino do proxy de rede).
+A frase que entra no `security-threat-model.md` §"Sandbox: o que protege e o que NÃO protege" é literal: **"O sandbox da Fase 7 é defesa em profundidade contra as ameaças I1, I2, I3, e a classe 'filho malicioso/invadido' das ameaças STRIDE. Não é sandbox de contêiner (Docker/runc), não é VPN, não é firewall. Lacunas explícitas: bypass de proxy via socket raw, HTTP/3, certificate pinning bypass, privilégios SeNetworkLogonRight. Mitigações estão em roadmap de Fase 8+."**
+
+## Decisões (a aprofundar antes da Etapa 2)
+
+Nenhuma nova. As decisões da Fase 7 Etapa 1 estão nos 6 ADRs (0031, 0032, 0033, 0034, 0035, 0036). Este spec é o **ponto de entrada** para o código da Etapa 2 em diante, e referencia cada ADR pela sigla.
+
+## Etapas da Fase 7 (referência)
+
+| Etapa | Status (em 2026-08-08) | Próxima | Bloqueia | Foco |
+|---|---|---|---|---|
+| Etapa 1 — Planejamento (este PR) | em revisão | Etapa 2 | nenhuma | 6 ADRs + 2 specs novos + 4 specs atualizados + fase-7/README + status + CHANGELOG |
+| Etapa 2 — Primitivas do sandbox | não iniciada | Etapa 3 | nenhuma | `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 4 testes de regressão (com teste de negação) |
+| Etapa 3 — Runtimes embutidos | não iniciada | Etapa 4 | nenhuma | `crates/runtimes/` com Python + Node portáteis, bootstrap idempotente, resolução de caminho |
+| Etapa 4 — `exec.python` / `exec.node` no registro | não iniciada | Etapa 5 | Etapa 2 + Etapa 3 | `FilesExecTool::Python` + `FilesExecTool::Node` com aprovação `OneTurn` + audit + comando exato |
+| Etapa 5 — `files.write` / `files.edit` / `files.list` | não iniciada | Etapa 6 | Etapa 2 | `FilesWriteTool` + `FilesEditTool` + `FilesListTool` com Jail + atomicidade + backup + audit |
+| Etapa 6 — `exec.shell` com allowlist | não iniciada | Etapa 7 | Etapa 2 + Etapa 4 | `TerminalPermission::Allowlist` + `Denylist` + aprovação `OneExecution` |
+| Etapa 7 — Rede do sandbox (proxy) + fechamento | não iniciada | — | Etapa 2 | `crates/security/src/network.rs` + `dns_intercept.rs` + UI de `NetworkAccessLog` + remoção da feature flag `FREDERICO_SANDBOX_V1` |
+
+Regra para todas as etapas de 2 a 7: **pelo menos um teste de negação por etapa** (regra do user, 2026-08-08). Sandbox se prova impedindo, não funcionando.
+
+## Mapa de E2E planejado por etapa
+
+| Etapa | Teste de negação (principal) | Twin determinístico (PR) | Noturno (`#[ignore]`) |
+|---|---|---|---|
+| 2 | `crates/security/tests/tree_kill.rs::child_survives_parent_kill9` | mesmo arquivo, em `cargo test --workspace` | — |
+| 2 | `crates/security/tests/env_isolation.rs::child_env_does_not_contain_parent_secrets` (fecha `I1`) | mesmo arquivo | — |
+| 2 | `crates/security/tests/restricted_token.rs::python_runs_under_restricted_token` | mesmo arquivo | — |
+| 2 | `crates/security/tests/job_object_setup.rs::process_runs_under_memory_limit` | mesmo arquivo | — |
+| 3 | `crates/runtimes/tests/python_bootstrap.rs::python_finds_no_path_to_user_installs` | mesmo arquivo | — |
+| 3 | `crates/runtimes/tests/node_bootstrap.rs::node_finds_no_path_to_user_installs` | mesmo arquivo | — |
+| 4 | `crates/e2e/tests/e2e_exec_python_under_sandbox.rs::child_cannot_write_outside_workspace` | mesmo arquivo | — |
+| 4 | `crates/e2e/tests/e2e_approval_display.rs::approved_command_matches_actual_invocation` | mesmo arquivo | — |
+| 5 | `crates/e2e/tests/e2e_atomic_write.rs::crash_between_write_and_rename_leaves_original_intact` | mesmo arquivo | — |
+| 5 | `crates/e2e/tests/e2e_overwrite_backup.rs::overwrite_creates_backup_with_previous_content` | mesmo arquivo | — |
+| 6 | `crates/e2e/tests/e2e_shell_denylist.rs::rm_rf_is_rejected_by_denylist` | mesmo arquivo | — |
+| 7 | `crates/e2e/tests/e2e_network_proxy.rs::child_request_to_169_254_169_254_is_denied` | mesmo arquivo | — |
+
+A Etapa 1 (este PR) preenche o **plano** no `status.md` (coluna `E2E de cobertura` com `pending` para cada teste, e a Etapa 2 em diante atualiza o plano com `path::fn_name` real quando implementar — gate `check-e2e-gate.ps1` passa a validar consistência).
 
 ## Referências
 
+- [ADR-0031](../decisions/0031-fase-7-isolation-model-windows.md) — modelo de isolamento (3 camadas combinadas, AppContainer adiado)
+- [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) — escopo da Fase 7 vira só execução isolada
+- [ADR-0033](../decisions/0033-sandbox-network-policy.md) — política de rede (deny-by-default, proxy local, log visível)
+- [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) — política de aprovação de escrita/exec
+- [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) — semântica de sobrescrita (atômico, backup, audit)
+- [ADR-0036](../decisions/0036-security-jail-resolver-windows-job-objects.md) — `SecurityJailResolver` com Job Objects (carry-over da Fase de Ligação)
+- [`security-threat-model.md`](./security-threat-model.md) — modelo STRIDE, I1, I2, I3, e a parte "NÃO protege" do sandbox
+- [`process-architecture.md`](./process-architecture.md) — como o sandbox se relaciona com workers sidecar (Fase 5)
+- [`tool-permission-model.md`](./tool-permission-model.md) — `PermissionSet` da Fase 3 Etapa 3 (ganha campo `sandbox: SandboxLevel` na Etapa 2)
+- [`docs/architecture/runtimes-architecture.md`](./runtimes-architecture.md) — Python + Node portáteis (Etapa 3)
+- [`docs/architecture/exec-tools-specification.md`](./exec-tools-specification.md) — `exec.python`, `exec.node`, `exec.shell` (Etapa 4, 6)
+- [`docs/architecture/development-roadmap.md`](./development-roadmap.md) — Fase 7 com escopo novo, Fase 8 absorve Git/GitHub
 - `PROMPT MESTRE` §22 (execução local sem Docker), §22.5 (segredos e rede)
-- [`security-threat-model.md`](./security-threat-model.md) — I1 (env leak), I3 (path traversal), D1 (worker travado), E1 (escalada de privilégio)
-- [`process-architecture.md`](./process-architecture.md) — como o sandbox se relaciona com workers
-- `docs/development-roadmap.md` (Fase 3)
+- [`docs/releases/fase-7/README.md`](../releases/fase-7/README.md) — narrativa de processo da fase
