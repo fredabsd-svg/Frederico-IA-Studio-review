@@ -10,29 +10,23 @@
 //! para o spec completo e [ADR-0034](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0034-fase-7-write-exec-approval-policy.md)
 //! para a política de aprovação.
 //!
-//! ## v1 simplificações
+//! ## Comportamento (Etapa 4 da Fase 7)
 //!
-//! - **Sem rede** (Etapa 7 da Fase 7 implementa o proxy local).
-//!   `exec.python`/`exec.node` rodam sob sandbox, mas `pip install`
-//!   falha (degradação declarada). Banner persistente na UI
-//!   durante Etapa 4-6.
-//! - **Sem cancelamento cascateado per-invocation** (Etapa 4 da
-//!   Fase 7 menciona per-spawn Job Object; a v1 só tem o root
-//!   Job do resolver — `KILL_ON_JOB_CLOSE` dispara só no shutdown
-//!   do app). Cancelamento do `Run` (botão "Parar" do user) faz
-//!   `TerminateProcess` no PID, mas netos sobrevivem. Mesmo
-//!   problema da Fase 5 Etapa 2.A.
-//! - **Sem UI de aprovação** (Etapa 5+). Backend retorna
-//!   `ToolError::PermissionDenied` se `PermissionSet::python`
-//!   é `None`; caso contrário, executa sem modal. A Etapa 5
-//!   da Fase 7 adiciona o `ApprovalModal` (frontend React).
-//! - **Sem `exec_patterns.rs` regex** (auto-approval por
-//!   "code não casa padrão perigoso"). A Etapa 5+ adiciona
-//!   `os.system`, `subprocess.run`, etc. e a aprovação
-//!   automática.
-//! - **Audit sink mínimo**: o trait `AuditSink` do
-//!   `frederico-tool-registry` é usado. Implementação
-//!   completa (`DbAuditSink`) vem com a Etapa 5.
+//! - **Wall-clock enforcement real** — `wait_with_timeout` dentro
+//!   do `collect_output`. O `SandboxConfig.wall_clock` deixou
+//!   de ser "apenas informativo".
+//! - **Cancelamento cascateado per-invocation** — cada `spawn`
+//!   cria um Job Object novo. Drop fecha o handle e mata a
+//!   árvore (filho + netos + bisnetos).
+//! - **Aprovação obrigatória** — `requires_user_approval(true)`
+//!   no manifesto. O `validate_tool_call` Passo 9 é o gate; sem
+//!   `ApprovalDecision` aprovada, retorna `ApprovalRequired`.
+//! - **Sem rede** — `pip install` falha (degradação declarada).
+//!   Etapa 7 da Fase 7 implementa o proxy local.
+//! - **Sem `exec_patterns.rs`** — auto-approval por code sem
+//!   padrão perigoso é Etapa 5+ (só pro `exec.shell`).
+//! - **Audit sink via trait `AuditSink`** — `NoopAuditSink` em
+//!   v1; `DbAuditSink` é trabalho da Etapa 5+ da Fase 3.
 
 #![allow(missing_docs)]
 
@@ -55,10 +49,41 @@ use thiserror::Error;
 
 use crate::audit::AuditSink;
 use crate::manifest::ToolManifest;
-use crate::tools::ToolContext;
+use crate::tools::{Tool, ToolContext};
 
-/// Re-export do `FilesExecTool` trait para os módulos
-/// `python.rs` e `node.rs` (que são privados ao crate).
+/// Constrói o catálogo default de `exec.*` tools (`exec.python` +
+/// `exec.node`) com as dependências compartilhadas. Retorna
+/// `Vec<Arc<dyn Tool>>` pronto pra `build_tool_registry` em
+/// `frederico-app`.
+///
+/// **Por que uma função pública (não `FilesExecToolBase::new`):**
+/// o `FilesExecToolBase` é `pub(crate)` (detalhe de
+/// implementação). Expor `build_default_exec_tools` esconde esse
+/// detalhe e impede que callers construam `FilesExecToolBase`
+/// em configs inconsistentes (ex.: resolver sem runtimes).
+///
+/// **Fail-soft na plataforma:** o `Arc<SecurityJailResolver>`
+/// pode ser construído em Linux (retorna `platform_supported=false`).
+/// Os tools são registrados mesmo assim — o `validate_tool_call`
+/// detecta a indisponibilidade do runtime e o `RunExecutor`
+/// recusa a chamada (degradação declarada, mesma regra do
+/// `document-worker` da Etapa 2.A).
+#[must_use]
+pub fn build_default_exec_tools(
+    resolver: Arc<SecurityJailResolver>,
+    runtimes: Arc<RuntimeRegistry>,
+    audit: Arc<dyn AuditSink>,
+) -> Vec<Arc<dyn Tool>> {
+    let base = FilesExecToolBase::new(resolver, runtimes, audit);
+    vec![
+        Arc::new(FilesExecPythonTool::new(base.clone())),
+        Arc::new(FilesExecNodeTool::new(base)),
+    ]
+}
+
+/// Trait `FilesExecTool` — método compartilhado por Python e
+/// Node. Privado ao crate (os tools concretos são expostos
+/// como `Arc<dyn Tool>` via `build_default_exec_tools`).
 pub(crate) trait FilesExecTool: Send + Sync {
     /// ID canônico da ferramenta (`exec.python`, `exec.node`).
     fn tool_id(&self) -> ToolId;
@@ -68,10 +93,7 @@ pub(crate) trait FilesExecTool: Send + Sync {
 
     /// Resolve o binário (Python, Node) via `RuntimeRegistry`.
     /// Retorna o ID do runtime (ex.: `python-3.12.4`).
-    fn resolve_runtime_id<'a>(
-        &self,
-        args: &'a Value,
-    ) -> Result<&'a str, ExecError>;
+    fn resolve_runtime_id<'a>(&self, args: &'a Value) -> Result<&'a str, ExecError>;
 
     /// Monta os args do `CreateProcess` a partir dos args da
     /// tool_call. Implementação diferente por tool:
@@ -82,7 +104,7 @@ pub(crate) trait FilesExecTool: Send + Sync {
     /// Default approval scope (ADR-0034 D2). v1: Etapa 4 não tem
     /// UI, retorna `OneExecution` por default (conservador; UI
     /// da Etapa 5 refina).
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Etapa 5+ usa quando a UI plugar.
     fn default_approval_scope(&self) -> ApprovalScope;
 }
 
@@ -120,7 +142,6 @@ impl FilesExecToolBase {
     /// Construtor padrão. Wall-clock default = 60s, output cap
     /// = 10 MB (const em `output.rs`).
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn new(
         resolver: Arc<SecurityJailResolver>,
         runtimes: Arc<RuntimeRegistry>,

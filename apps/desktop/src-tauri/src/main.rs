@@ -485,6 +485,162 @@ fn main() {
             let permission_loader =
                 std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
 
+            // `SecurityJailResolver` (Etapa 2 da Fase 7,
+            // ADR-0031 + ADR-0036). Orquestrador do sandbox
+            // Windows. Em Linux, retorna `platform_supported =
+            // false` e o `spawn` retorna `Err(Unsupported)`
+            // (degradação declarada). Construtor é **sync**
+            // (não tem I/O), pode rodar direto na `setup` da
+            // casca.
+            let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
+                Arc::new(
+                    frederico_security::jail::SecurityJailResolver::new(
+                        frederico_security::jail::SecurityJailConfig::secure_default(),
+                    )
+                    .expect("SecurityJailResolver::new"),
+                );
+
+            // `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
+            // Python 3.12.4 + Node 20.16.0. Construtor sync
+            // (cria `install_root` se não existir). O
+            // `bootstrap_all` (download + extract + validate)
+            // é **async** — rodamos em background task pra
+            // não bloquear a abertura do app (pode levar
+            // minutos em primeira execução).
+            //
+            // **Fail-soft:** se o bootstrap falhar (sem rede,
+            // disco cheio, etc.), as tools `exec.python` /
+            // `exec.node` são registradas mesmo assim (o
+            // modelo as vê no schema), mas `execute` retorna
+            // erro `"runtime 'python-3.12.4' nao registrado"`
+            // — degradação declarada, não substituição
+            // silenciosa.
+            let runtime_registry = Arc::new(
+                frederico_runtimes::RuntimeRegistry::new(
+                    frederico_runtimes::RuntimeConfig::secure_default(),
+                )
+                .expect("RuntimeRegistry::new"),
+            );
+            // Spawn do bootstrap em background. A task é
+            // fire-and-forget; o log mostra progresso
+            // (bootstrapped vs cached vs failed). O
+            // `tokio::spawn` no `tauri::async_runtime` usa
+            // o runtime do Tauri (criado no `Builder`).
+            let runtimes_for_bootstrap = runtime_registry.clone();
+            tauri::async_runtime::spawn(async move {
+                match runtimes_for_bootstrap.bootstrap_all().await {
+                    Ok(report) => {
+                        tracing::info!(
+                            python_3_12_4 = ?report.cached.contains(&frederico_runtimes::RuntimeId::new("python-3.12.4")),
+                            node_20_16_0 = ?report.cached.contains(&frederico_runtimes::RuntimeId::new("node-20.16.0")),
+                            bootstrapped_count = report.bootstrapped.len(),
+                            cached_count = report.cached.len(),
+                            failed_count = report.failed.len(),
+                            duration_ms = report.total_duration.as_millis() as u64,
+                            "runtimes: bootstrap_all completou"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "runtimes: bootstrap_all falhou (degracao declarada; \
+                             exec.python/exec.node vao falhar ate reiniciar)"
+                        );
+                    }
+                }
+            });
+
+            // `AuditSink` (Etapa 1 da Fase 3, Passo 10 do
+            // `validate_tool_call`). v1 da Etapa 4 da Fase 7
+            // usa `NoopAuditSink` (a implementação concreta
+            // `DbAuditSink` que grava em `tool_audit` é
+            // trabalho da Etapa 5+ — Passo 10 do validador é
+            // o lugar natural, e o `Tool::execute` não tem
+            // `run_id`).
+            let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
+                Arc::new(frederico_tool_registry::NoopAuditSink);
+
+            let exec_deps = frederico_app::composition::ExecDeps {
+                resolver: security_jail_resolver.clone(),
+                runtimes: runtime_registry.clone(),
+                audit: audit_sink,
+            };
+
+            // Tools concretas. A Etapa 6 (UI de configuração)
+            // permite ligar/desligar; aqui vem do
+            // `build_default_tools`, que retorna o **mínimo
+            // comum** (1 tool: `FilesReadTool`) quando ambos
+            // `invoker` e `exec_deps` são `None`, e vai
+            // bumpando os subsistemas atômicos. O
+            // `ToolRegistry` é construído a partir dessas
+            // tools concretas em
+            // `frederico_app::build_tool_registry` — não há
+            // mais `ToolRegistry::new()` solto.
+            //
+            // **Bump atômico capability + permission** (Etapa
+            // 4 da Fase 7 + ADR-0020 §3 D3, ADR-0024 §D2):
+            // mesmas `Option`s passadas pra
+            // `build_default_tools`, `build_default_allowed_for_run`
+            // e pro ternário do `permission_set` — quando
+            // `Some`, o subsistema aparece no `ToolRegistry`
+            // + na allowlist + com a permissão bumpada;
+            // quando `None`, em nenhum dos três lugares. A
+            // simetria é o que garante que o modelo **nunca**
+            // vê um tool que não consegue invocar (degradação
+            // declarada, não substituição silenciosa).
+            let tools = frederico_app::composition::build_default_tools(
+                document_worker_invoker.clone(),
+                Some(exec_deps.clone()),
+            );
+            let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
+                document_worker_invoker.clone(),
+                Some(&exec_deps),
+            );
+            let permission_set = if document_worker_invoker.is_some() {
+                frederico_app::composition::initial_permission_set_for_capable_launcher()
+            } else {
+                frederico_app::composition::initial_permission_set()
+            };
+
+            // `MemoryExtractor` (Fase 4, Etapa 5; Fase de Ligação
+            // Etapa 3 — bump de default). Constrói via
+            // `frederico_app::composition::build_memory_extractor`
+            // (mesma função que os E2E consomem). Se a key do
+            // OpenRouter está disponível (DPAPI ou env var), o
+            // `LlmMemoryClassifier` usa `OpenRouterCompletionProvider`
+            // (gpt-4o-mini); senão, cai pra `NoopCompletionProvider`
+            // com warning logado (degradação declarada). O
+            // extractor roda em background via `tokio::spawn` e
+            // processa jobs do canal mpsc (256, sem
+            // `tokio::time::interval` — ADR-0014 §1).
+            //
+            // Custo por run concluído: 1 chamada LLM (cota
+            // 5/min default, regra do ADR-0012 §2).
+            let memory_extractor_handle = tauri::async_runtime::block_on(async {
+                let cfg = frederico_app::composition::MemoryConfig::default();
+                let key = lookup_openrouter_key(&credentials).await;
+                frederico_app::composition::build_memory_extractor(&db, &cfg, key)
+            });
+
+            // SpecialistRegistry (Etapa 3 PR 1 da Fase 6, ADR-0030)
+            // + PermissionLoader (Etapa 3 PR 2). O
+            // `ChatOrchestrator` consome ambos pra montar o
+            // `SubagentRunner` interno (Etapa 4 PR 2,
+            // ADR-0027). Reusamos o `specialist_bundle` que o
+            // Tauri command `list_specialists` já consome
+            // (criado na Etapa 3 — mesma `Arc<Catalog>` que o
+            // orchestrator).
+            let specialist_registry = specialist_bundle.registry.clone();
+            // `PermissionLoader::new()` é stateless do ponto
+            // de vista do caller — o cache é em memória,
+            // chaveado por `(path, content_hash)`. A casca
+            // guarda a mesma instância no `AppState` e o
+            // `ChatOrchestrator` (e o `SubagentRunner`)
+            // consomem o mesmo loader (sem re-parse
+            // redundante).
+            let permission_loader =
+                std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
+
             // `MultimodelOrchestrator` (Etapa 5 PR 2 da Fase 6,
             // ADR-0028). Mesmo factory que os E2E da raiz
             // chamam (`crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs`).

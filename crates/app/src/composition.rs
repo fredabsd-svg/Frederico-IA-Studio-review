@@ -517,44 +517,77 @@ pub fn build_default_permission_set(
     loader.load_effective_permission_set(user, project, assistant)
 }
 
+/// Dependências do subsistema `exec.*` (Etapa 4 da Fase 7).
+/// Passadas pra [`build_default_tools`] quando os runtimes
+/// portáteis (Python + Node) e o sandbox estão disponíveis.
+///
+/// **Por que um struct em vez de args posicionais:** a
+/// `build_default_tools` já tem 2 níveis de opcionalidade
+/// (`invoker` + `exec_deps`); args posicionais tornariam a
+/// assinatura ilegível. O struct agrupa os 3 deps do
+/// subsistema exec e documenta a relação entre eles.
+#[derive(Clone)]
+pub struct ExecDeps {
+    /// `SecurityJailResolver` (Etapa 2 da Fase 7) — orquestrador
+    /// do sandbox. Em Windows, cria o Job Object per-invocation
+    /// + aplica o env filter. Em Linux, retorna
+    /// `SpawnError::Unsupported` (degradação declarada).
+    pub resolver: Arc<frederico_security::jail::SecurityJailResolver>,
+    /// `RuntimeRegistry` (Etapa 3 da Fase 7) — hard-coda
+    /// Python 3.12.4 + Node 20.16.0. O `bootstrap_all` é
+    /// responsabilidade da casca (background task, com timeout).
+    pub runtimes: Arc<frederico_runtimes::RuntimeRegistry>,
+    /// Audit sink (Etapa 1 da Fase 3). v1 da Etapa 4 usa
+    /// `NoopAuditSink`; o `DbAuditSink` (escreve em `tool_audit`)
+    /// entra na Etapa 5+ (a Etapa 5 da Fase 3 fecha o Passo 10
+    /// do `validate_tool_call`, que é o lugar natural pra gravar
+    /// — o `Tool::execute` em si não tem `run_id`).
+    pub audit: Arc<dyn frederico_tool_registry::AuditSink>,
+}
+
 /// Constrói o catálogo default de tools concretas. Retorna o
 /// `Vec<Arc<dyn Tool>>` que a casca Tauri e o modo servidor
 /// §5.5 vão passar pro `build_chat_orchestrator`.
 ///
-/// ## Etapa 2.A — degradação declarada (ADR-0023 §D2)
+/// ## Composição por subsistema
 ///
-/// Se o `runtime_for_documents` é `None` (runtime do
-/// `document-worker` indisponível), o `Vec` contém **só**
-/// `FilesReadTool` — `DocsGenerateTool` e `DocsInspectTool`
-/// **não** são adicionadas. Consequência:
+/// - `files.read` (in-process, sem deps) — sempre presente.
+/// - `docs.generate` + `docs.inspect` (worker sidecar) — se
+///   `invoker` é `Some` (Etapa 2.A da fase-ligação, ADR-0023).
+/// - `exec.python` + `exec.node` (Etapa 4 da Fase 7) — se
+///   `exec_deps` é `Some` (sandbox + runtimes disponíveis).
 ///
-/// - `build_tool_registry(&tools)` não tem manifestos dessas
-///   2 tools — o **modelo não as enxerga** no schema.
-/// - `allowed_for_run` (veja [`build_default_allowed_for_run`])
-///   não tem `ToolId::new("docs.generate")` nem
-///   `ToolId::new("docs.inspect")` — o `RunExecutor` rejeita
-///   invocação com `ToolNotAllowed` se o modelo tentar
-///   (bypass impossível).
+/// ## Degradação declarada (regra do PR #25 / memória cross-project)
 ///
-/// Se o `runtime_for_documents` é `Some(location)`, o `Vec`
-/// contém `FilesReadTool` + `DocsGenerateTool` +
-/// `DocsInspectTool`. O `documents` permission
-/// correspondente é `DocumentPermission::Full` (bump atômico
-/// via [`initial_permission_set_for_capable_launcher`]).
+/// Cada subsistema é **fail-soft**: se a dep não está
+/// disponível, as tools daquele subsistema **não** entram no
+/// `Vec`. Consequência: o modelo não as vê no schema (não
+/// pode tentar invocar algo que não existe); o `RunExecutor`
+/// rejeita com `ToolNotAllowed` se aparecer no tool_call
+/// (defesa em profundidade). O log da casca mostra qual
+/// subsistema está indisponível — nunca substituição silenciosa.
 ///
-/// **Bump atômico capability + permission**: a casca **deve**
-/// usar [`initial_permission_set_for_capable_launcher`] quando
-/// o runtime está disponível, e [`initial_permission_set`]
-/// (com `documents: None`) quando não está. As duas
-/// funções existem pra deixar essa decisão explícita no
-/// código da casca.
+/// ## Bump atômico capability + permission
+///
+/// - `invoker.is_some()` → `initial_permission_set_for_capable_launcher`
+///   (bumpa `documents: None → Full`).
+/// - `exec_deps.is_some()` → `initial_permission_set_for_exec`
+///   (bumpa `runtime: None → ReadWrite` no `PermissionSet`,
+///   Etapa 4 da Fase 7).
+/// - Ambos `Some` → função que combina os dois bumps.
+///
+/// A casca é quem passa o `PermissionSet` correto (regra de
+/// consistência: a mesma `Option<...>` vai pra
+/// `build_default_tools` e `build_default_allowed_for_run`).
 #[must_use]
 pub fn build_default_tools(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
+    exec_deps: Option<ExecDeps>,
 ) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> =
         vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
 
+    // --- Subsistema documentos (Etapa 2.A) ------------------------
     if let Some(invoker) = invoker {
         // Runtime disponível. Constrói o `KitRegistry` com os
         // 3 kits (WordPro + ExcelPro + PDFPro, todos
@@ -612,6 +645,25 @@ pub fn build_default_tools(
         )));
     }
 
+    // --- Subsistema exec (Etapa 4 da Fase 7) ---------------------
+    //
+    // Bump atômico: se `exec_deps` é `Some`, o `Vec` recebe
+    // `exec.python` + `exec.node` E a allowlist do
+    // `build_default_allowed_for_run` inclui os 2 `ToolId`s.
+    // A casca chama ambas as funções com a **mesma** `Option`
+    // (mesma regra do `invoker`).
+    if let Some(exec) = exec_deps {
+        // 3 deps compartilhados entre Python e Node via
+        // `FilesExecToolBase`. Constrói via
+        // `build_default_exec_tools` que esconde o detalhe.
+        let exec_tools = frederico_tool_registry::exec::build_default_exec_tools(
+            exec.resolver,
+            exec.runtimes,
+            exec.audit,
+        );
+        tools.extend(exec_tools);
+    }
+
     tools
 }
 
@@ -619,23 +671,45 @@ pub fn build_default_tools(
 /// `Vec<ToolId>` que a casca Tauri e o modo servidor §5.5
 /// vão passar pro `build_chat_orchestrator`.
 ///
-/// Mesma regra do [`build_default_tools`]: se o invoker
-/// está disponível, **inclui** `ToolId::new("docs.generate")` e
-/// `ToolId::new("docs.inspect")` na allowlist (o `RunExecutor`
-/// aceita invocação). Se não está, **não inclui** (o
-/// `RunExecutor` rejeita invocação com `ToolNotAllowed`,
-/// mesmo que o modelo tente via prompt injection).
+/// Mesma regra do [`build_default_tools`]:
+///
+/// - `invoker.is_some()` → inclui `docs.generate` + `docs.inspect`
+///   na allowlist (o `RunExecutor` aceita invocação).
+/// - `exec_deps.is_some()` → inclui `exec.python` + `exec.node`
+///   na allowlist (Etapa 4 da Fase 7).
+/// - Qualquer `None` → **não** inclui o `ToolId` correspondente
+///   (o `RunExecutor` rejeita invocação com `ToolNotAllowed`,
+///   mesmo que o modelo tente via prompt injection — defesa
+///   em profundidade).
 ///
 /// `files.read` é sempre incluído (Etapa 1).
+///
+/// **Bump atômico:** a casca **deve** passar a **mesma**
+/// `Option` que passou pra `build_default_tools` (regra de
+/// consistência: `invoker` Some → `documents: Full` no
+/// `PermissionSet`; `exec_deps` Some → `runtime: ReadWrite`
+/// no `PermissionSet` — bumps atômicos).
 #[must_use]
 pub fn build_default_allowed_for_run(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
+    exec_deps: Option<&ExecDeps>,
 ) -> Vec<frederico_core::ToolId> {
     let mut allowed = vec![frederico_core::ToolId::new("files.read")];
 
     if invoker.is_some() {
         allowed.push(frederico_core::ToolId::new("docs.generate"));
         allowed.push(frederico_core::ToolId::new("docs.inspect"));
+    }
+
+    if exec_deps.is_some() {
+        // Etapa 4 da Fase 7: o `PermissionSet::runtime` deve
+        // ser `ReadWrite` quando o subsistema exec está
+        // disponível. A casca cuida do bump atômico via
+        // `initial_permission_set_for_exec` (especificado
+        // separadamente; ainda não implementado no v1 da
+        // Etapa 4 — o teste E2E cobre o caminho).
+        allowed.push(frederico_core::ToolId::new("exec.python"));
+        allowed.push(frederico_core::ToolId::new("exec.node"));
     }
 
     allowed
@@ -886,8 +960,10 @@ mod tests {
         // Runtime indisponível → `Vec` contém só `FilesReadTool`.
         // ADR-0023 §D2: degradação declarada, não substituição
         // silenciosa. `docs.generate` e `docs.inspect` não
-        // entram no `Vec` — o modelo não as vê.
-        let tools = build_default_tools(None);
+        // entram no `Vec` — o modelo não as vê. Mesma regra
+        // vale pro subsistema exec (Etapa 4): sem `exec_deps`,
+        // `exec.python` e `exec.node` não entram.
+        let tools = build_default_tools(None, None);
         assert_eq!(tools.len(), 1);
         let manifest = tools[0].manifest();
         assert_eq!(manifest.id, frederico_core::ToolId::new("files.read"));
@@ -909,7 +985,7 @@ mod tests {
         // o trait. A integração com o `DocumentWorkerLauncher`
         // lazy é responsabilidade da casca Tauri.
         let invoker = fake_invoker().await;
-        let tools = build_default_tools(Some(invoker));
+        let tools = build_default_tools(Some(invoker), None);
         assert_eq!(
             tools.len(),
             3,
@@ -923,12 +999,64 @@ mod tests {
     }
 
     #[test]
+    fn build_default_tools_with_exec_deps_returns_files_read_plus_exec() {
+        // Etapa 4 da Fase 7: com `exec_deps` Some, o `Vec`
+        // contém `FilesReadTool` + `exec.python` + `exec.node`
+        // (3 tools, sem docs). O `exec_deps` é construído via
+        // `RuntimeConfig` apontando pra um `tempfile::TempDir`
+        // (instalação isolada). O bootstrap **não** é chamado
+        // aqui — o test verifica apenas o shape do `Vec`
+        // retornado.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let runtime_cfg = frederico_runtimes::RuntimeConfig {
+            install_root: tmp.path().to_path_buf(),
+            keep_n_versions: 1,
+            allow_download: false, // test não baixa nada
+            mirror_url: None,
+            download_timeout: std::time::Duration::from_secs(1),
+        };
+        let runtimes = Arc::new(
+            frederico_runtimes::RuntimeRegistry::new(runtime_cfg)
+                .expect("RuntimeRegistry::new em tempdir"),
+        );
+        let resolver = frederico_security::jail::SecurityJailResolver::new(
+            frederico_security::jail::SecurityJailConfig::secure_default(),
+        )
+        .expect("SecurityJailResolver::new");
+        // `new()` já retorna `Arc<SecurityJailResolver>` —
+        // não envolver em outro `Arc::new` (causaria
+        // `Arc<Arc<...>>` e quebraria a invariante de
+        // ownership do `ExecDeps`).
+        let audit: Arc<dyn frederico_tool_registry::AuditSink> =
+            Arc::new(frederico_tool_registry::NoopAuditSink);
+        let exec_deps = ExecDeps {
+            resolver,
+            runtimes,
+            audit,
+        };
+
+        let tools = build_default_tools(None, Some(exec_deps));
+        assert_eq!(
+            tools.len(),
+            3,
+            "Esperado 3 tools: files.read + exec.python + exec.node"
+        );
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("exec.python")));
+        assert!(ids.contains(&frederico_core::ToolId::new("exec.node")));
+        // Sem invoker, docs.generate e docs.inspect NÃO aparecem.
+        assert!(!ids.contains(&frederico_core::ToolId::new("docs.generate")));
+        assert!(!ids.contains(&frederico_core::ToolId::new("docs.inspect")));
+    }
+
+    #[test]
     fn build_default_allowed_for_run_without_runtime_excludes_documents() {
-        // Sem runtime, allowlist contém só `files.read` —
-        // o `RunExecutor` rejeita invocação de
-        // `docs.generate`/`docs.inspect` mesmo se o modelo
-        // tentar.
-        let allowed = build_default_allowed_for_run(None);
+        // Sem runtime e sem exec_deps, allowlist contém só
+        // `files.read` — o `RunExecutor` rejeita invocação
+        // de `docs.*` e `exec.*` mesmo se o modelo tentar.
+        let allowed = build_default_allowed_for_run(None, None);
         assert_eq!(allowed, vec![frederico_core::ToolId::new("files.read")]);
     }
 
@@ -942,7 +1070,7 @@ mod tests {
         // 2 `ToolId`s aparecem em ambos; quando `None`, em
         // nenhum. A casca Tauri é quem garante a simetria.
         let invoker = fake_invoker().await;
-        let allowed = build_default_allowed_for_run(Some(invoker));
+        let allowed = build_default_allowed_for_run(Some(invoker), None);
         assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));

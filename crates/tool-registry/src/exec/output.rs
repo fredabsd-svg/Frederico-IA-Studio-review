@@ -2,9 +2,24 @@
 //!
 //! Coleta stdout + stderr em chunks de 64 KB com teto total
 //! de 10 MB por invocação (constante). Excedeu → trunca com
-//! `truncated: true` no output. A Etapa 4 implementa a versão
-//! mínima via `tokio::process::Child::wait`; a Etapa 5 da Fase 7
-//! pode estender para streaming.
+//! `truncated: true` no output. **Etapa 4 da Fase 7**: o
+//! `collect_output` consome `&mut SandboxedProcess` (não
+//! `Child` consumido). Isso é o que permite:
+//!
+//! 1. **Wall-clock real** — `wait_with_timeout(wall_clock)`
+//!    é chamado **dentro** do `tokio::join!` junto com a
+//!    leitura dos streams. Se o processo não sair em
+//!    `wall_clock`, `wait_with_timeout` retorna
+//!    `TimedOut` → `start_kill` no child + drop do
+//!    `SandboxedProcess` cascateia `KILL_ON_JOB_CLOSE` na
+//!    árvore (mata netos). A v1 da Etapa 2 só checava
+//!    `elapsed > wall_clock` **depois** de stdout/stderr
+//!    fecharem — defesa fraca (se o processo segura stdout
+//!    aberto, o wall-clock nunca dispara).
+//! 2. **Cancelamento cascateado** — se o caller drop o
+//!    `SandboxedProcess` (cancelamento do Run), o Job handle
+//!    fecha imediatamente, independente do estado do
+//!    `collect_output`.
 //!
 //! Ver [`docs/architecture/exec-tools-specification.md`](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/architecture/exec-tools-specification.md)
 //! §"Output collection e limites".
@@ -12,7 +27,8 @@
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
-use tokio::process::Child;
+
+use frederico_security::jail::SandboxedProcess;
 
 /// Teto total de output (stdout + stderr somados) por invocação.
 /// 10 MB é o limite do spec §"Output collection e limites".
@@ -35,46 +51,71 @@ pub(crate) struct RawOutput {
     pub duration_ms: u64,
 }
 
-/// Coleta stdout + stderr + exit code do `Child` (depois de
-/// `SecurityJailResolver::spawn().into_child()`). Aplica o teto
-/// de 10 MB (truncando com `truncated: true` no output).
+/// Coleta stdout + stderr + exit code de um [`SandboxedProcess`]
+/// vivo. Aplica o teto de 10 MB (truncando com `truncated: true`
+/// no output) e o wall-clock (mata o processo se exceder).
 ///
-/// **v1 simplificação**: lê em chunks de `OUTPUT_CHUNK_SIZE` até
-/// o processo fechar stdout/stderr. A Etapa 5 pode adicionar
-/// streaming parcial (modelo vê output durante execução).
+/// **Por que `&mut SandboxedProcess` (e não `Child` consumido):**
+/// o `collect_output` precisa:
+///
+/// 1. Tomar stdout/stderr via `sandboxed.stdout()` / `stderr()`.
+/// 2. Chamar `sandboxed.wait_with_timeout(wall_clock)` **dentro**
+///    do `tokio::join!` junto com a leitura dos streams — wall-clock
+///    real (não "apenas informativo" como na v1 da Etapa 2).
+///
+/// Se o `SandboxedProcess` fosse consumido (estilo `into_child`),
+/// o `Drop` rodaria no momento do consumo e fecharia o Job
+/// handle — `KILL_ON_JOB_CLOSE` dispararia prematuramente,
+/// deixando o `Child` órfão (fora do Job) e quebrando o
+/// tree-kill. Por isso a v2 da Etapa 4 toma stdout/stderr via
+/// `Option<ChildStdout>` e mantém o `SandboxedProcess` vivo até
+/// o `Drop` final.
+///
+/// **Comportamento em wall-clock excedido:** `wait_with_timeout`
+/// retorna `Err(TimedOut)` (já chamou `start_kill` no child).
+/// O `SandboxedProcess` continua vivo nesta função — quando o
+/// caller dropa (depois do `Err`), o Job handle fecha e mata
+/// netos via `KILL_ON_JOB_CLOSE`. A função retorna `Err` com
+/// mensagem `"wall-clock excedido (>{wall_clock:?})"`.
+///
+/// **Comportamento em exit normal:** os streams podem saturar
+/// (atingir `MAX_OUTPUT_BYTES`) e fechar antes do `wait`. O
+/// `truncated: true` sinaliza isso; o resto do output (se
+/// houver) está perdido — teto é teto.
 pub(crate) async fn collect_output(
-    mut child: Child,
+    sandboxed: &mut SandboxedProcess,
     wall_clock: std::time::Duration,
 ) -> Result<RawOutput, String> {
     let start = std::time::Instant::now();
 
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    // Toma as handles ANTES do join (depois de tomar, o
+    // SandboxedProcess só carrega child + job — o `wait_with_timeout`
+    // consegue rodar concorrentemente com as leituras).
+    let stdout = sandboxed.stdout().ok_or_else(|| {
+        "stdout nao piped (SecurityJailResolver::spawn deveria ter feito Stdio::piped)".to_string()
+    })?;
+    let stderr = sandboxed
+        .stderr()
+        .ok_or_else(|| "stderr nao piped (mesma razão de stdout)".to_string())?;
 
-    let (stdout_bytes, stderr_bytes) = tokio::join!(
+    // Concorrência: 3 futures. O wait_with_timeout é o gate —
+    // em timeout, ele já fez start_kill no child. O caller
+    // dropa o SandboxedProcess depois → Job fecha → KILL_ON_JOB_CLOSE.
+    let (stdout_bytes, stderr_bytes, wait_res) = tokio::join!(
         read_stream_to_cap(stdout, MAX_OUTPUT_BYTES),
         read_stream_to_cap(stderr, MAX_OUTPUT_BYTES),
+        sandboxed.wait_with_timeout(wall_clock),
     );
 
-    // Wall-clock check (defesa contra loop infinito).
-    let elapsed = start.elapsed();
-    if elapsed > wall_clock {
-        // Mata o processo (defesa em profundidade; o `KILL_ON_JOB_CLOSE`
-        // também fecha o app, mas queremos ser explícitos).
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        return Err(format!(
-            "wall-clock excedido ({}s > {}s)",
-            elapsed.as_secs(),
-            wall_clock.as_secs()
-        ));
+    // Wall-clock excedido → erro (SandboxedProcess ainda vivo;
+    // caller dropará → Job handle fecha → netos morrem).
+    if let Err(ref e) = wait_res {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            return Err(format!("wall-clock excedido (>{wall_clock:?}): {e}"));
+        }
     }
 
-    // Espera exit code.
-    let exit_status = child
-        .wait()
-        .await
-        .map_err(|e| format!("wait falhou: {e}"))?;
+    let exit_status = wait_res.map_err(|e| format!("wait falhou: {e}"))?;
     let exit_code = exit_status.code().unwrap_or(-1);
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -84,8 +125,7 @@ pub(crate) async fn collect_output(
     Ok(RawOutput {
         bytes_stdout: stdout_bytes.len(),
         bytes_stderr: stderr_bytes.len(),
-        truncated: stdout_bytes.len() >= MAX_OUTPUT_BYTES
-            || stderr_bytes.len() >= MAX_OUTPUT_BYTES,
+        truncated: stdout_bytes.len() >= MAX_OUTPUT_BYTES || stderr_bytes.len() >= MAX_OUTPUT_BYTES,
         stdout: stdout_str,
         stderr: stderr_str,
         exit_code,

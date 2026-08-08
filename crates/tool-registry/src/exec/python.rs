@@ -4,17 +4,24 @@
 //! Ver spec `docs/architecture/exec-tools-specification.md`
 //! §"`FilesExecPythonTool`".
 //!
-//! ## v1 simplificações
+//! ## Comportamento (Etapa 4 da Fase 7)
 //!
-//! - **Sem wall-clock enforcement no v1** (campo existe na
-//!   `SandboxConfig` mas a Etapa 2 não consome; o `collect_output`
-//!   tem a checagem mas é best-effort).
-//! - **Sem cancelamento cascateado per-invocation** (mesma
-//!   limitação da Etapa 2: root Job compartilhado).
-//! - **Sem `exec_patterns.rs`** (auto-approval por code sem
-//!   padrão perigoso) — Etapa 5+.
-//! - **Audit mínimo**: 1 entrada por invocação, sem `kind`/`
-//!   `runtime`/campos extras (o `AuditEntry` da Fase 3 não tem).
+//! - **Wall-clock enforcement real** — `wait_with_timeout`
+//!   dentro do `collect_output` (concorrente com leitura dos
+//!   streams). Estoura → kill do child + drop do SandboxedProcess
+//!   cascateia `KILL_ON_JOB_CLOSE` na árvore.
+//! - **Cancelamento cascateado per-invocation** — cada `spawn`
+//!   cria um Job Object novo. Drop fecha o handle e mata a
+//!   árvore (filho + netos + bisnetos).
+//! - **Aprovação obrigatória** — `requires_user_approval(true)`
+//!   no manifesto. O `validate_tool_call` Passo 9 é o gate;
+//!   sem `ApprovalDecision` aprovada, retorna `ApprovalRequired`
+//!   e o `execute` nem é chamado.
+//! - **Sem `exec_patterns.rs`** — auto-approval por code sem
+//!   padrão perigoso é Etapa 5+ (só faz sentido pro `exec.shell`).
+//! - **Audit mínimo** — 1 entrada por invocação, sem
+//!   `kind`/`runtime`/campos extras (o `AuditEntry` da Fase 3
+//!   não tem).
 
 use std::time::Duration;
 
@@ -36,7 +43,6 @@ pub struct FilesExecPythonTool {
 }
 
 impl FilesExecPythonTool {
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn new(base: FilesExecToolBase) -> Self {
         Self {
@@ -45,7 +51,6 @@ impl FilesExecPythonTool {
         }
     }
 
-    #[allow(dead_code)]
     fn input_schema() -> JsonSchema {
         JsonSchema(json!({
             "type": "object",
@@ -83,7 +88,6 @@ impl FilesExecPythonTool {
         }))
     }
 
-    #[allow(dead_code)]
     fn output_schema() -> JsonSchema {
         JsonSchema(json!({
             "type": "object",
@@ -100,7 +104,6 @@ impl FilesExecPythonTool {
         }))
     }
 
-    #[allow(dead_code)]
     fn build_manifest() -> ToolManifest {
         ToolManifestBuilder::new(ToolId::new("exec.python"), "exec")
             .version("0.1.0")
@@ -194,29 +197,35 @@ impl Tool for FilesExecPythonTool {
 
         let wall_clock = self.base.wall_clock_for(arguments);
 
-        let process = match self
-            .base
-            .resolver
-            .spawn(SandboxConfig::new(
-                runtime.executable().to_path_buf(),
-                tool_args,
-                ctx.jail.root().to_path_buf(),
-            )) {
+        let mut process = match self.base.resolver.spawn(SandboxConfig::new(
+            runtime.executable().to_path_buf(),
+            tool_args,
+            ctx.jail.root().to_path_buf(),
+        )) {
             Ok(p) => p,
             Err(e) => {
                 return ToolResult::err(tool_id, format!("spawn falhou: {e}"));
             }
         };
 
-        let child = process.into_child();
-        let raw = match collect_output(child, wall_clock).await {
+        // `collect_output` recebe `&mut SandboxedProcess` (não
+        // `Child` consumido). Isso é o que permite wall-clock
+        // real (`wait_with_timeout` dentro do `tokio::join!`)
+        // E mantém o Job Object per-invocation vivo durante a
+        // execução — drop do `process` no fim do escopo fecha
+        // o handle do Job (mata a árvore se sobrar neto).
+        let raw = match collect_output(&mut process, wall_clock).await {
             Ok(r) => r,
             Err(e) => return ToolResult::err(tool_id, e),
         };
+        // `process` dropa aqui. Como `wait_with_timeout` já
+        // coletou o exit status, o `Drop` do child é no-op
+        // (processo já morto). O Drop do Job é no-op também
+        // (handle fechado sem ninguém atribuído vivo).
 
         // Audit mínimo: serializa o output como `result_json`.
-        let result_json = serde_json::to_string(&output_json(&raw))
-            .unwrap_or_else(|_| "{}".to_string());
+        let result_json =
+            serde_json::to_string(&output_json(&raw)).unwrap_or_else(|_| "{}".to_string());
         let _ = self.base.audit.record(crate::audit::AuditEntry {
             tool_id: tool_id.clone(),
             tool_version: "0.1.0".to_string(),

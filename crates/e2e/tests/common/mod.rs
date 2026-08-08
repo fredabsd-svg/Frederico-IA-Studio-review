@@ -299,9 +299,13 @@ pub async fn build_orchestrator(
 
     let has_invoker = invoker.is_some();
     let invoker_for_tools = invoker.clone();
-    let tools = build_default_tools(invoker_for_tools);
+    // Etapa 4 da Fase 7: os E2E não precisam do subsistema exec
+    // (eles testam outras fases). Passamos `None` pro `exec_deps`
+    // pra ficar com o shape antigo (`[FilesReadTool]` ou
+    // `[FilesReadTool, DocsGenerateTool, DocsInspectTool]`).
+    let tools = build_default_tools(invoker_for_tools, None);
     let tool_registry = build_tool_registry(&tools);
-    let allowed_for_run = build_default_allowed_for_run(invoker);
+    let allowed_for_run = build_default_allowed_for_run(invoker, None);
     let permission_set = if has_invoker {
         initial_permission_set_for_capable_launcher()
     } else {

@@ -11,14 +11,24 @@
 //!    Etapa 2.A da Fase 5, PR #22), `Child::kill()` no pai NÃO
 //!    mata o neto. É a **regressão** que estamos fechando.
 //!
-//! 2. **`job_object_kills_tree_on_resolver_drop`** — **controle
-//!    positivo**. Prova que com o `Job Object` + `KILL_ON_JOB_CLOSE`,
-//!    o drop do `SecurityJailResolver` (que fecha o handle do Job)
-//!    mata a árvore inteira (pai + netos).
+//! 2. **`job_object_kills_tree_on_sandboxed_process_drop`** —
+//!    **controle positivo**. Prova que com o `Job Object`
+//!    per-invocation + `KILL_ON_JOB_CLOSE`, o **drop do
+//!    `SandboxedProcess`** (que fecha o handle do Job
+//!    per-invocation) mata a árvore inteira (pai + netos).
+//!
+//!    **Etapa 4 da Fase 7** (per-invocation Job): a v1 da Etapa 2
+//!    dropava o `resolver` (root Job compartilhado). A Etapa 4
+//!    muda pra per-spawn — cada `SandboxedProcess` carrega seu
+//!    próprio Job. O nome do teste mudou de
+//!    `job_object_kills_tree_on_resolver_drop` pra refletir.
+//!    O resolver NÃO mata nada ao ser droppado; a v1 ainda
+//!    funciona (compartilha o root Job, drop do resolver cascateia
+//!    também), mas a Etapa 4 é o modelo correto.
 //!
 //! **Regra do user (2026-08-08): "Sandbox só se prova impedindo,
-//! não funcionando."** A Etapa 2 fecha um gap de incompletude da
-//! Fase 5 Etapa 2.A.
+//! não funcionando."** A Etapa 2 + 4 fecha um gap de incompletude
+//! da Fase 5 Etapa 2.A.
 //!
 //! ## Por que `python.exe` e não `cmd.exe`
 //!
@@ -33,12 +43,17 @@
 //! por default. Solução: usar `where.exe python` e pular o teste
 //! se não encontrar — degradação controlada.
 //!
-//! ## Por que `Child::wait()` em vez de `tasklist`
+//! ## Por que `tasklist` em vez de `Child::wait` (Etapa 4)
 //!
-//! O `tasklist` tem cache (mostra processos como vivos por
-//! centenas de ms depois de morrerem). O `Child::wait()` é a
-//! verdade — retorna quando o handle do processo fica
-//! signaled, que é exatamente quando o OS o marcou como morto.
+//! A v1 da Etapa 2 usava `tokio::process::Child::wait()` pra
+//! confirmar a morte do pai — mas isso exigia `into_child`,
+//! que consumia o `SandboxedProcess` e fechava o Job handle
+//! prematuramente. A Etapa 4 remove `into_child` (o método
+//! quebrava a garantia do per-invocation Job) e usa
+//! `SandboxedProcess::stdout()` + drop explícito. A
+//! confirmação da morte passa a ser via `tasklist /FI "PID eq
+//! {pid}"` — tem lag inerente (~centenas de ms) que é
+//! compensado por um sleep de 1s antes da checagem.
 
 #![cfg(windows)]
 
@@ -172,18 +187,36 @@ grandchild.wait()
     );
 }
 
-/// **Controle positivo — a fix da Etapa 2 da Fase 7.**
+/// **Controle positivo — a fix da Etapa 2 + Etapa 4 da Fase 7.**
 ///
-/// Spawna `python` que cria um neto via `subprocess.Popen`, ambos
-/// sob o `SecurityJailResolver` (Job Object com `KILL_ON_JOB_CLOSE`).
-/// Depois, **dropa o resolver** (o que fecha o handle do Job).
-/// O `KILL_ON_JOB_CLOSE` deve matar a árvore toda.
+/// Spawna `python` que cria um neto via `subprocess.Popen`, sob o
+/// `SecurityJailResolver` (Job Object **per-invocation** com
+/// `KILL_ON_JOB_CLOSE`). Depois, **dropa o `SandboxedProcess`**
+/// (o que fecha o handle do Job). O `KILL_ON_JOB_CLOSE` deve
+/// matar a árvore toda (pai + neto).
 ///
-/// O test espera via `Child::wait()` com timeout de 5s — se o
-/// pai não terminar (porque o neto ficou vivo segurando o pai),
-/// o test falha.
+/// **Mudança da Etapa 4 da Fase 7 (per-invocation Job):** o test
+/// anterior (`job_object_kills_tree_on_resolver_drop`) dropava o
+/// `resolver`. Com o per-invocation Job Object, **dropar o
+/// resolver NÃO mata nada** — cada `SandboxedProcess` carrega
+/// seu próprio Job. O novo contrato: o caller dropar o
+/// `SandboxedProcess` (via `Run` cancelado, fim de `execute`, ou
+/// timeout) mata a árvore.
+///
+/// **API usada:** `SandboxedProcess::stdout()` (Etapa 4) — toma
+/// a handle de stdout **sem** consumir o `SandboxedProcess`. O
+/// `SandboxedProcess` continua vivo (Job handle aberto) até o
+/// `drop(child)` explícito. O `into_child` da v1 foi **removido**
+/// porque consumia o `SandboxedProcess` e fechava o Job
+/// prematuramente — exatamente o bug que o per-invocation Job foi
+/// criado pra evitar.
+///
+/// **Verificação da morte:** tasklist com `/FI "PID eq {pid}"`
+/// retorna exit 0 e output vazio se o processo está morto. O
+/// `tasklist` tem lag (mostra processos como vivos por centenas
+/// de ms depois de morrerem), então damos 1s pra estabilizar.
 #[tokio::test]
-async fn job_object_kills_tree_on_resolver_drop() {
+async fn job_object_kills_tree_on_sandboxed_process_drop() {
     let python = match find_python() {
         Some(p) => p,
         None => {
@@ -208,12 +241,13 @@ g.wait()
         vec!["-c".to_string(), parent_script],
         std::env::current_dir().unwrap(),
     );
-    let child = resolver.spawn(config).expect("spawn");
+    let mut child = resolver.spawn(config).expect("spawn");
     let parent_pid = child.pid();
 
-    // Lê o PID do neto.
-    let mut tokio_child = child.into_child();
-    let stdout = tokio_child.stdout.take().expect("stdout piped");
+    // Toma stdout SEM consumir o SandboxedProcess (a v1 da Etapa 2
+    // usava `into_child` que fechava o Job prematuramente — bug
+    // consertado na Etapa 4 com `stdout()`/`stderr()`).
+    let stdout = child.stdout().expect("stdout piped");
     use tokio::io::AsyncBufReadExt;
     let mut reader = tokio::io::BufReader::new(stdout);
     let mut line = String::new();
@@ -224,36 +258,65 @@ g.wait()
     // Espera 200ms pro neto estar rodando.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Drop do resolver → fecha o Job Object → KILL_ON_JOB_CLOSE
-    // → mata a árvore toda.
-    drop(resolver);
+    // Drop do `SandboxedProcess`. O `Option<JobObject>` é
+    // droppado (fechando o handle do Job), e o Windows
+    // dispara `KILL_ON_JOB_CLOSE` matando a árvore inteira
+    // (pai + neto).
+    drop(child);
 
-    // Espera o PAI terminar (o pai só termina quando o neto
-    // termina; se o neto for morto, o pai também morre).
-    // O timeout é 5s (sleep 60 no neto + pequena margem).
-    use tokio::time::timeout;
-    let wait_result = timeout(Duration::from_secs(5), tokio_child.wait()).await;
-    match wait_result {
-        Ok(Ok(status)) => {
-            eprintln!("[tree_kill] pai terminou com status={status:?}");
-            // Cleanup best-effort do neto (se ainda estiver vivo).
-            let _ = tokio::process::Command::new("taskkill")
-                .arg("/F")
-                .arg("/PID")
-                .arg(grandchild_pid.to_string())
-                .output()
-                .await;
-        }
-        Ok(Err(e)) => {
-            panic!("[tree_kill] erro no wait do pai: {e}");
-        }
-        Err(_) => {
-            panic!(
-                "[tree_kill] FALHA: pai (pid={parent_pid}) NÃO terminou em 5s. \
-                 Drop do resolver não cascateou KILL_ON_JOB_CLOSE."
-            );
-        }
-    }
+    // Espera o tasklist estabilizar. KILL_ON_JOB_CLOSE é rápido
+    // (sub-segundo) mas o `tasklist` tem cache local.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Verifica se o PAI morreu. Se `tasklist` ainda lista o
+    // PID, o KILL_ON_JOB_CLOSE falhou em cascatear.
+    let parent_alive = pid_still_alive(parent_pid).await;
+    assert!(
+        !parent_alive,
+        "FALHA: pai (pid={parent_pid}) ainda vivo 1s após drop do SandboxedProcess. \
+         KILL_ON_JOB_CLOSE não cascateou. \
+         Possível causa: o `SandboxedProcess` não está mais no Job, ou o Job handle \
+         não foi fechado no Drop."
+    );
+    eprintln!("[tree_kill] pai (pid={parent_pid}) morto confirmado via tasklist");
+
+    // Verifica se o NETO morreu também. Este é o teste da
+    // **headline** da Etapa 2 da Fase 7: a Etapa 2.A da Fase 5
+    // (PR #22) tinha exatamente esse bug — `Child::kill()` matava
+    // o pai, neto sobrevivia. A Etapa 2 + 4 da Fase 7 fecha o
+    // gap com `KILL_ON_JOB_CLOSE` do per-invocation Job.
+    let grandchild_alive = pid_still_alive(grandchild_pid).await;
+    assert!(
+        !grandchild_alive,
+        "FALHA: neto (pid={grandchild_pid}) ainda vivo após drop do SandboxedProcess. \
+         KILL_ON_JOB_CLOSE não cascateou pro neto. ESTE É O BUG DA ETAPA 2.A DA FASE 5 \
+         (PR #22) QUE A ETAPA 2 + 4 DA FASE 7 DEVERIA FECHAR."
+    );
+    eprintln!(
+        "[tree_kill] neto (pid={grandchild_pid}) morto confirmado via tasklist — \
+         Etapa 2 + 4 da Fase 7 fecha o gap da Etapa 2.A da Fase 5"
+    );
+}
+
+/// Helper: retorna `true` se o `pid` ainda está vivo no OS
+/// (consulta `tasklist /FI "PID eq {pid}" /NH`). Tem lag
+/// inerente do tasklist (~centenas de ms) — caller deve
+/// esperar antes de chamar.
+async fn pid_still_alive(pid: u32) -> bool {
+    let out = tokio::process::Command::new("tasklist")
+        .arg("/FI")
+        .arg(format!("PID eq {pid}"))
+        .arg("/NH")
+        .arg("/FO")
+        .arg("CSV")
+        .output()
+        .await
+        .expect("tasklist");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // tasklist CSV: `"Image Name","PID","Session Name","Session#","Mem Usage"`.
+    // Se o processo existe, o PID está no output. Se não
+    // existe, output é "INFO: No tasks are running which match the specified criteria."
+    stdout.contains(&pid.to_string())
 }
 
 /// Helper: encontra `python.exe` no PATH. Retorna o caminho

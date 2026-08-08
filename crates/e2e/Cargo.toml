@@ -19,6 +19,13 @@ frederico-tool-registry = { workspace = true }
 frederico-provider-engine = { workspace = true }
 frederico-storage = { workspace = true }
 frederico-security = { workspace = true }
+# Etapa 4 da Fase 7: `frederico-runtimes` é dep direto
+# dos E2E de exec (`e2e_exec_python_under_sandbox`,
+# `e2e_approval_display`) pra construir o `RuntimeRegistry`
+# no setup com `install_root` em tempdir. `frederico-tool-registry`
+# já o traz transitivamente, mas listar explícito torna
+# a dependência auditável.
+frederico-runtimes = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-execution-engine = { workspace = true }
 frederico-process-architecture = { workspace = true }

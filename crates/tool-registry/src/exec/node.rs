@@ -5,6 +5,11 @@
 //! - Runtime default: `node-20.16.0`.
 //! - Args: `<path>` (script.js) ou `-e "<code>"` (não suporta
 //!   `-m` no v1 — raro no Node).
+//!
+//! Mesmas garantias de wall-clock enforcement real + cancelamento
+//! cascateado per-invocation + aprovação obrigatória via
+//! `validate_tool_call` (Passo 9). Ver doc do `python.rs`
+//! para os detalhes.
 
 use std::time::Duration;
 
@@ -26,7 +31,6 @@ pub struct FilesExecNodeTool {
 }
 
 impl FilesExecNodeTool {
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn new(base: FilesExecToolBase) -> Self {
         Self {
@@ -35,7 +39,6 @@ impl FilesExecNodeTool {
         }
     }
 
-    #[allow(dead_code)]
     fn input_schema() -> JsonSchema {
         JsonSchema(json!({
             "type": "object",
@@ -68,7 +71,6 @@ impl FilesExecNodeTool {
         }))
     }
 
-    #[allow(dead_code)]
     fn output_schema() -> JsonSchema {
         JsonSchema(json!({
             "type": "object",
@@ -85,7 +87,6 @@ impl FilesExecNodeTool {
         }))
     }
 
-    #[allow(dead_code)]
     fn build_manifest() -> ToolManifest {
         ToolManifestBuilder::new(ToolId::new("exec.node"), "exec")
             .version("0.1.0")
@@ -165,7 +166,9 @@ impl Tool for FilesExecNodeTool {
             None => {
                 return ToolResult::err(
                     tool_id,
-                    format!("runtime '{runtime_id_str}' nao registrado (Etapa 4 v1: so `node-20.16.0`)"),
+                    format!(
+                        "runtime '{runtime_id_str}' nao registrado (Etapa 4 v1: so `node-20.16.0`)"
+                    ),
                 );
             }
         };
@@ -177,26 +180,24 @@ impl Tool for FilesExecNodeTool {
 
         let wall_clock = self.base.wall_clock_for(arguments);
 
-        let process = match self
-            .base
-            .resolver
-            .spawn(SandboxConfig::new(
-                runtime.executable().to_path_buf(),
-                tool_args,
-                ctx.jail.root().to_path_buf(),
-            )) {
+        let mut process = match self.base.resolver.spawn(SandboxConfig::new(
+            runtime.executable().to_path_buf(),
+            tool_args,
+            ctx.jail.root().to_path_buf(),
+        )) {
             Ok(p) => p,
             Err(e) => return ToolResult::err(tool_id, format!("spawn falhou: {e}")),
         };
 
-        let child = process.into_child();
-        let raw = match collect_output(child, wall_clock).await {
+        // Ver `python.rs::execute` para a justificativa completa
+        // de `&mut SandboxedProcess` em vez de `Child` consumido.
+        let raw = match collect_output(&mut process, wall_clock).await {
             Ok(r) => r,
             Err(e) => return ToolResult::err(tool_id, e),
         };
 
-        let result_json = serde_json::to_string(&output_json(&raw))
-            .unwrap_or_else(|_| "{}".to_string());
+        let result_json =
+            serde_json::to_string(&output_json(&raw)).unwrap_or_else(|_| "{}".to_string());
         let _ = self.base.audit.record(crate::audit::AuditEntry {
             tool_id: tool_id.clone(),
             tool_version: "0.1.0".to_string(),

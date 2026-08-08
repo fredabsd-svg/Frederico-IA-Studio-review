@@ -20,6 +20,12 @@ frederico-core = { workspace = true }
 frederico-storage = { workspace = true }
 frederico-diagnostics = { workspace = true }
 frederico-security = { workspace = true }
+# Etapa 4 da Fase 7: `frederico-runtimes` é construído
+# diretamente pela casca (não via `frederico-app`) pra
+# permitir spawn do `bootstrap_all` em background task
+# antes da construção das tools. Mantido como dep direto
+# pra não inflar a API pública do `frederico-app`.
+frederico-runtimes = { workspace = true }
 frederico-provider-engine = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-shared-contracts = { workspace = true }
