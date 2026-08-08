@@ -206,14 +206,16 @@ fn can_run_python(python: &std::path::Path) -> bool {
 /// python executável (ex.: `.dll` não está acessível) — o
 /// caller pula o teste.
 ///
-/// **Retorna `(Arc<RuntimeRegistry>, TempDir)`:** o
-/// `TempDir` precisa ficar vivo durante todo o test —
-/// caso contrário o `install_root` (e os arquivos
-/// copiados) somem, e o spawn no `tool.execute` falha
-/// com `os error 3` ("path not found"). O caller guarda
-/// o TempDir numa variável `_tempdir_keep_alive`.
-fn build_registry() -> Option<(Arc<RuntimeRegistry>, TempDir)> {
-    let tmp = TempDir::new().expect("tempdir");
+/// **Lifetime do `install_root`:** o `TempDir` é
+/// \`Box::leak\`-ado (\`'static\`) pra que o
+/// \`install_root\` (e os arquivos copiados pro \`...\`
+/// subdir) sobrevivam ao fim de \`build_registry\`. Sem
+/// isso, o \`spawn\` no \`tool.execute\` falha com
+/// \`os error 3\` porque o .exe/.dlls somem no drop
+/// do TempDir. Vaza um TempDir por test (OS limpa
+/// \`%TEMP%\` periodicamente) — aceitável em test.
+fn build_registry() -> Option<Arc<RuntimeRegistry>> {
+    let tmp: &'static TempDir = Box::leak(Box::new(TempDir::new().expect("tempdir")));
     let cfg = RuntimeConfig {
         install_root: tmp.path().to_path_buf(),
         keep_n_versions: 1,
@@ -268,7 +270,7 @@ fn build_registry() -> Option<(Arc<RuntimeRegistry>, TempDir)> {
             }
         }
     }
-    Some((Arc::new(registry), tmp))
+    Some(Arc::new(registry))
 }
 
 /// Copia todos os `python*.dll` de `src_dir` pra `dst_dir`.
@@ -333,7 +335,7 @@ fn copy_python_zip(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
 /// tempdir), mas isso é aceitável em test.
 fn build_exec_tools() -> Option<Vec<Arc<dyn Tool>>> {
     let _python = find_python()?;
-    let (runtimes, _tempdir_keep_alive) = build_registry()?;
+    let runtimes = build_registry()?;
     let resolver = SecurityJailResolver::new(SecurityJailConfig::secure_default())
         .expect("SecurityJailResolver::new");
     // `new()` já retorna `Arc<SecurityJailResolver>` — não
