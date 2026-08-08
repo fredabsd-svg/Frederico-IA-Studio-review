@@ -17,9 +17,7 @@ use std::sync::Arc;
 use frederico_core::{MemoryHit, MemoryScopeType, MemorySourceType, WorkerInvoker};
 use frederico_diagnostics as diagnostics;
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
-use frederico_execution_engine::recovery::{
-    spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS,
-};
+use frederico_execution_engine::recovery::{recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS};
 use frederico_memory::retriever::{HybridRetriever, Retriever};
 use frederico_memory::MemoryRepo;
 use frederico_model_catalog::Catalog;
@@ -32,7 +30,9 @@ use frederico_shared_contracts::{
     MemoryView, MessageEventView, MessageSendResult, MessageView, ModelDescriptorView,
     ProviderConfigView, ScoreBreakdownView,
 };
-use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
+use frederico_storage::{
+    ApprovalQueueRepo, ConversationRepo, Database, MessageRepo, RunEventRepo, RunRepo,
+};
 use tauri::{Manager, State};
 
 mod sink;
@@ -162,6 +162,49 @@ fn resolve_runtime_context(app: &tauri::AppHandle) -> frederico_app::runtime::Ru
         app_resources,
         dev_repo,
     }
+}
+
+/// Dispara o recovery de crash no startup em background.
+///
+/// **Por que este helper existe:** a `recover_stale_runs` do
+/// `frederico-execution-engine` é `async` pura — não spawna nada.
+/// A casca (Tauri) é quem decide como disparar. Usar
+/// `tauri::async_runtime::spawn` aqui (e não `tokio::spawn`
+/// direto) é o que evita o panic "there is no reactor running"
+/// que aconteceu na v1 (ver `recovery.rs` §"Spawn é
+/// responsabilidade do caller" e o smoke test
+/// `apps/desktop/src-tauri/tests/smoke_startup.rs`).
+///
+/// **O que acontece dentro do task:** abre o `Database` clonado
+/// (cheap, `Arc<SqlitePool>`), constrói `RunRepo` + `RunEventRepo`
+/// (borrow do `Database` que vive só dentro do `async move`),
+/// chama `recover_stale_runs` e loga o resultado. O `JoinHandle`
+/// é descartado (`spawn` retorna `JoinHandle`, não esperamos) — o
+/// recovery é best-effort: se falhar, logamos `warn` e seguimos
+/// (a próxima inicialização tenta de novo).
+fn spawn_startup_recovery(db: &Arc<Database>, threshold: std::time::Duration) {
+    let recovery_db = (*db).clone();
+    tauri::async_runtime::spawn(async move {
+        let run_repo = RunRepo::new(&recovery_db);
+        let run_event_repo = RunEventRepo::new(&recovery_db);
+        match recover_stale_runs(&run_repo, &run_event_repo, threshold).await {
+            Ok(marked) if marked > 0 => {
+                tracing::info!(
+                    recovered = marked,
+                    "startup recovery: runs stale marcados como interrupted"
+                );
+            }
+            Ok(_) => {
+                tracing::debug!("startup recovery: nenhum run stale");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "startup recovery falhou — runs stale serão revisados na próxima inicialização"
+                );
+            }
+        }
+    });
 }
 
 /// Constrói o `ProviderMap` com adapters pré-registrados. O
@@ -654,12 +697,25 @@ fn main() {
             // porque o executor pode estar esperando o delta final
             // do provider.
             //
+            // **Por que `tauri::async_runtime::spawn` (não
+            // `tokio::spawn`):** o `.setup` do Tauri é **síncrono**
+            // (não `async`) — `tokio::spawn` panica com "there is
+            // no reactor running, must be called from the context
+            // of a Tokio 1.x runtime" quando invocado de fora de
+            // um contexto de runtime. O wrapper do Tauri usa o
+            // runtime que ele próprio configurou (tokio por
+            // default) e o `.setup` já é chamado com o runtime
+            // ativo. Ver `crates/execution-engine/src/recovery.rs`
+            // §"Spawn é responsabilidade do caller" e o smoke
+            // test `apps/desktop/src-tauri/tests/smoke_startup.rs`
+            // que prova que o setup passa sem panic.
+            //
             // O `Database` é `Arc<SqlitePool>` internamente — clonar
-            // é barato. O `spawn_recover_stale_runs` recebe o
-            // `Database` e constrói o `RunRepo` dentro do closure
-            // (sem `unsafe`).
-            let _recovery_handle = spawn_recover_stale_runs(
-                (*db).clone(),
+            // é barato. O `RunRepo` é construído dentro do closure
+            // da task (o borrow do `&Database` não pode escapar
+            // pra um `Future + 'static`).
+            spawn_startup_recovery(
+                &db,
                 std::time::Duration::from_secs(DEFAULT_STALE_THRESHOLD_SECS),
             );
 

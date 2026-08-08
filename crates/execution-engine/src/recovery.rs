@@ -52,7 +52,7 @@ use std::time::Duration;
 
 use frederico_agent_engine::{RunEventKind, RunState};
 use frederico_core::RunId;
-use frederico_storage::{Database, RunEventRepo, RunRepo, StorageResult};
+use frederico_storage::{RunEventRepo, RunRepo, StorageResult};
 use tracing::{info, warn};
 
 /// Threshold default pra considerar um run "morto": 120s. Maior que
@@ -65,6 +65,22 @@ pub const DEFAULT_STALE_THRESHOLD_SECS: u64 = 120;
 /// como `interrupted` (terminal) e registra um `RunEvent` adicional
 /// com `kind = AppCrashRecovery` (auditoria). Devolve o número de
 /// runs marcados.
+///
+/// **Spawn é responsabilidade do caller.** Esta função é `async`
+/// pura — não spawna nada. A casca (Tauri) decide como disparar:
+/// `tauri::async_runtime::spawn` no `.setup` (recomendado) ou
+/// `tauri::async_runtime::block_on` se quiser esperar.
+///
+/// **Por que não há um helper `spawn_recover_stale_runs` aqui:**
+/// o `tokio::spawn` que existia na v1 panica com "there is no
+/// reactor running, must be called from the context of a Tokio 1.x
+/// runtime" quando invocado de dentro do `.setup` do Tauri (que é
+/// **síncrono** — não está dentro de um `Handle::current()`). Mover
+/// o spawn pra casca com `tauri::async_runtime::spawn` resolve
+/// porque o wrapper do Tauri usa o runtime que ele próprio
+/// configurou (tokio por default) e o `.setup` já é chamado com
+/// o runtime ativo. O crate `frederico-execution-engine` continua
+/// puro (sem dependência de `tauri`) — Regra do ADR-0003.
 pub async fn recover_stale_runs(
     run_repo: &RunRepo<'_>,
     run_event_repo: &RunEventRepo<'_>,
@@ -132,26 +148,6 @@ pub async fn recover_stale_runs(
     }
     info!("recovery: {marked} runs marcados como interrupted");
     Ok(marked)
-}
-
-/// Helper que roda o recovery no startup. Recebe um `Database`
-/// (que é `Arc<SqlitePool>` internamente — clonar é barato) e
-/// constrói o `RunRepo` e o `RunEventRepo` dentro da task. Devolve
-/// o `JoinHandle` se o caller quiser esperar.
-///
-/// **Por que recebe `Database` em vez dos repos?** Porque o
-/// `RunRepo` tem borrow do `&Database`, e o `tokio::spawn` exige
-/// `'static`. Receber o `Database` (que vive em `Arc`) e construir
-/// os repos dentro do closure resolve isso sem `unsafe`.
-pub fn spawn_recover_stale_runs(
-    db: Database,
-    threshold: Duration,
-) -> tokio::task::JoinHandle<StorageResult<usize>> {
-    tokio::spawn(async move {
-        let run_repo = RunRepo::new(&db);
-        let run_event_repo = RunEventRepo::new(&db);
-        recover_stale_runs(&run_repo, &run_event_repo, threshold).await
-    })
 }
 
 /// Helper síncrono: dado um `Vec<RunId>` retornado por

@@ -54,25 +54,131 @@ use tempfile::TempDir;
 // ============================================================================
 
 /// Encontra `python.exe` no PATH. Retorna o caminho completo
-/// ou `None` se não existir. Pula o stub do WindowsApps
-/// (mesma lógica do `tree_kill.rs`).
+/// do **interpreter STANDALONE** (não o stub do WindowsApps,
+/// não o launcher que precisa de `Lib\` em dir irmão).
+///
+/// **Por que essa validação existe:** o `where python` em
+/// Windows pode retornar candidatos que não funcionam
+/// standalone (fora do seu dir original):
+///
+/// 1. **WindowsApps stub** (`%LOCALAPPDATA%\Microsoft\
+///    WindowsApps\python.exe`) — abre a Microsoft Store.
+///    Pulamos.
+/// 2. **Python launcher install** (`C:\Users\<user>\
+///    AppData\Local\Python\pythoncore-3.X-64\python.exe`)
+///    — o `.exe` (106KB) precisa de `Lib\` (stdlib) no
+///    **mesmo dir** pra rodar. Copiar só `.exe` + `.dll`
+///    não basta: python falha em `import encodings` no
+///    startup. Pulamos (a Etapa 5+ pode reativar via
+///    embeddable distribution ou symlinking de `Lib\`).
+/// 3. **Interpreter standalone** (ex.: `C:\Python311\
+///    python.exe` em GitHub Actions runners, ou
+///    embeddable distribution com `python3X.zip`) — tem
+///    `.dll` E `Lib\` ou `python3X.zip`. ESTE funciona.
+///
+/// **Detecção:** o dir do candidato tem `Lib\` ou
+/// `python3X.zip`? Se sim, é standalone. Se não, é
+/// launcher e pulamos.
 fn find_python() -> Option<std::path::PathBuf> {
     for name in &["python", "python3", "py"] {
-        if let Ok(out) = std::process::Command::new("where").arg(name).output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                for line in s.lines() {
-                    let path = std::path::PathBuf::from(line.trim());
-                    let path_str = path.to_string_lossy();
-                    if path_str.contains("WindowsApps") {
-                        continue;
+        let out = std::process::Command::new("where")
+            .arg(name)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            continue;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        for line in s.lines() {
+            let path = std::path::PathBuf::from(line.trim());
+            let path_str = path.to_string_lossy();
+            if path_str.contains("WindowsApps") {
+                continue;
+            }
+            if let Some(real) = resolve_real_interpreter(&path) {
+                return Some(real);
+            }
+        }
+    }
+    None
+}
+
+/// Dado um candidato de `where`, retorna o path do
+/// interpreter se ele tem stdlib utilizável no mesmo dir
+/// (`Lib\` ou `python3X.zip`).
+///
+/// Estratégia: tentamos o candidato direto primeiro
+/// (caminho mais comum em CI runners com Python
+/// instalado em `C:\Python3XX\`). Se falhar, tentamos
+/// `pythoncore-*/python.exe` ao lado (Windows launcher
+/// install — geralmente também falha). Se nenhum dos
+/// dois for standalone, retorna `None`.
+fn resolve_real_interpreter(candidate: &std::path::Path) -> Option<std::path::PathBuf> {
+    if dir_has_stdlib(candidate.parent()?) {
+        return Some(candidate.to_path_buf());
+    }
+    if let Some(parent) = candidate.parent() {
+        if let Some(grandparent) = parent.parent() {
+            if let Ok(entries) = std::fs::read_dir(grandparent) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    if p.is_dir()
+                        && p.file_name()
+                            .map(|n| n.to_string_lossy().starts_with("pythoncore-"))
+                            .unwrap_or(false)
+                    {
+                        let real = p.join("python.exe");
+                        if dir_has_stdlib(&p) {
+                            return Some(real);
+                        }
                     }
-                    return Some(path);
                 }
             }
         }
     }
     None
+}
+
+/// `true` se `dir` tem stdlib utilizável: `Lib\` (full
+/// install) ou `python3X.zip` (embeddable distribution).
+/// Usado pra distinguir interpreter standalone de
+/// launcher que precisa de `Lib\` num dir vizinho.
+fn dir_has_stdlib(dir: &std::path::Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let n = entry.file_name();
+        let n = n.to_string_lossy();
+        if n == "Lib" && entry.path().is_dir() {
+            return true;
+        }
+        if n.starts_with("python") && n.ends_with(".zip") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Tenta rodar `<python> -c "exit(0)"`. Retorna `true` se
+/// sai com código 0.
+///
+/// **Usado em 2 lugares:**
+/// 1. Em `build_registry` (pós-cópia) — valida que o
+///    python copiado pro `install_root` realmente roda.
+///    Se não (ex.: `Lib\` faltando), o test pula.
+/// 2. (Reservado pra v2) validação de candidate em
+///    `resolve_real_interpreter`.
+fn can_run_python(python: &std::path::Path) -> bool {
+    std::process::Command::new(python)
+        .arg("-c")
+        .arg("exit(0)")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Constrói um `RuntimeRegistry` apontando pra um `tempdir`
@@ -81,9 +187,24 @@ fn find_python() -> Option<std::path::PathBuf> {
 ///
 /// **Hack honesto:** o `RuntimeRegistry::new` hard-coda
 /// `python-3.12.4` + `node-20.16.0` (Etapa 3 da Fase 7).
-/// Os testes copiam o `python.exe` do PATH pro
-/// `install_root` esperado pelo `PythonRuntime::executable()` —
-/// assim o spawn encontra o binário sem precisar baixar.
+/// Os testes copiam o `python.exe` (e a `.dll` sibling)
+/// do PATH pro `install_root` esperado pelo
+/// `PythonRuntime::executable()` — assim o spawn encontra
+/// o binário + interpreter sem precisar baixar.
+///
+/// **Por que copiar a `.dll` também:** o `CreateProcessW`
+/// procura a `python3X.dll` no mesmo dir do `python.exe`.
+/// Se copiarmos só o `.exe`, o spawn falha com
+/// `os error 3` ("The system cannot find the path
+/// specified"). Em launcher installs (Windows Python
+/// launcher), o `.exe` no `bin\` é só wrapper; o interpreter
+/// real + `.dll` ficam em `pythoncore-3.X-64\`. Por isso
+/// o `find_python` retorna o interpreter real (com `.dll`
+/// sibling), e aqui copiamos a `.dll` junto.
+///
+/// Retorna `None` se a cópia não consegue produzir um
+/// python executável (ex.: `.dll` não está acessível) — o
+/// caller pula o teste.
 fn build_registry() -> Option<Arc<RuntimeRegistry>> {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = RuntimeConfig {
@@ -94,21 +215,62 @@ fn build_registry() -> Option<Arc<RuntimeRegistry>> {
         download_timeout: Duration::from_secs(1),
     };
     let registry = RuntimeRegistry::new(cfg).ok()?;
-    // Se o python.exe do PATH existe, copia pro `install_root`
-    // esperado pelo `PythonRuntime::executable()`. Sem isso, o
-    // `Runtime::executable()` aponta pra path que não existe
-    // e o spawn falha.
     if let Some(py) = find_python() {
         let py_id = RuntimeId::new("python-3.12.4");
         if let Some(runtime) = registry.get(&py_id) {
             let exe = runtime.executable();
             if let Some(parent) = exe.parent() {
                 let _ = std::fs::create_dir_all(parent);
-                let _ = std::fs::copy(&py, exe);
+                // Copia o python.exe
+                if std::fs::copy(&py, exe).is_err() {
+                    return None;
+                }
+                // Copia a `python*.dll` + `vcruntime*.dll`
+                // (CreateProcessW procura a .dll no mesmo
+                // dir do .exe; sem isso, spawn falha com
+                // os error 3 "system cannot find the path
+                // specified").
+                if let Some(src_dir) = py.parent() {
+                    copy_python_dlls(src_dir, parent);
+                }
+                // **Validação pós-cópia:** tentar rodar o
+                // python copiado. Se ele falha (ex.: falta
+                // `Lib\` no destino), o test pula em vez de
+                // falhar com `ModuleNotFoundError: encodings`
+                // ou `os error 3`. Isso captura o caso onde
+                // a source é um Python "launcher install"
+                // (Windows: `pythoncore-3.X-64\python.exe` é
+                // um wrapper que precisa de `Lib\` como
+                // sibling) e a cópia só do `.exe`+`.dll` não
+                // é suficiente.
+                if !can_run_python(exe) {
+                    eprintln!(
+                        "[e2e_exec_python/setup] python copiado nao roda standalone (faltou Lib/?); pulando"
+                    );
+                    return None;
+                }
             }
         }
     }
     Some(Arc::new(registry))
+}
+
+/// Copia todos os `python*.dll` de `src_dir` pra `dst_dir`.
+/// Usado em tests E2E pra garantir que o python copiado
+/// consegue carregar o interpreter. Falhas são silenciosas
+/// (um `.dll` faltando é diagnóstico, não panic).
+fn copy_python_dlls(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(src_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let n = entry.file_name();
+            let n = n.to_string_lossy();
+            // Copia python*.dll (obrigatório) + vcruntime*.dll
+            // (runtime C do Windows que python3X.dll depende).
+            if (n.starts_with("python") && n.ends_with(".dll")) || n.starts_with("vcruntime") {
+                let _ = std::fs::copy(entry.path(), dst_dir.join(&*n));
+            }
+        }
+    }
 }
 
 /// Constrói o `Vec<Arc<dyn Tool>>` (Python + Node) com deps
