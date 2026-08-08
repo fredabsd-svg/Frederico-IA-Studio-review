@@ -60,13 +60,35 @@ Análise STRIDE enxuta dos principais componentes. Para cada ameaça, referênci
 
 ## Sandbox (`PROMPT MESTRE` §22)
 
-Aprofundar em `docs/architecture/windows-sandbox-design.md` na Fase 3. Resumo:
+Aprofundado em [`docs/architecture/windows-sandbox-design.md`](./windows-sandbox-design.md). Decisões concretas estão em [ADR-0031](../decisions/0031-fase-7-isolation-model-windows.md), [ADR-0033](../decisions/0033-sandbox-network-policy.md), [ADR-0036](../decisions/0036-security-jail-resolver-windows-job-objects.md). Resumo:
 
-- AppContainer / restricted tokens / Job Objects (escolha por tipo de execução).
-- Rede desligada por padrão; se habilitada, passa por proxy local do app com allowlist e registro de URLs visível ao usuário.
-- Limites: CPU, memória, processos, wall-clock, tree-kill.
-- Diretório temporário por execução, limpo após fim.
-- Comandos aprovados são exibidos ao usuário **exatamente** como serão executados, sem abreviação (`PROMPT MESTRE` §22.5 final).
+- **3 camadas combinadas** por tipo de execução: Jail (path safety, Fase 6 Etapa 5.X) + Job Object (tree-kill, limites de memória) + Restricted Token (drop de 6 privilégios elevados) + env zeroed por allowlist.
+- **AppContainer adiado** para Fase 8+ (quebra rotinas comuns de Python/Node; ADR-0031 D6).
+- **Rede desligada por padrão**; quando habilitada, passa por proxy local do app (ADR-0033) com allowlist (deny-by-default) e registro de URLs visível ao usuário (entrada em `DbAuditSink`, `kind: 'network_access'`).
+- **Limites**: memória por processo (2 GB) e total da árvore (4 GB), wall-clock (60s default, configurável), tree-kill via `KILL_ON_JOB_CLOSE` do Job Object (mesmo em `kill -9` do app).
+- **Diretório temporário por execução** dentro do workspace, limpo após fim.
+- **Comandos aprovados são exibidos ao usuário exatamente como serão executados, sem abreviação** (`PROMPT MESTRE` §22.5 final, ADR-0034 D5). A invariante tem teste em `crates/e2e/tests/e2e_approval_display.rs::approved_command_matches_actual_invocation` (byte-a-byte).
+- **Default deny** para ferramentas perigosas (D1 do ADR-0034): `files.write`, `files.edit`, `exec.python`, `exec.node`, `exec.shell` nascem com `PermissionSet` em `None`. Usuário liga explicitamente.
+- **Regra de "teste de negação"** (do prompt do user, 2026-08-08): toda etapa da Fase 7 entrega **pelo menos um teste que prova o que o sandbox bloqueia**, não só o que ele permite.
+
+### O que o sandbox **NÃO** protege (a parte "NÃO protege" da honestidade)
+
+A REGRA 1.1 e a honestidade do `SECURITY.md` exigem que o documento diga o que o mecanismo **não** cobre. Isolamento local sem contêiner é, por natureza, mais fraco que `runc`/`runsc`/WSL. As lacunas explícitas da Fase 7:
+
+| Cenário | Protege? | Por quê / Mitigação |
+|---|---|---|
+| Filho lê arquivo fora do workspace via `open()` | **sim** | Jail (Fase 6 Etapa 5.X, PR #25) + filesystem do OS |
+| Filho cria neto que sobrevive ao `kill -9` do app | **sim** | Job Object com `KILL_ON_JOB_CLOSE` (ADR-0031 D3, ADR-0036 D2) |
+| Filho herda privilégio de admin | **não** | Restricted Token descarta 6 privilégios elevados, mas outros (SeNetworkLogonRight, SeInteractiveLogonRight, etc.) permanecem. Defesa contra elevação total requer AppContainer (Fase 8+) ou conta de usuário separada (Fase 8+). |
+| Filho lê credencial em cache de DLL/TLS | **parcialmente** | Env filter zera env vars (ADR-0031 D5, ADR-0036 D5), mas a credencial pode estar em (a) estrutura de adapter em memória, (b) TLS handshake cache, (c) `~/.netrc` do usuário. Defesa em profundidade: ferramentas que lidam com credencial **não passam** pelo sandbox (worker de provider, Fase 2). |
+| Filho conecta direto via `socket.socket(AF_INET, SOCK_STREAM)` raw, ignorando `HTTPS_PROXY` | **não** | Sem firewall no nível de processo (WDAC é roadmap de Fase 8+). O filho pode chamar `connect()` direto, bypassando o proxy. **Lacuna documentada.** |
+| Filho tenta HTTP/3 (QUIC) | **não** | Proxy é TCP+TLS (ADR-0033). QUIC bypassa. **Lacuna documentada.** |
+| Filho exfiltra via DNS | **sim** | `netsh dns set` força DNS via proxy, que valida hostname **antes** de resolver (ADR-0033 D5) |
+| Filho lê `SAM` (Windows Security Account Manager) | **sim** | `SeBackup` removido pelo Restricted Token (ADR-0036 D4) |
+| Filho faz `rm -rf /` no host | **dentro do sandbox: sim (afeta apenas workdir)** | `exec.shell` com `Denylist` proíbe comandos destrutivos (Etapa 6); `exec.python` requer aprovação (ADR-0034) |
+| Usuário malicioso bypassa o sandbox | **não** (esperado) | Sandbox é defesa contra o **filho**, não contra o usuário. Usuário admin pode matar o app, debugar, editar config. **Esperado e documentado.** |
+
+**A frase que vale para o usuário é literal:** *"O sandbox da Fase 7 é defesa em profundidade contra as ameaças I1, I2, I3, e a classe 'filho malicioso/invadido' das ameaças STRIDE. Não é sandbox de contêiner (Docker/runc), não é VPN, não é firewall. Lacunas explícitas: bypass de proxy via socket raw, HTTP/3, certificate pinning bypass, privilégios SeNetworkLogonRight. Mitigações estão em roadmap de Fase 8+."*
 
 ## LGPD (`PROMPT MESTRE` §25.4)
 
@@ -96,6 +118,20 @@ Promoção do Estado para `parcialmente implementado` (`REGRAS §1.13`). As linh
 | E2 | `determine_real_origin` — conteúdo externo vira `pending_review`, nunca instrução | cenários de prompt injection e malicious memory no `crates/memory/tests/fixtures/gold_set.jsonl` |
 
 **Limite explícito desta verificação:** foram conferidas as seis linhas acima contra o código. As demais (S1, S2, T2, T3, I1, I2, D1, D3, E1, E3, P1) **não** foram verificadas e permanecem especificação — várias dependem do sandbox (Fase 7) e dos workers sidecar (Fase 5), que não existem.
+
+**Cobertura planejada pela Fase 7 (Etapa 1, 2026-08-08, sem código ainda):**
+
+| ID | Etapa da Fase 7 | Teste planejado |
+|---|---|---|
+| I1 (env leak) | Etapa 2 | `crates/security/tests/env_isolation.rs::child_env_does_not_contain_parent_secrets` (fecha a única ameaça com teste de regressão que ainda depende da Fase 7) |
+| I2 (SSRF) | Etapa 7 | `crates/e2e/tests/e2e_network_proxy.rs::child_request_to_169_254_169_254_is_denied` (proxy local + allowlist) |
+| I3 (path traversal) | Etapa 5 (file ops) | já coberto pelo `Jail` (Fase 6); ganha mais 3 testes com `files.write`/`files.edit` recusando path traversal |
+| D1 (worker travado) | Etapa 2 (Job Object) | `crates/security/tests/tree_kill.rs::child_survives_parent_kill9` |
+| E1 (subagente escala privilégio) | Etapa 4 (subagente sob sandbox) | `crates/e2e/tests/e2e_subagent_approval.rs::subagent_requires_own_approval_even_if_parent_approved` |
+| E3 (documento malicioso vaza credencial) | Etapa 5 (file ops + audit) | `crates/e2e/tests/e2e_audit_logging.rs::file_write_audit_contains_hashes_not_content` (audit log sem vazar conteúdo) |
+| P1 (página web com prompt injection) | Etapa 7 (proxy + audit) | `crates/e2e/tests/e2e_network_proxy.rs::audit_records_network_access` (log de URLs acessadas, fecha a auditoria pós-incidente) |
+
+A Etapa 1 da Fase 7 planejou esses testes (vide [`windows-sandbox-design.md`](./windows-sandbox-design.md) §"Mapa de E2E planejado por etapa"). A Etapa 2 em diante implementa e atualiza o `status.md` com `path::fn_name` real — gate `check-e2e-gate.ps1` valida consistência.
 
 ## Não-objetivos
 

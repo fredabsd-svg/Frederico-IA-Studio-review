@@ -20,9 +20,16 @@ A tabela de estado vivo está em [`docs/status.md`](../status.md). Este roadmap 
 | 4 | Memória e continuidade | Resumos, escopos, busca híbrida, explicabilidade, correções, retomada | Conjunto de avaliação do `PROMPT MESTRE` §10.12 atinge precisão alvo |
 | 5 | Documentos | Document Worker, Docling, cache, OCR, WordPro, ExcelPro, PDFPro, validações | **Fluxo vertical 2** do `PROMPT MESTRE` §33 funciona com kit Excel; depois Word e PDF |
 | 6 | Multimodelo e subagentes | Comparação, conselho, debate, pipeline, especialistas, dependências, cancelamento hierárquico | Pipeline sequencial do `PROMPT MESTRE` §14.4 executa com 2+ modelos reais; subagente herda permissões do pai |
-| 7 | Modo desenvolvedor | Projetos, arquivos, diff, sandbox, runtimes, Git, GitHub, testes, checkpoints | Sandbox isola execução, Git portátil embutido, PR criado pelo app |
-| 8 | Copiloto, tarefas e refinamento | Nino, sugestões, tarefas, notificações, acessibilidade, desempenho, atualização | Copiloto cumpre `PROMPT MESTRE` §24.1 (1-6), medições de `§23.7` atingem orçamento |
+| 7 | Execução isolada (Modo Desenvolvedor: núcleo) | Sandbox (Jail + Job Object + Restricted Token + env zeroed + proxy de rede), runtimes portáteis (Python + Node), `exec.python` / `exec.node` / `exec.shell` no Tool Registry, `files.write` / `files.edit` / `files.list` no Tool Registry | Sandbox isola execução (teste de negação verde); `pip install` e `npm install` rodam via proxy com allowlist; `I1` do threat model fecha com teste de regressão; `exec.shell` com `Denylist` recusa comandos destrutivos; **rede do sandbox é `#[ignore]` (noturno) por natureza** |
+| 8 | Modo Desenvolvedor integrado | Git portátil, GitHub (auth + push + PR), diff, projetos, checkpoints, copiloto (Nino), tarefas | PR criado pelo app (E2E noturno — `#[ignore]`); diff viewer funcional; projetos com workspace dedicado; checkpoints nomeados; copiloto cumpre `PROMPT MESTRE` §24.1 (1-6) |
 | 9 | Produção | Testes completos, segurança, assinatura, instalador, atualização, documentação, máquina limpa, versão estável | Todos os critérios de aceite do `PROMPT MESTRE` §32 marcados, instalador roda em máquina limpa |
+
+**Alterado em relação ao plano original (2026-08-08, Etapa 1 da Fase 7, ADR-0032):**
+
+- **Fase 7** mudou de escopo: sai "Git, GitHub, diff, projetos, checkpoints, testes". Entra "execução isolada" (sandbox + runtimes + file ops + exec tools). O critério de "PR criado pelo app" migra para a Fase 8.
+- **Fase 8** mudou de escopo: absorve Git, GitHub, diff, projetos, checkpoints. O conteúdo "Copiloto, tarefas, refinamento" (Nino + sugestões + acessibilidade) vira subdivisão da Fase 8, não a fase inteira.
+- **Fase 8 herda a dependência da Fase 7** (sem sandbox da Fase 7, o `exec.shell` da Fase 8 é inseguro). Pré-requisito atualizado: `8 → 3 + 4 + 6 + 7`.
+- **Fase 7 ganha E2E de noturno** (`pip install`, `npm install` rodam contra a rede real): twin determinístico no PR + `#[ignore]` noturno, regra D2 do ADR-0026.
 
 ## Pré-requisitos entre fases
 
