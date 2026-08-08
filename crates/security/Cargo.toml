@@ -19,6 +19,12 @@ frederico-core = { workspace = true }
 frederico-storage = { workspace = true }
 secrecy = { workspace = true }
 thiserror = { workspace = true }
+# Etapa 2 da Fase 7 (ADR-0036): `SecurityJailResolver` usa
+# `tokio::process::Command` (peça 4) e `tokio::process::Child` (para
+# I/O async do stdout/stderr). Feature `process` é a única
+# necessária — `rt`/`rt-multi-thread` ficam para o caller do
+# resolver (a casca Tauri já tem tokio runtime configurado).
+tokio = { workspace = true, features = ["process"] }
 
 # Implementação Windows do CredentialStore (DPAPI / Windows Credential
 # Manager) — gateada por target. É a **única** parte do núcleo que
