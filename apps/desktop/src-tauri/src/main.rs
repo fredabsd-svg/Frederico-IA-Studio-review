@@ -414,58 +414,26 @@ fn main() {
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem do
             // `build_default_tools`, que retorna o **mínimo
-            // comum** (1 tool: `FilesReadTool`) quando o
-            // invoker é `None`, e `FilesReadTool +
-            // DocsGenerateTool + DocsInspectTool` quando o
-            // invoker é `Some`. O `ToolRegistry` é construído
-            // a partir dessas tools concretas em
-            // `frederico_app::build_tool_registry` (commit 4b)
-            // — não há mais `ToolRegistry::new()` solto.
+            // comum** (1 tool: `FilesReadTool`) quando ambos
+            // `invoker` e `exec_deps` são `None`, e vai
+            // bumpando os subsistemas atômicos. O
+            // `ToolRegistry` é construído a partir dessas
+            // tools concretas em
+            // `frederico_app::build_tool_registry` — não há
+            // mais `ToolRegistry::new()` solto.
             //
-            // **Bump atômico capability + permission**
-            // (ADR-0020 §3 D3, ADR-0024 §D2): mesma
-            // `Option<Arc<dyn WorkerInvoker>>` passada pra
+            // **Bump atômico capability + permission** (Etapa
+            // 4 da Fase 7 + ADR-0020 §3 D3, ADR-0024 §D2):
+            // mesmas `Option`s passadas pra
             // `build_default_tools`, `build_default_allowed_for_run`
             // e pro ternário do `permission_set` — quando
-            // `Some`, as 2 tools do `document-worker`
-            // aparecem no `ToolRegistry`, os 2 `ToolId`s
-            // aparecem na allowlist do `RunExecutor`, e
-            // `documents` vira `Full`; quando `None`, em
-            // nenhum dos três lugares. A simetria é o que
-            // garante que o modelo **nunca** vê um tool que
-            // não consegue invocar (degradação declarada, não
-            // substituição silenciosa).
-            let tools =
-                frederico_app::composition::build_default_tools(document_worker_invoker.clone());
-            let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
-                document_worker_invoker.clone(),
-            );
-            let permission_set = if document_worker_invoker.is_some() {
-                frederico_app::composition::initial_permission_set_for_capable_launcher()
-            } else {
-                frederico_app::composition::initial_permission_set()
-            };
-
-            // `MemoryExtractor` (Fase 4, Etapa 5; Fase de Ligação
-            // Etapa 3 — bump de default). Constrói via
-            // `frederico_app::composition::build_memory_extractor`
-            // (mesma função que os E2E consomem). Se a key do
-            // OpenRouter está disponível (DPAPI ou env var), o
-            // `LlmMemoryClassifier` usa `OpenRouterCompletionProvider`
-            // (gpt-4o-mini); senão, cai pra `NoopCompletionProvider`
-            // com warning logado (degradação declarada). O
-            // extractor roda em background via `tokio::spawn` e
-            // processa jobs do canal mpsc (256, sem
-            // `tokio::time::interval` — ADR-0014 §1).
+            // `Some`, o subsistema aparece no `ToolRegistry`
+            // + na allowlist + com a permissão bumpada;
+            // quando `None`, em nenhum dos três lugares. A
+            // simetria é o que garante que o modelo **nunca**
+            // vê um tool que não consegue invocar (degradação
+            // declarada, não substituição silenciosa).
             //
-            // Custo por run concluído: 1 chamada LLM (cota
-            // 5/min default, regra do ADR-0012 §2).
-            let memory_extractor_handle = tauri::async_runtime::block_on(async {
-                let cfg = frederico_app::composition::MemoryConfig::default();
-                let key = lookup_openrouter_key(&credentials).await;
-                frederico_app::composition::build_memory_extractor(&db, &cfg, key)
-            });
-
             // SpecialistRegistry (Etapa 3 PR 1 da Fase 6, ADR-0030)
             // + PermissionLoader (Etapa 3 PR 2). O
             // `ChatOrchestrator` consome ambos pra montar o
@@ -492,13 +460,15 @@ fn main() {
             // (degradação declarada). Construtor é **sync**
             // (não tem I/O), pode rodar direto na `setup` da
             // casca.
+            // 
+ew() já retorna Arc<SecurityJailResolver>
+            // — não envolver em outro Arc::new (causaria
+            // Arc<Arc<...>>).
             let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
-                Arc::new(
-                    frederico_security::jail::SecurityJailResolver::new(
-                        frederico_security::jail::SecurityJailConfig::secure_default(),
-                    )
-                    .expect("SecurityJailResolver::new"),
-                );
+                frederico_security::jail::SecurityJailResolver::new(
+                    frederico_security::jail::SecurityJailConfig::secure_default(),
+                )
+                .expect("SecurityJailResolver::new");
 
             // `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
             // Python 3.12.4 + Node 20.16.0. Construtor sync
