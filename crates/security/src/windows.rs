@@ -42,6 +42,12 @@ use windows::Win32::Security::Credentials::{
 mod job_object;
 pub use job_object::{JobError, JobObject};
 
+/// Etapa 2 da Fase 7 (ADR-0036 D4): Restricted Token para drop
+/// dos 6 privilégios elevados. Mesma estrutura do `job_object`
+/// (submódulo do `windows`).
+mod restricted_token;
+pub use restricted_token::{RestrictedToken, RestrictedTokenError, DROPPED_PRIVILEGE_NAMES};
+
 /// Prefixo do `TargetName`. Usado em `list_providers` como filtro
 /// (`Frederico-IA-Studio:provider:*`).
 const TARGET_PREFIX: &str = "Frederico-IA-Studio:provider:";
