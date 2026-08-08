@@ -11,6 +11,7 @@ import { Chat } from "./routes/Chat";
 import { Settings } from "./routes/Settings";
 import { About } from "./routes/About";
 import { Memories } from "./routes/Memories";
+import { Team } from "./routes/Team";
 
 /**
  * Frederico IA Studio — casca React.
@@ -19,6 +20,10 @@ import { Memories } from "./routes/Memories";
  * - `/` — redireciona para `/chat`.
  * - `/chat` — chat sem conversa selecionada (cria uma nova).
  * - `/chat/:id` — chat com conversa selecionada.
+ * - `/team` — Modo Equipe (Fase 6, Etapa 7 UI/Polish):
+ *   sidebar com pipelines resumable + detalhe por stage +
+ *   criação de novo pipeline.
+ * - `/memories` — painel de memórias.
  * - `/settings` — configuração de credenciais de provedores.
  * - `/sobre` — sobre (Fase 1 keep-alive).
  *
@@ -94,6 +99,7 @@ export function App() {
           <h1>Frederico IA Studio</h1>
           <nav>
             <Link to="/chat">Chat</Link>
+            <Link to="/team">Modo Equipe</Link>
             <Link to="/memories">Memórias</Link>
             <Link to="/settings">Configurações</Link>
             <Link to="/sobre">Sobre</Link>
@@ -104,6 +110,7 @@ export function App() {
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:id" element={<Chat />} />
+            <Route path="/team" element={<Team />} />
             <Route path="/memories" element={<Memories />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/sobre" element={<About />} />

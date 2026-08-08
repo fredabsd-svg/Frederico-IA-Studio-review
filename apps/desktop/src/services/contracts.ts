@@ -269,3 +269,92 @@ export interface NewMemoryInputView {
   importance: number;
   expires_at: string | null;
 }
+
+// --- Fase 6 Etapa 7 (UI/Polish do Modo Equipe): tipos do Pipeline ---
+
+/**
+ * Modo do `MultimodelRun` (Etapa 5: só `Pipeline`; Etapas
+ * futuras plugam `Comparison`/`Conselho`/`Debate` per ADR-0028
+ * §D3).
+ */
+export type MultimodelMode = "pipeline";
+
+/**
+ * Estado de um `MultimodelRun`. Espelha o enum `MultimodelState`
+ * do `frederico_storage::multimodel` (Etapa 5 PR 1).
+ * `partially_completed` é exclusivo do pipeline — significa
+ * "alguns stages concluíram, app foi fechado antes do resto".
+ */
+export type MultimodelState =
+  | "pending"
+  | "running"
+  | "completed"
+  | "partially_completed"
+  | "failed"
+  | "cancelled";
+
+/**
+ * `StageSpec` (espelha `frederico_execution_engine::pipeline_orchestrator::StageSpec`).
+ * 3 campos: `model_id` (ex.: `gpt-4o-mini`), `provider_id`
+ * (ex.: `openrouter`), `input` (texto que vai pro modelo como
+ * `ChatMessage::user(input)`).
+ *
+ * **Por que 3 campos só e não `ChatRequest` completo:** o
+ * `MultimodelOrchestrator` da Etapa 5 PR 2 não expõe
+ * temperature/max_tokens/tools — a Etapa 6 da Fase 6 (UI) pluga
+ * esses controles no `StageSpec` quando o Modo Equipe ganhar o
+ * formulário de criação.
+ */
+export interface StageSpecView {
+  model_id: string;
+  provider_id: string;
+  input: string;
+}
+
+/**
+ * Cabeçalho de um `MultimodelRun` (espelha
+ * `frederico_storage::MultimodelRun`). Carrega o `state` do
+ * pipeline (não dos stages individuais — esses são carregados
+ * por `listPipelineStages`). `total_cost_microcents` é a soma
+ * dos `cost_microcents` dos stages (D5 do ADR-0028: rastreamento
+ * de custo é parte do estado persistido).
+ */
+export interface MultimodelRunView {
+  id: string;
+  parent_run_id: string;
+  mode: MultimodelMode;
+  state: MultimodelState;
+  input_artifact_id: string | null;
+  final_artifact_id: string | null;
+  total_cost_microcents: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Um stage de um pipeline (espelha
+ * `frederico_storage::MultimodelStage`). `state` é o `RunState`
+ * do stage individual (mesmo formato do `runs.state`: `pending`
+ * / `running` / `streaming` / `completed` / `failed` /
+ * `cancelled`). `output_hash` é FNV-1a (Etapa 5 PR 1) — a UI
+ * mostra os primeiros 8 chars pra detectar reuso (D6 do
+ * ADR-0028).
+ */
+export interface MultimodelStageView {
+  id: string;
+  run_id: string;
+  seq: number;
+  model_id: string;
+  provider_id: string;
+  /** `RunState` como string. */
+  state: string;
+  input_artifact_id: string | null;
+  output_artifact_id: string | null;
+  input_hash: string | null;
+  output_hash: string | null;
+  cost_microcents: number;
+  tools_used_json: string;
+  validation_json: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
