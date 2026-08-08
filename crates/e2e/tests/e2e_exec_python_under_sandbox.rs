@@ -232,20 +232,29 @@ fn build_registry() -> Option<Arc<RuntimeRegistry>> {
                 // specified").
                 if let Some(src_dir) = py.parent() {
                     copy_python_dlls(src_dir, parent);
+                    // Copia também o `python3X.zip` (stdlib
+                    // pre-empacotada do embeddable distribution).
+                    // Sem ele, python falha com
+                    // `ModuleNotFoundError: encodings` no
+                    // startup. `Lib\` (full install) é
+                    // muito grande (50-200MB) pra copiar em
+                    // test — só o embeddable com `.zip` é
+                    // usável nesse setup.
+                    copy_python_zip(src_dir, parent);
                 }
                 // **Validação pós-cópia:** tentar rodar o
                 // python copiado. Se ele falha (ex.: falta
-                // `Lib\` no destino), o test pula em vez de
-                // falhar com `ModuleNotFoundError: encodings`
-                // ou `os error 3`. Isso captura o caso onde
-                // a source é um Python "launcher install"
-                // (Windows: `pythoncore-3.X-64\python.exe` é
-                // um wrapper que precisa de `Lib\` como
-                // sibling) e a cópia só do `.exe`+`.dll` não
-                // é suficiente.
+                // `Lib\` ou `.zip` no destino), o test pula
+                // em vez de falhar com `ModuleNotFoundError`
+                // ou `os error 3`. Captura o caso onde a
+                // source é um Python "launcher install"
+                // (Windows: `pythoncore-3.X-64\python.exe`
+                // é um wrapper que precisa de `Lib\` como
+                // sibling) e a cópia só do `.exe`+`.dll`
+                // não é suficiente.
                 if !can_run_python(exe) {
                     eprintln!(
-                        "[e2e_exec_python/setup] python copiado nao roda standalone (faltou Lib/?); pulando"
+                        "[e2e_exec_python/setup] python copiado nao roda standalone (faltou Lib\\ ou .zip); pulando"
                     );
                     return None;
                 }
@@ -267,6 +276,28 @@ fn copy_python_dlls(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
             // Copia python*.dll (obrigatório) + vcruntime*.dll
             // (runtime C do Windows que python3X.dll depende).
             if (n.starts_with("python") && n.ends_with(".dll")) || n.starts_with("vcruntime") {
+                let _ = std::fs::copy(entry.path(), dst_dir.join(&*n));
+            }
+        }
+    }
+}
+
+/// Copia o `python3X.zip` (stdlib pre-empacotada do
+/// embeddable distribution) de `src_dir` pra `dst_dir`.
+/// Sem o `.zip` no destino, o python copiado falha com
+/// `ModuleNotFoundError: encodings` no startup. `Lib\`
+/// (full install) é muito grande pra copiar em test —
+/// só o embeddable com `.zip` é usável nesse setup.
+///
+/// **Silencioso** se o `.zip` não existe (source é um
+/// full install com `Lib\`, não embeddable — o test vai
+/// pular via `can_run_python` depois).
+fn copy_python_zip(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(src_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let n = entry.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with("python") && n.ends_with(".zip") {
                 let _ = std::fs::copy(entry.path(), dst_dir.join(&*n));
             }
         }
