@@ -74,6 +74,7 @@ pub trait Platform: Send + Sync {
     fn credentials(&self) -> &dyn CredentialStore;
 }
 
+pub mod env_filter;
 pub mod fake;
 
 #[cfg(target_os = "windows")]
