@@ -528,13 +528,13 @@ pub fn build_default_permission_set(
 /// subsistema exec e documenta a relação entre eles.
 #[derive(Clone)]
 pub struct ExecDeps {
-    /// `SecurityJailResolver` (Etapa 2 da Fase 7) — orquestrador
-    /// do sandbox. Em Windows, cria o Job Object per-invocation
-    /// + aplica o env filter. Em Linux, retorna
-    /// `SpawnError::Unsupported` (degradação declarada).
+    /// `SecurityJailResolver` (Etapa 2 da Fase 7). Em Windows
+    /// cria o Job Object per-invocation e aplica o env filter;
+    /// em Linux retorna `SpawnError::Unsupported` (degradação
+    /// declarada — mesma regra da Etapa 2 v1).
     pub resolver: Arc<frederico_security::jail::SecurityJailResolver>,
-    /// `RuntimeRegistry` (Etapa 3 da Fase 7) — hard-coda
-    /// Python 3.12.4 + Node 20.16.0. O `bootstrap_all` é
+    /// `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
+    /// Python 3.12.4 + Node 20.16.0; o `bootstrap_all` é
     /// responsabilidade da casca (background task, com timeout).
     pub runtimes: Arc<frederico_runtimes::RuntimeRegistry>,
     /// Audit sink (Etapa 1 da Fase 3). v1 da Etapa 4 usa
