@@ -205,7 +205,14 @@ fn can_run_python(python: &std::path::Path) -> bool {
 /// Retorna `None` se a cópia não consegue produzir um
 /// python executável (ex.: `.dll` não está acessível) — o
 /// caller pula o teste.
-fn build_registry() -> Option<Arc<RuntimeRegistry>> {
+///
+/// **Retorna `(Arc<RuntimeRegistry>, TempDir)`:** o
+/// `TempDir` precisa ficar vivo durante todo o test —
+/// caso contrário o `install_root` (e os arquivos
+/// copiados) somem, e o spawn no `tool.execute` falha
+/// com `os error 3` ("path not found"). O caller guarda
+/// o TempDir numa variável `_tempdir_keep_alive`.
+fn build_registry() -> Option<(Arc<RuntimeRegistry>, TempDir)> {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = RuntimeConfig {
         install_root: tmp.path().to_path_buf(),
@@ -261,7 +268,7 @@ fn build_registry() -> Option<Arc<RuntimeRegistry>> {
             }
         }
     }
-    Some(Arc::new(registry))
+    Some((Arc::new(registry), tmp))
 }
 
 /// Copia todos os `python*.dll` de `src_dir` pra `dst_dir`.
@@ -313,9 +320,20 @@ fn copy_python_zip(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
 /// `pub(crate)` — só acessíveis dentro do `frederico-tool-registry`.
 /// A função pública `build_default_exec_tools` esconde esse
 /// detalhe.
+///
+/// **Lifetime do TempDir:** o `runtimes` retornado pelo
+/// `build_registry` aponta pra um `install_root` que é um
+/// `TempDir` interno. Se o TempDir droppar, os arquivos
+/// copiados (python.exe + .dlls + .zip) somem, e os
+/// testes subsequentes falham com `os error 3`. Pra
+/// evitar isso, o `build_registry` retorna o TempDir
+/// junto, e aqui guardamos em `_tempdir_keep_alive`
+/// (variável que não é usada mas mantém o TempDir vivo
+/// durante o test). Vaza memória no fim (OS limpa o
+/// tempdir), mas isso é aceitável em test.
 fn build_exec_tools() -> Option<Vec<Arc<dyn Tool>>> {
     let _python = find_python()?;
-    let runtimes = build_registry()?;
+    let (runtimes, _tempdir_keep_alive) = build_registry()?;
     let resolver = SecurityJailResolver::new(SecurityJailConfig::secure_default())
         .expect("SecurityJailResolver::new");
     // `new()` já retorna `Arc<SecurityJailResolver>` — não
