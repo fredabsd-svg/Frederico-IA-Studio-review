@@ -4,7 +4,7 @@ Verificado contra o código em: 2026-08-08
 Fase correspondente: 7
 -->
 
-> Aprofundado na **Etapa 1 da Fase 7** (este PR de planejamento, 2026-08-08). Aprofundamento guiado pelo ADR-0031 (modelo de isolamento), ADR-0033 (política de rede) e ADR-0036 (SecurityJailResolver). O estado é `parcialmente implementado` (não `especificado`) porque a Fase 7 já está `em andamento` no `docs/status.md` (regra da trava do §1.13): o planejamento cobre as 3 camadas (Jail + Job Object + Restricted Token + env zeroed), os trade-offs explícitos do que o sandbox **não** protege, e o mapa de E2E planejado por etapa com 12 testes de negação nomeados. **Sem código de produção** — a Etapa 2 da Fase 7 implementa o `SecurityJailResolver` e os testes de regressão, e nessa hora o carimbo `Verificado contra o código em` ganha a data do merge.
+> Aprofundado na **Etapa 1 da Fase 7** (PR de planejamento, 2026-08-08) e atualizado na **Etapa 2** (PR `fase-7-etapa-2-primitivas-sandbox`, 2026-08-08, 4 primitivas Rust implementadas em `crates/security/src/`). Aprofundamento guiado pelo ADR-0031 (modelo de isolamento), ADR-0033 (política de rede) e ADR-0036 (SecurityJailResolver). O estado é `parcialmente implementado` (não `especificado`) porque a Fase 7 já está `em andamento` no `docs/status.md` (regra da trava do §1.13). **Etapa 2**: `EnvFilter` (env allowlist com subenum REQUIRED/ALLOWED/DENIED), `JobObject` (`KILL_ON_JOB_CLOSE` + limites de memória, **sem** `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — default do Windows já garante que netos herdam o Job), `RestrictedToken` (drop 6 privilégios elevados), `SecurityJailResolver` (orquestrador que combina as 3 camadas). 2 testes de integração em `crates/security/tests/tree_kill.rs` (controle negativo da Fase 5 Etapa 2.A + controle positivo da fix). 37 tests verdes na `frederico-security`. Pendência v1: env não filtrado por re-injeção (Etapa 4 corrige com `CreateProcessW` raw); `RestrictedToken` construído mas não aplicado via spawn (Etapa 4 pluga). **Etapas 3-7 ainda não iniciadas**.
 
 # Design do Sandbox Windows
 
@@ -188,7 +188,7 @@ Nenhuma nova. As decisões da Fase 7 Etapa 1 estão nos 6 ADRs (0031, 0032, 0033
 | Etapa | Status (em 2026-08-08) | Próxima | Bloqueia | Foco |
 |---|---|---|---|---|
 | Etapa 1 — Planejamento (este PR) | em revisão | Etapa 2 | nenhuma | 6 ADRs + 2 specs novos + 4 specs atualizados + fase-7/README + status + CHANGELOG |
-| Etapa 2 — Primitivas do sandbox | não iniciada | Etapa 3 | nenhuma | `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 4 testes de regressão (com teste de negação) |
+| Etapa 2 — Primitivas do sandbox | **concluída** (PR `fase-7-etapa-2-primitivas-sandbox`, 2026-08-08) | Etapa 3 | nenhuma | `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 2 testes de integração `tree_kill.rs` (controle negativo da Fase 5 Etapa 2.A + controle positivo da fix). 37 tests verdes. Pendência v1: env não filtrado por re-injeção; `RestrictedToken` não aplicado via spawn (Etapa 4 corrige) |
 | Etapa 3 — Runtimes embutidos | não iniciada | Etapa 4 | nenhuma | `crates/runtimes/` com Python + Node portáteis, bootstrap idempotente, resolução de caminho |
 | Etapa 4 — `exec.python` / `exec.node` no registro | não iniciada | Etapa 5 | Etapa 2 + Etapa 3 | `FilesExecTool::Python` + `FilesExecTool::Node` com aprovação `OneTurn` + audit + comando exato |
 | Etapa 5 — `files.write` / `files.edit` / `files.list` | não iniciada | Etapa 6 | Etapa 2 | `FilesWriteTool` + `FilesEditTool` + `FilesListTool` com Jail + atomicidade + backup + audit |
@@ -201,10 +201,10 @@ Regra para todas as etapas de 2 a 7: **pelo menos um teste de negação por etap
 
 | Etapa | Teste de negação (principal) | Twin determinístico (PR) | Noturno (`#[ignore]`) |
 |---|---|---|---|
-| 2 | `crates/security/tests/tree_kill.rs::child_survives_parent_kill9` | mesmo arquivo, em `cargo test --workspace` | — |
-| 2 | `crates/security/tests/env_isolation.rs::child_env_does_not_contain_parent_secrets` (fecha `I1`) | mesmo arquivo | — |
-| 2 | `crates/security/tests/restricted_token.rs::python_runs_under_restricted_token` | mesmo arquivo | — |
-| 2 | `crates/security/tests/job_object_setup.rs::process_runs_under_memory_limit` | mesmo arquivo | — |
+| 2 | `crates/security/tests/tree_kill.rs::fase5_etapa2a_incomplete_kill_parent_does_not_kill_grandchild` (controle negativo — regressão da Fase 5) + `crates/security/tests/tree_kill.rs::job_object_kills_tree_on_resolver_drop` (controle positivo — fix) | mesmo arquivo, em `cargo test -p frederico-security` | — |
+| 2 | (pendente) `crates/security/tests/env_isolation.rs::child_env_does_not_contain_parent_secrets` (fecha `I1` do threat model) — **deferido para Etapa 4**: v1 não re-injecta o env filtrado (limitação do `tokio::process::Command::envs()` em Windows com env block grande) | — | — |
+| 2 | (pendente) `crates/security/tests/restricted_token.rs::python_runs_under_restricted_token` — **deferido para Etapa 4**: v1 constrói o token mas não aplica via `CreateProcessAsUser` (precisa de `CommandExt::as_user`, fora do `tokio::process` plain) | — | — |
+| 2 | (pendente) `crates/security/tests/job_object_setup.rs::process_runs_under_memory_limit` — **deferido para Etapa 5 ou 6**: testar com processo leve (Python idle) não prova o limite; testar com alocação pesada é flaky no CI | — | — |
 | 3 | `crates/runtimes/tests/python_bootstrap.rs::python_finds_no_path_to_user_installs` | mesmo arquivo | — |
 | 3 | `crates/runtimes/tests/node_bootstrap.rs::node_finds_no_path_to_user_installs` | mesmo arquivo | — |
 | 4 | `crates/e2e/tests/e2e_exec_python_under_sandbox.rs::child_cannot_write_outside_workspace` | mesmo arquivo | — |

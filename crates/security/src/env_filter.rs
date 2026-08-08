@@ -230,7 +230,7 @@ impl EnvFilter {
     /// a estrutura interna do `std`).
     pub fn apply(
         &self,
-        parent_env: &mut Vec<(String, String)>,
+        parent_env: &mut [(String, String)],
     ) -> Result<Vec<(String, String)>, EnvFilterError> {
         // Passada 1: sobrescreve DENIED in-place.
         for entry in &self.allowlist.entries {

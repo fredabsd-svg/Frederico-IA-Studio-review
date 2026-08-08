@@ -86,3 +86,8 @@ $RECYCLE.BIN/
 
 # --- Builds do instalador (gerados pelo tauri build) ---
 apps/desktop/src-tauri/target/release/bundle/
+
+# --- Trash local (arquivos movidos pra fora do repo durante
+#     debugging, antes do mavis-trash ficar disponível) ---
+.trash/
+.trash/**

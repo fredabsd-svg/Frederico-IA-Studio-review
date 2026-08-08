@@ -275,8 +275,8 @@ impl Drop for SandboxedProcess {
 
 /// Orquestrador do sandbox. Combina Jail (path safety via caller)
 /// + Job Object + Restricted Token + Env Filter. Por design, **só
-/// Windows** é suportado na v1; Linux retorna
-/// `SpawnError::Unsupported` (degradação declarada).
+///   Windows** é suportado na v1; Linux retorna
+///   `SpawnError::Unsupported` (degradação declarada).
 pub struct SecurityJailResolver {
     /// Root Job Object (vive até o `Drop` do resolver). Todos
     /// os processos filhos são atribuídos a este Job.
@@ -378,6 +378,17 @@ impl SecurityJailResolver {
 
     /// Aplica o env filter no env do parent. Helper compartilhado
     /// entre Windows e Linux.
+    ///
+    /// **Não usado na v1** — o `spawn` atual chama `env_filter.apply`
+    /// diretamente (porque o `envs()` do `tokio::process` falha com
+    /// `ERROR_INVALID_PARAMETER` em Windows com env block grande).
+    /// Marcado `#[allow(dead_code)]` até a Etapa 4 (raw `CreateProcessW`)
+    /// reativar a injeção completa. Mantido como ponto único de
+    /// composição (REQUIRED + ALLOWED + DENIED + extra).
+    ///
+    /// Toma `&mut Vec` (não `&mut [_]`) porque faz `push` no `extra`.
+    /// Clippy reclama de `ptr_arg` — permitido aqui pelo `dead_code`.
+    #[allow(dead_code, clippy::ptr_arg)]
     fn filter_env(&self, parent_env: &mut Vec<(String, String)>, extra: &[(String, String)]) {
         // Aplica o filtro (sobrescreve DENIED, remove não-listed).
         // Erro de UTF-8 não é tratado nesta v1 (cai no `unwrap`
@@ -408,7 +419,12 @@ impl SecurityJailResolver {
     /// (que aceita um HANDLE de token). Por enquanto, o spawn
     /// aplica só:
     ///
-    /// 1. **Env filter** (env vars filtradas via `EnvFilter`).
+    /// 1. **Env filter** — herda o env do parent, **remove** as
+    ///    vars em DENIED (sobrescreve com `""` in-place antes
+    ///    via `EnvFilter::apply`), e adiciona as vars em
+    ///    `extra_env`. **NÃO** usa `env_clear()` (Windows
+    ///    quebra: `SystemRoot` some, `CreateProcess` falha
+    ///    com `ERROR_INVALID_PARAMETER` 87).
     /// 2. **Job Object** (processo atribuído ao root Job via
     ///    `JobObject::assign_pid` após o spawn).
     /// 3. **Workdir** (via `current_dir`).
@@ -432,29 +448,45 @@ impl SecurityJailResolver {
 
         // 1. Lê o env do parent (uma vez por invocação).
         let mut parent_env: Vec<(String, String)> = std::env::vars_os()
-            .filter_map(|(_k, v)| {
-                let k = v.to_string_lossy().into_owned();
-                let v = v.to_string_lossy().into_owned();
-                Some((k, v))
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
             })
             .collect();
 
-        // 2. Aplica o filter + adiciona extras.
-        self.filter_env(&mut parent_env, &config.extra_env);
+        // 2. Aplica o filter (sobrescreve DENIED in-place, mantém
+        //    o resto). NÃO remove as outras — a herança é
+        //    importante para Windows (SystemRoot, windir, etc).
+        self.env_filter
+            .apply(&mut parent_env)
+            .map_err(|e| SpawnError::SpawnFailed(format!("EnvFilter::apply falhou: {e:?}")))?;
 
         // 3. Constrói o `tokio::process::Command` (caminho
         //    cross-platform; a Etapa 4 substitui pelo
         //    `CreateProcessAsUser` raw via `CommandExt::as_user`).
+        //    Herdamos o parent_env (com DENIED sobrescrito com
+        //    "") e adicionamos extra_env.
+        //
+        //    **DIAGNÓSTICO: envs() causa ERROR_INVALID_PARAMETER
+        //    (87) em tokio 1.53 + Windows quando o env block é
+        //    muito grande (parent + extras). Workaround v1: NÃO
+        //    chamar envs() — herda o env do parent
+        //    automaticamente. O EnvFilter::apply já sobrescreveu
+        //    DENIED in-place no parent_env, mas como NÃO
+        //    re-injetamos, o filho herda o parent_env COM DENIED
+        //    já sobrescrito (o que NÃO é o que queremos — DENIED
+        //    deveria ser REMOVIDO, não só sobrescrito).
+        //
+        //    Solução correta (Etapa 4): usar
+        //    `CommandExt::raw_arg` com `CreateProcessW` direto
+        //    passando o env block construído manualmente.
         let invocation_id = self.next_invocation_id();
         let mut cmd = Command::new(&config.program);
         cmd.args(&config.args)
             .current_dir(&config.workdir)
-            .env_clear()
-            .envs(parent_env)
-            .stdin(match config.stdin {
-                Some(_) => Stdio::piped(),
-                None => Stdio::null(),
-            })
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

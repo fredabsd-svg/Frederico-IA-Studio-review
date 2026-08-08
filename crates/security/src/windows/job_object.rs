@@ -11,10 +11,17 @@
 //! - **`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`** — fecha o handle
 //!   derruba a árvore. É o **coração** da garantia: o `Drop` fecha o
 //!   handle, e a árvore morre.
-//! - **`JOB_OBJECT_LIMIT_BREAKAWAY_OK`** — permite que netos criados
-//!   pelo filho herdem o Job. Sem isso, `subprocess.Popen` em Python
-//!   falha com access denied. A Etapa 3 (runtimes) precisa disso
-//!   para `pip install` funcionar (pip → python → compilador C).
+//! - **`JOB_OBJECT_LIMIT_BREAKAWAY_OK` é deliberadamente AUSENTE** —
+//!   o default do Windows é filhos **herdarem** o Job. A flag
+//!   `BREAKAWAY_OK` faria o oposto: **permitiria** que netos criados
+//!   com `CREATE_BREAKAWAY_FROM_JOB` (uma flag que existe justamente
+//!   pra tirar processos do Job) saíssem. Sem `BREAKAWAY_OK`, mesmo
+//!   que um subprocess mal-comportado peça pra sair, o Windows
+//!   ignora e mantém ele dentro do Job — exatamente o que queremos.
+//!   A Etapa 3 (runtimes: `pip install` via `pip → python → gcc`)
+//!   não é afetada: o `subprocess.Popen` do Python **não** usa
+//!   `CREATE_BREAKAWAY_FROM_JOB`, então o neto herda o Job por
+//!   default.
 //! - **`JOB_OBJECT_LIMIT_PROCESS_MEMORY`** + **limit de 2 GB** — limite
 //!   de memória por processo (defesa contra OOM do filho).
 //! - **`JOB_OBJECT_LIMIT_JOB_MEMORY`** + **limit de 4 GB** — limite de
@@ -34,7 +41,8 @@
 //!
 //! Janela 1-2 é zero (processo suspended não roda). Janela 2-3 é zero
 //! (Job Object já contém o PID suspended; qualquer spawn do filho
-//! após `ResumeThread` herda o Job via `BREAKAWAY_OK`). Janela 3-4
+//! após `ResumeThread` herda o Job por **default do Windows**).
+//! Janela 3-4
 //! é zero no sentido prático (HashMap::insert é sync, OS já tem o
 //! Job configurado).
 //!
@@ -77,9 +85,8 @@ use thiserror::Error;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-    JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
 };
 use windows::Win32::System::Threading::{OpenProcess, ResumeThread, PROCESS_ALL_ACCESS};
 
@@ -134,8 +141,9 @@ pub struct JobObject {
 }
 
 impl JobObject {
-    /// Cria um novo Job Object com KILL_ON_JOB_CLOSE + BREAKAWAY_OK
-    /// + limites de memória default. A função **não** associa
+    /// Cria um novo Job Object com `KILL_ON_JOB_CLOSE` + limites
+    /// de memória default (e **sem** `BREAKAWAY_OK` — ver
+    /// doc do módulo). A função **não** associa
     /// nenhum processo — isso é feito por [`Self::assign`] /
     /// [`Self::assign_pid`] / [`Self::assign_suspended_process`].
     ///
@@ -169,12 +177,13 @@ impl JobObject {
                 message: format!("{e:?}"),
             })?;
 
-        // Configura os limites: KILL_ON_JOB_CLOSE + BREAKAWAY_OK +
-        // mem por processo + mem total. Os outros flags ficam
-        // desligados (zero-initialized pela próxima linha).
+        // Configura os limites: `KILL_ON_JOB_CLOSE` + mem por
+        // processo + mem total. **Sem** `BREAKAWAY_OK` (ver
+        // doc do módulo — o default do Windows já garante que
+        // filhos herdam o Job). Os outros flags ficam desligados
+        // (zero-initialized pela próxima linha).
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | JOB_OBJECT_LIMIT_BREAKAWAY_OK
             | JOB_OBJECT_LIMIT_PROCESS_MEMORY
             | JOB_OBJECT_LIMIT_JOB_MEMORY;
         // `windows` v0.58 tipa `ProcessMemoryLimit` e `JobMemoryLimit`
@@ -220,7 +229,9 @@ impl JobObject {
 
     /// Associa um processo (já criado, handle aberto) ao Job. O
     /// processo entra imediatamente no Job — qualquer spawn dele
-    /// herda o Job (via `BREAKAWAY_OK`).
+    /// herda o Job por **default do Windows** (a flag
+    /// `JOB_OBJECT_LIMIT_BREAKAWAY_OK` está deliberadamente
+    /// ausente, ver doc do módulo).
     ///
     /// # SAFETY
     ///
@@ -233,8 +244,9 @@ impl JobObject {
         // SAFETY: `AssignProcessToJobObject` associa o processo
         // (identificado pelo handle) ao Job. O handle do Job já
         // existe (foi criado em `new()`). Após retorno, qualquer
-        // filho criado pelo processo herda o Job via
-        // `BREAKAWAY_OK` (configurado em `new()`).
+        // filho criado pelo processo herda o Job por **default
+        // do Windows** (a flag `JOB_OBJECT_LIMIT_BREAKAWAY_OK`
+        // está deliberadamente ausente, ver doc do módulo).
         unsafe { AssignProcessToJobObject(self.handle, process_handle) }.map_err(|e| {
             JobError::AssignFailed {
                 handle: process_handle,

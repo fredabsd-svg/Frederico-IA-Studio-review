@@ -317,11 +317,17 @@ fn main() {
             // (Etapa 1 da Fase de Ligação, ADR-0022 §D2/D3). Cria
             // `<data_local_dir>/workspaces/<conversation_id>/` sob
             // demanda. **Erro duro**: se o `mkdir` falhar, o app
-            // aborta o startup com mensagem legível. A Etapa 7
-            // (modo desenvolvedor) substitui por `SecurityJailResolver`
-            // via `frederico-security`. O `ToolRegistry` (acima)
-            // ainda é vazio nesta Etapa 1; o registro dos
-            // manifestos entra no commit 4b (`build_tool_registry`).
+            // aborta o startup com mensagem legível. **Conceito
+            // separado** do `SecurityJailResolver` da Etapa 2 da
+            // Fase 7 (ADR-0036) — este orquestra spawn isolado
+            // (Job Object + Restricted Token + Env Filter); o
+            // `FileSystemJailResolver` resolve o `Jail` (path
+            // safety) por `ConversationId`. A integração com o
+            // `RunExecutor` (executar `exec.python`/`exec.node`
+            // sob o `SecurityJailResolver`) entra na **Etapa 4 da
+            // Fase 7**. O `ToolRegistry` (acima) ainda é vazio
+            // nesta Etapa 1; o registro dos manifestos entra no
+            // commit 4b (`build_tool_registry`).
             let workspaces_root = data_local_dir().join("workspaces");
             let jail_resolver: Arc<dyn frederico_tool_registry::JailResolver> = Arc::new(
                 frederico_app::jail::FileSystemJailResolver::new(workspaces_root),
