@@ -5,6 +5,7 @@ members = [
     "crates/storage",
     "crates/diagnostics",
     "crates/security",
+    "crates/runtimes",
     "crates/provider-engine",
     "crates/model-catalog",
     "crates/agent-engine",
@@ -35,6 +36,7 @@ frederico-core = { path = "crates/core" }
 frederico-storage = { path = "crates/storage" }
 frederico-diagnostics = { path = "crates/diagnostics" }
 frederico-security = { path = "crates/security" }
+frederico-runtimes = { path = "crates/runtimes" }
 frederico-provider-engine = { path = "crates/provider-engine" }
 frederico-model-catalog = { path = "crates/model-catalog" }
 frederico-agent-engine = { path = "crates/agent-engine" }

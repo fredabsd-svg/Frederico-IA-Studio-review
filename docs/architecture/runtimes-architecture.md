@@ -4,7 +4,7 @@ Verificado contra o código em: 2026-08-08
 Fase correspondente: 7
 -->
 
-> Spec criado na Etapa 1 da Fase 7 (este PR de planejamento, 2026-08-08). Especificação da Etapa 3 da Fase 7 — `crates/runtimes/` com Python + Node portáteis. O estado é `parcialmente implementado` (não `especificado`) porque a Fase 7 já está `em andamento` no `docs/status.md` (regra da trava do §1.13): o planejamento cobre o `Runtime` trait, `RuntimeRegistry` com bootstrap idempotente, `manifest.json` com SHA-256 pinned, layout de diretórios, e o trade-off explícito "runtime separado do workspace". **Sem código de produção** — a Etapa 3 da Fase 7 implementa; o carimbo `Verificado contra o código em` ganha a data do merge.
+> Spec criado na Etapa 1 (PR `fase-7-etapa-1-planejamento`, 2026-08-08) e implementado na **Etapa 3** (PR `fase-7-etapa-3-runtimes-embutidos`, 2026-08-08). Estado é `parcialmente implementado` (não `especificado`) porque a Fase 7 já está `em andamento` no `docs/status.md` (regra da trava do §1.13). **Etapa 3**: novo crate `frederico-runtimes` (16º membro do workspace) com 4 primitivas Rust + 5 testes de regressão. Python 3.12.4 (SHA-256 `15fea3c9...` + size `11_065_736` bytes, verificado via download) e Node 20.16.0 (SHA-256 `4e88373a...` + size `29_553_046` bytes, verificado) pinned como `const` em `python.rs`/`node.rs`. `RuntimeRegistry` com `bootstrap_all` async + `cleanup_old_versions`. 5 testes verdes (3 com rede: `python_bootstrap`, `node_bootstrap`, `bootstrap_idempotent`, `manifest_corruption`; 1 sem rede: `bootstrap_offline`). Próxima: **Etapa 4** (exec tools — `exec.python`/`exec.node` consomem o `RuntimeRegistry`).
 
 # Runtimes Embutidos (Python + Node portáteis)
 

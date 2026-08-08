@@ -1,0 +1,61 @@
+[package]
+name = "frederico-runtimes"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Gerencia runtimes portateis (Python + Node) para os exec tools do Modo Desenvolvedor (Fase 7)."
+
+# Crate puro (sem `unsafe`, sem `windows`/`tauri` direto).
+# `check-core-purity.ps1` nao permite deps de plataforma
+# em crates nao-excepcionais; `runtimes` faz HTTP via
+# `reqwest` (rustls), extracacao via `zip` (Rust-pura),
+# e I/O via `tokio` + `std::fs`. Nenhum syscall do Windows
+# direto.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime (download + extract em paralelo).
+tokio = { workspace = true }
+
+# HTTP (download dos binarios). rustls-tls evita dependencia
+# de OpenSSL nativo (sandbox: build do app nao pode exigir
+# OpenSSL no Windows do usuario). `blocking` feature
+# habilita `reqwest::blocking` usado pelo bootstrap
+# (que e' sync, chamado via `block_in_place`).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+
+# Serializacao do manifest.json.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Hash SHA-256 pinned no source pra validar o download.
+# Verificacao pos-download: compare com constante em
+# `python.rs` / `node.rs`. Se mismatch, delete + re-download.
+sha2 = "0.10"
+
+# Extracao do zip (Python embeddable package, Node zip portable).
+# `zip` 0.6+ e' Rust-pura, sem `unsafe` (FFI opaco).
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+# Caminhos de instalacao (resolve %LOCALAPPDATA% em Windows).
+directories = { workspace = true }
+
+# Erros e logs (padrao do workspace).
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Timestamps no manifest.json (`bootstrap_at`).
+chrono = { workspace = true }
+
+# Identificador do runtime (`python-3.12.4`).
+# `uuid` ja' vem do workspace.
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Tests de bootstrap usam `tempfile` para instalar_root isolado.
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "time"] }
