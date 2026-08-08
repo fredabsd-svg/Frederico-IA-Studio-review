@@ -460,10 +460,10 @@ fn main() {
             // (degradação declarada). Construtor é **sync**
             // (não tem I/O), pode rodar direto na `setup` da
             // casca.
-            // 
-ew() já retorna Arc<SecurityJailResolver>
-            // — não envolver em outro Arc::new (causaria
-            // Arc<Arc<...>>).
+            //
+            // `new()` já retorna `Arc<SecurityJailResolver>`
+            // — não envolver em outro `Arc::new` (causaria
+            // `Arc<Arc<...>>`).
             let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
                 frederico_security::jail::SecurityJailResolver::new(
                     frederico_security::jail::SecurityJailConfig::secure_default(),
