@@ -1387,6 +1387,8 @@ dependencies = [
  "directories",
  "frederico-core",
  "frederico-process-architecture",
+ "frederico-runtimes",
+ "frederico-security",
  "jsonschema",
  "serde",
  "serde_json",

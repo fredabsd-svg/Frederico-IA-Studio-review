@@ -12,6 +12,10 @@ unsafe_code = "forbid"
 [dependencies]
 frederico-core = { workspace = true }
 frederico-process-architecture = { workspace = true }
+# Etapa 4 da Fase 7: `exec.python` / `exec.node` consomem
+# `SecurityJailResolver` (Etapa 2) e `RuntimeRegistry` (Etapa 3).
+frederico-security = { workspace = true }
+frederico-runtimes = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

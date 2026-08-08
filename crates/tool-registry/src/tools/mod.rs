@@ -186,3 +186,6 @@ pub trait Tool: Send + Sync {
 
 pub mod files_read;
 pub use files_read::FilesReadTool;
+
+// Re-exports das `exec.*` tools (Etapa 4 da Fase 7).
+pub use crate::exec::{FilesExecNodeTool, FilesExecPythonTool};

@@ -40,7 +40,7 @@ function falha(check, arquivo, msg) {
 function listarMd(dir, acc = []) {
   if (!existsSync(dir)) return acc;
   for (const nome of readdirSync(dir)) {
-    if (["node_modules", "target", ".git", "dist", "runtime"].includes(nome)) continue;
+    if (["node_modules", "target", ".git", "dist", "runtime", ".trash"].includes(nome)) continue;
     const p = join(dir, nome);
     if (statSync(p).isDirectory()) listarMd(p, acc);
     else if (nome.endsWith(".md")) acc.push(p);
