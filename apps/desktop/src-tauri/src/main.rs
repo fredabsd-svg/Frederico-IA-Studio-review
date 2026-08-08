@@ -434,24 +434,10 @@ fn main() {
             // vê um tool que não consegue invocar (degradação
             // declarada, não substituição silenciosa).
             //
-            // SpecialistRegistry (Etapa 3 PR 1 da Fase 6, ADR-0030)
-            // + PermissionLoader (Etapa 3 PR 2). O
-            // `ChatOrchestrator` consome ambos pra montar o
-            // `SubagentRunner` interno (Etapa 4 PR 2,
-            // ADR-0027). Reusamos o `specialist_bundle` que o
-            // Tauri command `list_specialists` já consome
-            // (criado na Etapa 3 — mesma `Arc<Catalog>` que o
-            // orchestrator).
-            let specialist_registry = specialist_bundle.registry.clone();
-            // `PermissionLoader::new()` é stateless do ponto
-            // de vista do caller — o cache é em memória,
-            // chaveado por `(path, content_hash)`. A casca
-            // guarda a mesma instância no `AppState` e o
-            // `ChatOrchestrator` (e o `SubagentRunner`)
-            // consomem o mesmo loader (sem re-parse
-            // redundante).
-            let permission_loader =
-                std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
+            // (SpecialistRegistry + PermissionLoader são
+            // construídos mais abaixo, perto de onde o
+            // `ChatOrchestratorParts` os consome — ver bloco
+            // `ChatOrchestratorParts::new`.)
 
             // `SecurityJailResolver` (Etapa 2 da Fase 7,
             // ADR-0031 + ADR-0036). Orquestrador do sandbox
