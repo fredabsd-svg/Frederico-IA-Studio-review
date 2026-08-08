@@ -1,10 +1,10 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-03
-Fase correspondente: 3 (Etapa 2) + Fase de Ligação (Etapa 1)
+Fase correspondente: 3 (Etapa 2) + Fase de Ligação (Etapa 1) + 7 (Etapa 1 — planejamento)
 -->
 
-> Última verificação: 2026-08-03. Reflete a Etapa 2 da Fase 3 + a
+> Última verificação: 2026-08-03 (Fase 3 + Fase de Ligação). Reflete a Etapa 2 da Fase 3 + a
 > Etapa 1 da Fase de Ligação — crate `frederico-tool-registry`
 > com a enum `ToolManifest` (todos os 22 campos do spec
 > §"Contrato do manifesto" + builder fluente), `JsonSchema`
@@ -231,6 +231,30 @@ Decisões relacionadas:
 - [`security-threat-model.md`](./security-threat-model.md) — ameaças ao registro.
 - [`tool-permission-model.md`](./tool-permission-model.md) — permissões hierárquicas.
 
+## Status por ferramenta da Fase 7 (Etapa 1, 2026-08-08)
+
+Atualização da tabela do §"Catálogo inicial" para refletir o que a Fase 7 Etapa 1 planejou. As 5 ferramentas abaixo são **planejadas** (estado `especificado`, ainda sem código) — a Etapa 2 em diante da Fase 7 implementa cada uma no seu respective step. Cada linha referencia o ADR que fecha a decisão e a etapa que implementa.
+
+| Ferramenta | Namespace | Etapa da Fase 7 | ADR | Status |
+|---|---|---|---|---|
+| `files.write` | `files` | 5 | [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) | `especificado` (atomic write + backup + audit) |
+| `files.edit` | `files` | 5 | [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) | `especificado` (find literal + replace_all + atomic) |
+| `files.list` | `files` | 5 | (sem ADR próprio, herda de ADR-0035 + Jail) | `especificado` (apenas lista diretório, sem ler conteúdo) |
+| `exec.python` | `exec` | 4 | [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) + [ADR-0036](../decisions/0036-security-jail-resolver-windows-job-objects.md) | `especificado` (sob SecurityJailResolver, escopo `OneTurn` default) |
+| `exec.node` | `exec` | 4 | mesmo par de ADRs | `especificado` (mesma forma, runtime Node) |
+| `exec.shell` | `exec` | 6 | [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) D3 | `especificado` (sempre `OneExecution`, Denylist + Allowlist) |
+
+**`web.search`, `web.open`, `brasil.cnpj`, `github.*`, `memory.*`** continuam com o status anterior (Fase 2 a Fase 6) e **não** entram na Fase 7. Especificamente, as ferramentas `github.*` são **adiadas para Fase 8** pelo [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) (escopo da Fase 7 vira só execução isolada).
+
+**Catálogo implementado em produção (2026-08-08):** apenas `files.read` (Etapa 2 da Fase 3 + Etapa 1 da Fase de Ligação). As 5 ferramentas da tabela acima entram no `ToolRegistry` à medida que cada etapa da Fase 7 fecha — gate `check-e2e-gate.ps1` valida consistência com a coluna `E2E de cobertura` do `status.md`.
+
+**Onde os detalhes de cada ferramenta nova vivem:**
+
+- `files.write` / `files.edit` / `files.list` — sem spec próprio; o §"Catálogo inicial" deste documento + o [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) definem o contrato completo. Decisão consciente: o `tool-registry-specification.md` é o **inventário** (catálogo + validação), e o ADR é a **política** (semântica de sobrescrita). Sem duplicação.
+- `exec.python` / `exec.node` / `exec.shell` — [`exec-tools-specification.md`](./exec-tools-specification.md) é o spec completo. Este spec referencia; não duplica.
+- Sandbox que envolve as `exec.*` — [`windows-sandbox-design.md`](./windows-sandbox-design.md) (aprimorado na Etapa 1, 2026-08-08).
+- Runtimes portáteis consumidos por `exec.python` / `exec.node` — [`runtimes-architecture.md`](./runtimes-architecture.md) (novo, Etapa 1, 2026-08-08).
+
 ## Referências
 
 - `PROMPT MESTRE` §7 (inventário), §7.1-§7.11
@@ -238,3 +262,12 @@ Decisões relacionadas:
 - [`process-architecture.md`](./process-architecture.md)
 - [`security-threat-model.md`](./security-threat-model.md)
 - [`testing-strategy.md`](./testing-strategy.md) — testes obrigatórios do §7.10
+- [`windows-sandbox-design.md`](./windows-sandbox-design.md) — sandbox da Fase 7
+- [`runtimes-architecture.md`](./runtimes-architecture.md) — Python + Node portáteis
+- [`exec-tools-specification.md`](./exec-tools-specification.md) — `exec.python` / `exec.node` / `exec.shell`
+- [ADR-0031](../decisions/0031-fase-7-isolation-model-windows.md) — modelo de isolamento
+- [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) — escopo da Fase 7
+- [ADR-0033](../decisions/0033-sandbox-network-policy.md) — política de rede
+- [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) — política de aprovação
+- [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) — semântica de sobrescrita
+- [ADR-0036](../decisions/0036-security-jail-resolver-windows-job-objects.md) — `SecurityJailResolver`
