@@ -1,7 +1,7 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-07
-Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 + Etapa 6 fechadas — 6 de 6 etapas)
+Verificado contra o código em: 2026-08-08
+Fase correspondente: 6 (Etapa 1 + Etapa 2 + Etapa 5 PR 1 + Etapa 5 PR 2 + Etapa 6 + Etapa 7 UI/Polish fechadas — 7 de 7 etapas da Fase 6)
 -->
 
 # Arquitetura Multimodelo
@@ -184,6 +184,10 @@ A tabela acima é **alvo declarado na Etapa 1**. Conforme cada etapa mergea, a c
 **Status da Etapa 5 (atualizado em 2026-08-07 — Etapa 5 PR 2):** os 5 E2E da Etapa 5 existem em `crates/e2e/tests/e2e_pipeline_sequencial_e2e.rs` (Etapa 5 PR 1, persistência) e mais 5 E2E em `crates/e2e/tests/e2e_pipeline_sequencial_e2e_orchestrator.rs` (Etapa 5 PR 2, execução real via `MultimodelOrchestrator` + `ChatOrchestrator::start_pipeline`). O `MultimodelOrchestrator` (`crates/execution-engine/src/pipeline_orchestrator.rs`, ~600 linhas) fecha o caminho de execução (D5/D7 do ADR-0028) — o D6 (reuso por `output_hash`) tem a primitiva `list_reusable_stages` no `PipelineRepo` (Etapa 5 PR 1) mas o **reuso efetivo** entre stages do mesmo pipeline fica pra Etapa 6 (UI) — a semântica do `list_reusable_stages` precisa ser revisada (busca no stage que está prestes a rodar, não no anterior).
 
 **Status da Etapa 6 (atualizado em 2026-08-07 — Etapa 6 fecha a Fase 6):** D6 reuso efetivo re-implementado no `MultimodelOrchestrator` (busca `input_hash` matching no stage atual **antes** de criar o stage — fecha a regra de memória cross-project de 2026-08-07). 3 Tauri commands novos (`start_pipeline` + `cancel_pipeline` + `list_resumable_pipelines`) ligam a casca ao backend (consomem `ChatOrchestrator::start_pipeline` / `cancel_pipeline` + `PipelineRepo::list_resumable`). 2 E2E novos (`pipeline_d6_reuso_does_not_panic_when_no_reusable_stage` + `list_resumable_returns_only_running_pipelines`) fecham o caminho de produção. A UI do Modo Equipe (sidebar com lista de pipelines resumable + botão "retomar") é trabalho da **Etapa 7** (UI/Polish do plano mestre) — o backend está pronto, a Etapa 7 pluga o frontend.
+
+**Status da Etapa 7 (atualizado em 2026-08-08 — Etapa 7 fecha o ADR-0028 §D1 item 4):** UI React do Modo Equipe (rota `/team`, `PipelineView` com sidebar de pipelines resumable + detalhe por stage + modal de criação `PipelineCreateForm`). 4º Tauri command novo `list_pipeline_stages(run_id) -> Vec<MultimodelStage>` (necessário pra UI mostrar o progresso por stage — sem ele, a sidebar mostraria cabeçalhos sem detalhe). `services/pipelines.ts` consumido pela UI: `startPipeline` + `cancelPipeline` + `listResumablePipelines` + `listPipelineStages` (4 funções, todas wrappando `invoke()` direto dos Tauri commands dedicados — não via `ipc_dispatch`, mesma decisão dos 3 commands da Etapa 6). `components/PipelineView.tsx` (sidebar com polling 2s — mesmo padrão do `App.tsx` para a fila de aprovação — + lista de stages com `state`/`cost_microcents`/`input_hash`/`output_hash` + botão "Cancelar" se `state === "running"`). `components/PipelineCreateForm.tsx` (modal com seleção de `parent_run_id` via `listConversations` + N stages dinâmicos, provider/model/input por stage, default `simulated`/`simulated-echo` pra permitir testar sem configurar credencial real). **Botão "Retomar" (D5) deixado como TODO** com tooltip explicando: retomar fielmente requer armazenar o `input` original de cada `MultimodelStage` no DB (mudança de schema, migração 0031 — trabalho de fase futura). Por ora a Etapa 7 entrega a parte que **não precisa** do input original: listar, mostrar estágios, cancelar, criar. Regra "degradação declarada > substituição silenciosa" (memory 2026-08-03) — a UI não finge que Retomar funciona. Verificações: `npm run build` verde (56 modules, era 52, +4; CSS 13.57 kB, era 10.22, +3.35; JS 201.74 kB, era 191.62, +10.12), `tsc --noEmit` verde, `check-docs.mjs` verde, `check-core-purity.ps1` verde. **ADR-0028 §D1 (5 critérios) 5/5 fechados.**
+
+**Próxima fase** depende de priorização do user: Fase 7 (Modo desenvolvedor) ou pausa de feature work pra focar em polish/segurança.
 
 ## Referências
 

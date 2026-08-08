@@ -615,7 +615,7 @@ td button {
 .btn-primary:hover { filter: brightness(1.1); }
 .btn-primary:disabled { background: var(--fg-dim); cursor: not-allowed; }
 
-/* === Etapa 5 (Fase 4): painel de mem�ria ========================== */
+/* === Etapa 5 (Fase 4): painel de mem�ria ========================== */
 
 .memory-panel {
   display: flex;
@@ -778,4 +778,245 @@ td button {
 .badge-info {
   background: var(--bg-info, #1d3a5a);
   color: #fff;
+}
+
+/* === Fase 6, Etapa 7: Modo Equipe (PipelineView) ============ */
+
+.pipeline-view {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 1.5rem;
+  margin: 0 -1.5rem;
+  padding: 0 1.5rem;
+  min-height: calc(100vh - 8rem);
+}
+
+.pipeline-sidebar {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem 0.5rem 0;
+  overflow: hidden;
+}
+
+.pipeline-sidebar__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.pipeline-sidebar__header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.pipeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pipeline-list__item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pipeline-list__item:hover {
+  border-color: var(--accent);
+}
+
+.pipeline-list__item--selected {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.pipeline-list__item-button {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: var(--fg);
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pipeline-list__item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.pipeline-list__item-id {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.pipeline-list__item-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+}
+
+.pipeline-empty {
+  color: var(--fg-dim);
+  font-style: italic;
+  padding: 1rem 0;
+}
+
+.pipeline-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.5rem 0;
+}
+
+.pipeline-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.75rem;
+}
+
+.pipeline-detail__header h2 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1.1rem;
+}
+
+.pipeline-detail__meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pipeline-stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  counter-reset: stage;
+}
+
+.pipeline-stage {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pipeline-stage__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.pipeline-stage__seq {
+  font-weight: bold;
+  color: var(--accent);
+}
+
+.pipeline-stage__id {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.pipeline-stage__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+}
+
+.pipeline-stage__hashes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+}
+
+.pipeline-stage__hashes code {
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+.pipeline-stage__times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+}
+
+/* Formulário de criação de pipeline. */
+
+.pipeline-stage-draft {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pipeline-stage-draft__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.pipeline-stage-draft label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+}
+
+.pipeline-stage-draft input,
+.pipeline-stage-draft select,
+.pipeline-stage-draft textarea {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.pipeline-stage-draft textarea {
+  resize: vertical;
+  min-height: 3rem;
 }

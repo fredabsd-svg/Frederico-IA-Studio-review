@@ -579,6 +579,7 @@ fn main() {
             start_pipeline,
             cancel_pipeline,
             list_resumable_pipelines,
+            list_pipeline_stages,
         ])
         .run(tauri::generate_context!())
         .expect("falha ao rodar app Tauri");
@@ -1328,6 +1329,33 @@ async fn list_resumable_pipelines(
     use frederico_storage::PipelineRepo;
     PipelineRepo::new(&state.db)
         .list_resumable()
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
+/// `tauri::command` que lista os `MultimodelStage`s de um
+/// pipeline (Etapa 7 do Modo Equipe, UI/Polish). Devolve
+/// `Vec<MultimodelStage>` ordenado por `seq` ASC (mesma ordem
+/// do `PipelineRepo::list_stages`).
+///
+/// **Por que separado do `ipc_dispatch`:** o `list_resumable_pipelines`
+/// devolve só cabeçalhos (`MultimodelRun`). Pra UI mostrar o
+/// progresso de cada stage, ela precisa dos stages
+/// individuais. Um comando dedicado é mais barato que passar
+/// um struct gordo pelo `ipc_dispatch`.
+///
+/// **Erros:** retorna `Err(MultimodelError::RunNotFound)` se
+/// o `run_id` não existe (a UI mostra "pipeline não
+/// encontrado"). `Sqlite` errors propagam como `String`
+/// legível.
+#[tauri::command]
+async fn list_pipeline_stages(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<frederico_storage::MultimodelStage>, String> {
+    use frederico_storage::PipelineRepo;
+    PipelineRepo::new(&state.db)
+        .list_stages(&run_id)
         .await
         .map_err(|e| format!("{e}"))
 }
