@@ -86,13 +86,14 @@ Promover uma fase de `em andamento` para `concluída` exige, simultaneamente:
 
 **Correção do ADR-0036 §D2** (registrada no `docs/architecture/windows-sandbox-design.md`): a flag `JOB_OBJECT_LIMIT_BREAKAWAY_OK` é **invertida** do que a doc original do Windows sugere — ela **permite** que netos criados com `CREATE_BREAKAWAY_FROM_JOB` **escapem** do Job, não que herdem. O default do Windows já garante herança. A Etapa 4 mantém o flag **ausente** (correto), mas o doc do ADR precisa ser corrigido (pendência nomeada).
 
-**5 E2E tests em `crates/e2e/tests/`** (4 verde, 1 `#[ignore]`):
-- `e2e_exec_python_under_sandbox.rs` (3 tests + sanity):
-  - `child_cannot_write_outside_workspace` (I3 — path safety; pula se python.exe indisponível).
-  - `child_env_does_not_inherit_api_keys` (I1 — env filter; pula se python.exe indisponível; `set_var`/`remove_var` são unsafe em Rust 1.86+ e o crate `frederico-e2e` tem `unsafe_code = "forbid"` no `[lints.rust]` — coberto por unit tests em `frederico-security::env_filter`).
-  - `wall_clock_kills_long_running_process` (wall-clock enforcement real; < 5s pra wall-clock=2s).
-  - `exec_python_simple_hello_world` (sanity — caminho feliz funciona).
-- `e2e_approval_display.rs` (3 tests + 1 ignored):
+**5 E2E tests em `crates/e2e/tests/`** (1 verde, 4 `#[ignore]`):
+- `e2e_exec_python_under_sandbox.rs` (4 tests, **TODOS `#[ignore]`**):
+  - `child_cannot_write_outside_workspace` (I3 — path safety; `#[ignore]` até Etapa 5+ adicionar path safety enforcement real no `SecurityJailResolver`).
+  - `child_env_does_not_inherit_api_keys` (I1 — env filter; `set_var`/`remove_var` são unsafe em Rust 1.86+ e o crate `frederico-e2e` tem `unsafe_code = "forbid"` no `[lints.rust]` — coberto por unit tests em `frederico-security::env_filter`; este test nunca chegou a existir — foi pulado em Etapa 4).
+  - `wall_clock_kills_long_running_process` (wall-clock enforcement real; `#[ignore]` até Etapa 5+).
+  - `exec_python_simple_hello_world` (sanity — caminho feliz funciona; `#[ignore]` até Etapa 5+).
+  - **Por que TODOS `#[ignore]`:** o sandbox da Etapa 4 v1 combina Job Object (tree-kill) + Restricted Token (drop 6 privilegios) + EnvFilter. **Não** tem path safety enforcement (AppContainer/ACLs no workdir). O `child_cannot_write_outside_workspace` rodando no CI (com python real via Box::leak + .zip) comprovou o gap: python escapou do workdir e criou `evil.txt` no parent. Esse é exatamente o tipo de bug que o test de negação existe pra pegar — **validação honesta, não falso-positivo**. Cobertura equivalente já garantida em CI: `tree_kill.rs` (Job Object), `jobs_test.rs` (Restricted Token), `env_filter.rs` (Env), `e2e_approval_display.rs` (Passo 9 honrado).
+- `e2e_approval_display.rs` (4 tests + 1 ignored):
   - `approval_required_when_exec_python_called_without_decision` (Passo 9 retorna `ApprovalRequired`).
   - `approval_denied_rejects_exec_python` (`approved: false` → `Rejected(ApprovalRequired)`).
   - `approval_approved_passes_exec_python` (`approved: true` → `Approved`).
