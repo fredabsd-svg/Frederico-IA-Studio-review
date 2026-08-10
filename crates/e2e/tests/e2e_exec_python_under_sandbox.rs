@@ -24,9 +24,22 @@
 //! suficiente nos unit tests — a Etapa 5+ pode reativar
 //! este E2E se o lint for afrouxado.
 //!
-//! **Setup:** os testes precisam de `python.exe` no PATH (pula
-//! com degradação controlada se não achar — mesma estratégia do
-//! `crates/security/tests/tree_kill.rs`).
+//! **Setup:** os testes precisam de `python-3.12.4` (embeddable)
+//! bootstrapped via `frederico-runtimes` (rede necessária; **falha**
+//! com mensagem clara se indisponível — degradação declarada).
+//! Mesma decisão do `memory_real_providers_or_skip!` da Fase de
+//! Ligação: teste de segurança que **pula** por ausência do runtime
+//! que ele deveria testar é **fail-open com outra roupa** (o test
+//! passa sem ter provado nada). Por isso o setup hard-fails se o
+//! bootstrap não consegue entregar um python-3.12.4 rodando.
+//!
+//! **Por que bootstrap (não `find_python` no PATH):** o test deve
+//! usar o **mesmo** resolvedor de runtime que a produção usa
+//! (`frederico-runtimes`). O caminho anterior (`find_python()` +
+//! cópia de `.exe`/`.dll` do PATH) testava o setup do test, não o
+//! que o app realmente executa — sem isso, o test podia passar
+//! com python do sistema (full install) e falhar no CI com
+//! embeddable, ou vice-versa.
 //!
 //! **Por que teste direto do tool (não via `ChatOrchestrator`):**
 //! os contratos testados são do **sandbox**, não do pipeline
@@ -53,302 +66,99 @@ use tempfile::TempDir;
 // Setup helpers
 // ============================================================================
 
-/// Encontra `python.exe` no PATH. Retorna o caminho completo
-/// do **interpreter STANDALONE** (não o stub do WindowsApps,
-/// não o launcher que precisa de `Lib\` em dir irmão).
+/// Constrói um `RuntimeRegistry` com bootstrap do `python-3.12.4`
+/// (embeddable distribution baixada do python.org pelo
+/// `frederico-runtimes`). **Hard-fail** se o bootstrap não
+/// consegue entregar um python rodando — mesma decisão do
+/// `memory_real_providers_or_skip!` da Fase de Ligação:
+/// teste de segurança que **pula** por ausência do runtime
+/// que ele deveria testar é fail-open com outra roupa
+/// (o test passa sem ter provado nada).
 ///
-/// **Por que essa validação existe:** o `where python` em
-/// Windows pode retornar candidatos que não funcionam
-/// standalone (fora do seu dir original):
+/// **Por que bootstrap (não `find_python` no PATH):** o test
+/// precisa usar o **mesmo** resolvedor de runtime que a
+/// produção usa (`frederico-runtimes`). O caminho anterior
+/// (`find_python()` + cópia de `.exe`/`.dll` do PATH) testava
+/// o setup do test, não o que o app realmente executa — sem
+/// isso, o test podia passar com python do sistema (full
+/// install) e falhar no CI com embeddable, ou vice-versa.
 ///
-/// 1. **WindowsApps stub** (`%LOCALAPPDATA%\Microsoft\
-///    WindowsApps\python.exe`) — abre a Microsoft Store.
-///    Pulamos.
-/// 2. **Python launcher install** (`C:\Users\<user>\
-///    AppData\Local\Python\pythoncore-3.X-64\python.exe`)
-///    — o `.exe` (106KB) precisa de `Lib\` (stdlib) no
-///    **mesmo dir** pra rodar. Copiar só `.exe` + `.dll`
-///    não basta: python falha em `import encodings` no
-///    startup. Pulamos (a Etapa 5+ pode reativar via
-///    embeddable distribution ou symlinking de `Lib\`).
-/// 3. **Interpreter standalone** (ex.: `C:\Python311\
-///    python.exe` em GitHub Actions runners, ou
-///    embeddable distribution com `python3X.zip`) — tem
-///    `.dll` E `Lib\` ou `python3X.zip`. ESTE funciona.
-///
-/// **Detecção:** o dir do candidato tem `Lib\` ou
-/// `python3X.zip`? Se sim, é standalone. Se não, é
-/// launcher e pulamos.
-fn find_python() -> Option<std::path::PathBuf> {
-    for name in &["python", "python3", "py"] {
-        let out = std::process::Command::new("where")
-            .arg(name)
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            continue;
-        }
-        let s = String::from_utf8_lossy(&out.stdout);
-        for line in s.lines() {
-            let path = std::path::PathBuf::from(line.trim());
-            let path_str = path.to_string_lossy();
-            if path_str.contains("WindowsApps") {
-                continue;
-            }
-            if let Some(real) = resolve_real_interpreter(&path) {
-                return Some(real);
-            }
-        }
-    }
-    None
-}
-
-/// Dado um candidato de `where`, retorna o path do
-/// interpreter se ele tem stdlib utilizável no mesmo dir
-/// (`Lib\` ou `python3X.zip`).
-///
-/// Estratégia: tentamos o candidato direto primeiro
-/// (caminho mais comum em CI runners com Python
-/// instalado em `C:\Python3XX\`). Se falhar, tentamos
-/// `pythoncore-*/python.exe` ao lado (Windows launcher
-/// install — geralmente também falha). Se nenhum dos
-/// dois for standalone, retorna `None`.
-fn resolve_real_interpreter(candidate: &std::path::Path) -> Option<std::path::PathBuf> {
-    if dir_has_stdlib(candidate.parent()?) {
-        return Some(candidate.to_path_buf());
-    }
-    if let Some(parent) = candidate.parent() {
-        if let Some(grandparent) = parent.parent() {
-            if let Ok(entries) = std::fs::read_dir(grandparent) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let p = entry.path();
-                    if p.is_dir()
-                        && p.file_name()
-                            .map(|n| n.to_string_lossy().starts_with("pythoncore-"))
-                            .unwrap_or(false)
-                    {
-                        let real = p.join("python.exe");
-                        if dir_has_stdlib(&p) {
-                            return Some(real);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// `true` se `dir` tem stdlib utilizável: `Lib\` (full
-/// install) ou `python3X.zip` (embeddable distribution).
-/// Usado pra distinguir interpreter standalone de
-/// launcher que precisa de `Lib\` num dir vizinho.
-fn dir_has_stdlib(dir: &std::path::Path) -> bool {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let n = entry.file_name();
-        let n = n.to_string_lossy();
-        if n == "Lib" && entry.path().is_dir() {
-            return true;
-        }
-        if n.starts_with("python") && n.ends_with(".zip") {
-            return true;
-        }
-    }
-    false
-}
-
-/// Tenta rodar `<python> -c "exit(0)"`. Retorna `true` se
-/// sai com código 0.
-///
-/// **Usado em 2 lugares:**
-/// 1. Em `build_registry` (pós-cópia) — valida que o
-///    python copiado pro `install_root` realmente roda.
-///    Se não (ex.: `Lib\` faltando), o test pula.
-/// 2. (Reservado pra v2) validação de candidate em
-///    `resolve_real_interpreter`.
-fn can_run_python(python: &std::path::Path) -> bool {
-    std::process::Command::new(python)
-        .arg("-c")
-        .arg("exit(0)")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Constrói um `RuntimeRegistry` apontando pra um `tempdir`
-/// (sem bootstrap — os testes usam o `python.exe` do PATH
-/// via um runtime customizado injetado em `python-3.12.4`).
-///
-/// **Hack honesto:** o `RuntimeRegistry::new` hard-coda
-/// `python-3.12.4` + `node-20.16.0` (Etapa 3 da Fase 7).
-/// Os testes copiam o `python.exe` (e a `.dll` sibling)
-/// do PATH pro `install_root` esperado pelo
-/// `PythonRuntime::executable()` — assim o spawn encontra
-/// o binário + interpreter sem precisar baixar.
-///
-/// **Por que copiar a `.dll` também:** o `CreateProcessW`
-/// procura a `python3X.dll` no mesmo dir do `python.exe`.
-/// Se copiarmos só o `.exe`, o spawn falha com
-/// `os error 3` ("The system cannot find the path
-/// specified"). Em launcher installs (Windows Python
-/// launcher), o `.exe` no `bin\` é só wrapper; o interpreter
-/// real + `.dll` ficam em `pythoncore-3.X-64\`. Por isso
-/// o `find_python` retorna o interpreter real (com `.dll`
-/// sibling), e aqui copiamos a `.dll` junto.
-///
-/// Retorna `None` se a cópia não consegue produzir um
-/// python executável (ex.: `.dll` não está acessível) — o
-/// caller pula o teste.
+/// **Rede necessária:** o bootstrap baixa ~11 MB do
+/// python.org. Em air-gapped, falha com
+/// `BootstrapError::OfflineRequired` — o test hard-fail com
+/// a mesma mensagem, **não** pula.
 ///
 /// **Lifetime do `install_root`:** o `TempDir` é
-/// \`Box::leak\`-ado (\`'static\`) pra que o
-/// \`install_root\` (e os arquivos copiados pro \`...\`
-/// subdir) sobrevivam ao fim de \`build_registry\`. Sem
-/// isso, o \`spawn\` no \`tool.execute\` falha com
-/// \`os error 3\` porque o .exe/.dlls somem no drop
-/// do TempDir. Vaza um TempDir por test (OS limpa
-/// \`%TEMP%\` periodicamente) — aceitável em test.
-fn build_registry() -> Option<Arc<RuntimeRegistry>> {
+/// `Box::leak`-ado (`'static`) pra que o `install_root`
+/// (e os arquivos extraídos pro `.../python-3.12.4/3.12.4/`
+/// subdir) sobrevivam ao fim de `build_registry` e ao test
+/// inteiro. Vaza um TempDir por test (OS limpa `%TEMP%`
+/// periodicamente) — aceitável em test.
+async fn build_registry() -> Arc<RuntimeRegistry> {
     let tmp: &'static TempDir = Box::leak(Box::new(TempDir::new().expect("tempdir")));
     let cfg = RuntimeConfig {
         install_root: tmp.path().to_path_buf(),
         keep_n_versions: 1,
-        allow_download: false, // testes não baixam
+        allow_download: true, // bootstrap baixa o embeddable do python.org
         mirror_url: None,
-        download_timeout: Duration::from_secs(1),
+        download_timeout: Duration::from_secs(300),
     };
-    let registry = RuntimeRegistry::new(cfg).ok()?;
-    if let Some(py) = find_python() {
-        let py_id = RuntimeId::new("python-3.12.4");
-        if let Some(runtime) = registry.get(&py_id) {
-            let exe = runtime.executable();
-            if let Some(parent) = exe.parent() {
-                let _ = std::fs::create_dir_all(parent);
-                // Copia o python.exe
-                if std::fs::copy(&py, exe).is_err() {
-                    return None;
-                }
-                // Copia a `python*.dll` + `vcruntime*.dll`
-                // (CreateProcessW procura a .dll no mesmo
-                // dir do .exe; sem isso, spawn falha com
-                // os error 3 "system cannot find the path
-                // specified").
-                if let Some(src_dir) = py.parent() {
-                    copy_python_dlls(src_dir, parent);
-                    // Copia também o `python3X.zip` (stdlib
-                    // pre-empacotada do embeddable distribution).
-                    // Sem ele, python falha com
-                    // `ModuleNotFoundError: encodings` no
-                    // startup. `Lib\` (full install) é
-                    // muito grande (50-200MB) pra copiar em
-                    // test — só o embeddable com `.zip` é
-                    // usável nesse setup.
-                    copy_python_zip(src_dir, parent);
-                }
-                // **Validação pós-cópia:** tentar rodar o
-                // python copiado. Se ele falha (ex.: falta
-                // `Lib\` ou `.zip` no destino), o test pula
-                // em vez de falhar com `ModuleNotFoundError`
-                // ou `os error 3`. Captura o caso onde a
-                // source é um Python "launcher install"
-                // (Windows: `pythoncore-3.X-64\python.exe`
-                // é um wrapper que precisa de `Lib\` como
-                // sibling) e a cópia só do `.exe`+`.dll`
-                // não é suficiente.
-                if !can_run_python(exe) {
-                    eprintln!(
-                        "[e2e_exec_python/setup] python copiado nao roda standalone (faltou Lib\\ ou .zip); pulando"
-                    );
-                    return None;
-                }
-            }
-        }
-    }
-    Some(Arc::new(registry))
-}
+    let registry = RuntimeRegistry::new(cfg).expect("RuntimeRegistry::new");
+    let report = registry
+        .bootstrap_all()
+        .await
+        .expect("RuntimeRegistry::bootstrap_all falhou");
 
-/// Copia todos os `python*.dll` de `src_dir` pra `dst_dir`.
-/// Usado em tests E2E pra garantir que o python copiado
-/// consegue carregar o interpreter. Falhas são silenciosas
-/// (um `.dll` faltando é diagnóstico, não panic).
-fn copy_python_dlls(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
-    if let Ok(entries) = std::fs::read_dir(src_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let n = entry.file_name();
-            let n = n.to_string_lossy();
-            // Copia python*.dll (obrigatório) + vcruntime*.dll
-            // (runtime C do Windows que python3X.dll depende).
-            if (n.starts_with("python") && n.ends_with(".dll")) || n.starts_with("vcruntime") {
-                let _ = std::fs::copy(entry.path(), dst_dir.join(&*n));
-            }
+    // Hard-fail se python não bootstrappou. Teste de segurança
+    // que pula por ausência do runtime é fail-open.
+    if !report.failed.is_empty() {
+        for (id, err) in &report.failed {
+            eprintln!("[e2e_exec_python/setup] {} bootstrap falhou: {:?}", id, err);
         }
+        panic!(
+            "runtime python-3.12.4 indisponível: bootstrap falhou. \
+             Teste de segurança não pode pular — pular por \
+             ausência do runtime é fail-open (mesma decisão do \
+             memory_real_providers_or_skip! da Fase de Ligação). \
+             Verifique a rede ou pre-popule o cache em {}",
+            tmp.path().display()
+        );
     }
-}
 
-/// Copia o `python3X.zip` (stdlib pre-empacotada do
-/// embeddable distribution) de `src_dir` pra `dst_dir`.
-/// Sem o `.zip` no destino, o python copiado falha com
-/// `ModuleNotFoundError: encodings` no startup. `Lib\`
-/// (full install) é muito grande pra copiar em test —
-/// só o embeddable com `.zip` é usável nesse setup.
-///
-/// **Silencioso** se o `.zip` não existe (source é um
-/// full install com `Lib\`, não embeddable — o test vai
-/// pular via `can_run_python` depois).
-fn copy_python_zip(src_dir: &std::path::Path, dst_dir: &std::path::Path) {
-    if let Ok(entries) = std::fs::read_dir(src_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let n = entry.file_name();
-            let n = n.to_string_lossy();
-            if n.starts_with("python") && n.ends_with(".zip") {
-                let _ = std::fs::copy(entry.path(), dst_dir.join(&*n));
-            }
-        }
+    // Validação extra: o python.exe existe onde o runtime diz.
+    let py_id = RuntimeId::new("python-3.12.4");
+    let runtime = registry
+        .get(&py_id)
+        .expect("python-3.12.4 no registry (hard-coded na Etapa 3)");
+    let exe = runtime.executable();
+    if !exe.exists() {
+        panic!(
+            "python-3.12.4 bootstrapped (report OK) mas exe não existe em {}. \
+             Bug do bootstrap — abrir issue.",
+            exe.display()
+        );
     }
+
+    Arc::new(registry)
 }
 
 /// Constrói o `Vec<Arc<dyn Tool>>` (Python + Node) com deps
-/// reais. Retorna `None` se python não está disponível
-/// (degradação).
+/// reais. **Hard-fail** se o setup falha (mesma regra:
+/// `build_registry`).
 ///
 /// **Por que `build_default_exec_tools` (não `FilesExecPythonTool::new`
 /// direto):** o construtor e a `FilesExecToolBase` são
 /// `pub(crate)` — só acessíveis dentro do `frederico-tool-registry`.
 /// A função pública `build_default_exec_tools` esconde esse
 /// detalhe.
-///
-/// **Lifetime do TempDir:** o `runtimes` retornado pelo
-/// `build_registry` aponta pra um `install_root` que é um
-/// `TempDir` interno. Se o TempDir droppar, os arquivos
-/// copiados (python.exe + .dlls + .zip) somem, e os
-/// testes subsequentes falham com `os error 3`. Pra
-/// evitar isso, o `build_registry` retorna o TempDir
-/// junto, e aqui guardamos em `_tempdir_keep_alive`
-/// (variável que não é usada mas mantém o TempDir vivo
-/// durante o test). Vaza memória no fim (OS limpa o
-/// tempdir), mas isso é aceitável em test.
-fn build_exec_tools() -> Option<Vec<Arc<dyn Tool>>> {
-    let _python = find_python()?;
-    let runtimes = build_registry()?;
+async fn build_exec_tools() -> Vec<Arc<dyn Tool>> {
+    let runtimes = build_registry().await;
     let resolver = SecurityJailResolver::new(SecurityJailConfig::secure_default())
         .expect("SecurityJailResolver::new");
     // `new()` já retorna `Arc<SecurityJailResolver>` — não
     // envolver em outro `Arc::new`.
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    // Sanity: o runtime existe (degradação: pode não existir
-    // se o registry não tem python-3.12.4 hard-coded, mas a
-    // v1 da Etapa 3 hard-coda).
-    if runtimes.get(&RuntimeId::new("python-3.12.4")).is_none() {
-        eprintln!("[e2e_exec_python] runtime python-3.12.4 não está no registry; pulando");
-        return None;
-    }
-    Some(build_default_exec_tools(resolver, runtimes, audit))
+    build_default_exec_tools(resolver, runtimes, audit)
 }
 
 /// Helper: pega o `FilesExecPythonTool` do `Vec` retornado
@@ -427,13 +237,10 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 /// adicionar.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_cannot_write_outside_workspace() {
-    let tools = match build_exec_tools() {
-        Some(t) => t,
-        None => {
-            eprintln!("[e2e_exec_python] python.exe não disponível; teste pulado");
-            return;
-        }
-    };
+    // Hard-fail se o setup não conseguir entregar python-3.12.4
+    // rodando — teste de segurança não pode pular por ausência
+    // do runtime (fail-open).
+    let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
 
     let workspace = TempDir::new().expect("tempdir workspace");
@@ -507,13 +314,7 @@ except (FileNotFoundError, PermissionError, OSError) as e:
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Phase 7 v1 nao enforce path safety no sandbox; reabilitar em Etapa 5+"]
 async fn wall_clock_kills_long_running_process() {
-    let tools = match build_exec_tools() {
-        Some(t) => t,
-        None => {
-            eprintln!("[e2e_exec_python] python.exe não disponível; teste pulado");
-            return;
-        }
-    };
+    let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
 
     let workspace = TempDir::new().expect("tempdir workspace");
@@ -580,13 +381,7 @@ print("slept 10s", flush=True)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Phase 7 v1 nao enforce path safety no sandbox; reabilitar em Etapa 5+"]
 async fn exec_python_simple_hello_world() {
-    let tools = match build_exec_tools() {
-        Some(t) => t,
-        None => {
-            eprintln!("[e2e_exec_python] python.exe não disponível; teste pulado");
-            return;
-        }
-    };
+    let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
 
     let workspace = TempDir::new().expect("tempdir workspace");
