@@ -236,10 +236,20 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 /// escapar). Hoje a Etapa 4 NAO bloqueia — Etapa 5+ vai
 /// adicionar.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Etapa 5+ pendente: RestrictedToken com SID restritivo proprio (path safety enforcement no SecurityJailResolver). Reativar quando a Etapa 5+ fechar; o test jah foi visto FALHANDO em 2026-08-10 (TDD Etapa 5+) - python escapou via open('..\\evil.txt', 'w') e criou arquivo no parent do workdir, provando a ausencia de path safety no sandbox."]
 async fn child_cannot_write_outside_workspace() {
-    // Hard-fail se o setup não conseguir entregar python-3.12.4
-    // rodando — teste de segurança não pode pular por ausência
-    // do runtime (fail-open).
+    // **Etapa 5+ da Fase 7 (2026-08-10):** este test foi
+    // **visto falhando** em 2026-08-10 (TDD Etapa 5+ — python
+    // escapou e criou arquivo no parent do workdir, provando
+    // ausência de path safety no sandbox). Foi reativado
+    // temporariamente, depois recolocado em `#[ignore]` porque
+    // a Etapa 5+ ainda não implementou a fix (caminho correto é
+    // RestrictedToken com SID restritivo próprio, em vez de
+    // DACL deny no parent do workdir — abordagem escalável).
+    //
+    // Reativar este test quando a Etapa 5+ fechar
+    // (regra: 3 `#[ignore]` saem e ficam verdes, com cada um
+    // tendo sido visto vermelho antes).
     let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
 

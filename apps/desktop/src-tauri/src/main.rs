@@ -559,11 +559,45 @@ fn main() {
             let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
                 Arc::new(frederico_tool_registry::NoopAuditSink);
 
-            let exec_deps = frederico_app::composition::ExecDeps {
-                resolver: security_jail_resolver.clone(),
-                runtimes: runtime_registry.clone(),
-                audit: audit_sink,
-            };
+            // `exec_deps` da Etapa 4 da Fase 7 (Python + Node sob
+            // SecurityJailResolver) **desabilitado** na Etapa 5+
+            // (regra "capacidade incompleta é capacidade
+            // indisponível"). O test de negação
+            // `child_cannot_write_outside_workspace` em
+            // `crates/e2e/tests/e2e_exec_python_under_sandbox.rs`
+            // **provou** que python escapa do workdir (cria
+            // arquivo no parent via `open("..\evil.txt", "w")`)
+            // sem path safety enforcement no sandbox. O
+            // RestrictedToken está construído no
+            // `SecurityJailResolver::new` mas não aplicado no
+            // spawn (o `std::os::windows::process::CommandExt::as_user`
+            // que facilitaria isso foi removido em Rust 1.97;
+            // a Etapa 5+ vai precisar de raw `CreateProcessAsUserW`
+            // do windows crate com SID restritivo próprio
+            // — trabalho significativo).
+            //
+            // Por isso passamos `None` pro `exec_deps` em
+            // `build_default_tools` e `build_default_allowed_for_run`
+            // — o catálogo volta pro mínimo (4 tools: files.read +
+            // files.list + files.write + files.edit; + docs.generate
+            // + docs.inspect se invoker for Some). Sem exec, sem
+            // risco de escape.
+            //
+            // O `SecurityJailResolver` continua construído (vai ser
+            // usado pela Etapa 5+ quando implementar path safety).
+            // O `RuntimeRegistry` continua bootstrap-ado em
+            // background (cache fica populado pra quando Etapa 5+
+            // religar). Só o **registro no catálogo** está
+            // desabilitado.
+            //
+            // A construção do `ExecDeps` é comentada (não deletada)
+            // pra documentar o que volta quando Etapa 5+ fechar.
+            //
+            // let exec_deps = frederico_app::composition::ExecDeps {
+            //     resolver: security_jail_resolver.clone(),
+            //     runtimes: runtime_registry.clone(),
+            //     audit: audit_sink,
+            // };
 
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem do
@@ -587,13 +621,17 @@ fn main() {
             // simetria é o que garante que o modelo **nunca**
             // vê um tool que não consegue invocar (degradação
             // declarada, não substituição silenciosa).
+            //
+            // **Etapa 5+ da Fase 7:** `exec_deps` é `None` até a
+            // path safety enforcement fechar. Ver bloco comentado
+            // acima.
             let tools = frederico_app::composition::build_default_tools(
                 document_worker_invoker.clone(),
-                Some(exec_deps.clone()),
+                None,
             );
             let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
                 document_worker_invoker.clone(),
-                Some(&exec_deps),
+                None,
             );
             let permission_set = if document_worker_invoker.is_some() {
                 frederico_app::composition::initial_permission_set_for_capable_launcher()
