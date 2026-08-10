@@ -48,6 +48,11 @@ serde = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 secrecy = { workspace = true }
+# SHA-256 (usado pelo e2e_files_write_under_jail pra recalcular
+# os hashes D6 esperados e asserir que `after_sha256` do output
+# bate com o hash real do conteúdo escrito em disco).
+sha2 = "0.10"
+hex = "0.4"
 
 # Python embedding — usado só pelo teste e2e_docs_generate_with_real_worker
 # (#[ignore]). Roda `python.exe` do workers/document-worker/runtime/ via

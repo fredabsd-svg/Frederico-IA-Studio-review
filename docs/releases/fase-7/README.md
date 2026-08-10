@@ -2,8 +2,8 @@
 
 <!--
 Estado: em andamento
-Verificado contra o código em: 2026-08-08
-Fase correspondente: 7 (Etapa 1 — planejamento)
+Verificado contra o código em: 2026-08-10
+Fase correspondente: 7 (Etapas 1-5 fechadas; Etapa 6 não iniciada)
 -->
 
 Índice das narrativas de processo (descrições de PR, lições de
@@ -25,8 +25,8 @@ foram tomadas no caminho, e o que se aprendeu.
 | **PR de Etapa 1** | [`pr-fase-7-etapa-1-planejamento.md`](./pr-fase-7-etapa-1-planejamento.md) (a ser escrito) | Etapa 1 — 6 ADRs (0031-0036) + 2 specs novos (`runtimes-architecture.md`, `exec-tools-specification.md`) + `windows-sandbox-design.md` aprofundado + 4 specs atualizados (`tool-registry-specification.md`, `development-roadmap.md`, `security-threat-model.md`, `tool-permission-model.md`) + este README + `status.md` + `CHANGELOG.md`. Sem código Rust — o planejamento de uma fase estrutural é código também, e ele tem que virar commit. |
 | Etapa 2 | (a ser planejado) | Primitivas do sandbox: `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 4 testes de regressão (com teste de negação) — fecha `I1` do threat model. |
 | Etapa 3 | (a ser planejado) | Runtimes embutidos: `crates/runtimes/` com Python + Node portáteis, bootstrap idempotente, resolução de caminho. |
-| **Etapa 4** | (a ser escrito) | `exec.python` / `exec.node` no `ToolRegistry` com wall-clock enforcement real + per-invocation cancel cascateado + aprovação obrigatória honrada via `validate_tool_call` Passo 9. Refator do `SandboxedProcess` API (remove `into_child`, adiciona `stdout()`/`stderr()`). 7 E2E tests em `crates/e2e/tests/`. |
-| Etapa 5 | (a ser planejado) | `files.write` / `files.edit` / `files.list` no `ToolRegistry`, sob Jail, com semântica de sobrescrita (atomic + backup + audit). |
+| Etapa 4 | [`etapa-4-narrativa.md`](./etapa-4-narrativa.md) (PR #44) | `exec.python` / `exec.node` no `ToolRegistry`, sob sandbox, com aprovação `OneTurn` por default + audit + comando exato. **Saga do CI flake (5 falhas → verde) documentada.** **Achado crítico:** o `SecurityJailResolver` v1 (Job + Token + EnvFilter) **NÃO tem path safety enforcement** — o test `child_cannot_write_outside_workspace` provou que python escapa via `open('..\\evil.txt')` relativo ao workdir. Etapa 5+ adiciona AppContainer/ACLs. |
+| Etapa 5 | [`etapa-5-narrativa.md`](./etapa-5-narrativa.md) (PR #45 + #46) | `files.write` / `files.edit` / `files.list` no `ToolRegistry`, sob Jail, com semântica de sobrescrita (atomic + backup + audit). **Regra do user 2026-08-10: 2 PRs, não 3** — `files.write` e `files.edit` compartilham a mesma máquina de escrita atômica, backup e auditoria. PR #45 = `files.list` (read-only, sem approval); PR #46 = `files.write` + `files.edit` (destrutivo, exige approval + `expected_sha256` race defense). |
 | Etapa 6 | (a ser planejado) | `exec.shell` com `Denylist` + `Allowlist` + aprovação `OneExecution` sempre. |
 | Etapa 7 | (a ser planejado) | Rede do sandbox (proxy local) + fechamento da fase: `crates/security/src/{network,dns_intercept}.rs` + UI de `NetworkAccessLog` + remoção da feature flag `FREDERICO_SANDBOX_V1`. |
 
@@ -46,11 +46,11 @@ A análise completa está no [ADR-0032](../../decisions/0032-fase-7-scope-reduct
 
 | Etapa | Status | Próxima | Bloqueia | Foco |
 |---|---|---|---|---|
-| **Etapa 1 — Planejamento** | **em revisão** (este PR) | Etapa 2 | nenhuma | 6 ADRs + 2 specs novos + 4 specs atualizados + `docs/releases/fase-7/README.md` + `status.md` + `CHANGELOG.md` |
-| Etapa 2 — Primitivas do sandbox | não iniciada | Etapa 3 | nenhuma | `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 4 testes de regressão (com teste de negação) |
-| Etapa 3 — Runtimes embutidos | não iniciada | Etapa 4 | nenhuma | `crates/runtimes/` com Python + Node portáteis, bootstrap idempotente, resolução de caminho |
-| Etapa 4 — `exec.python` / `exec.node` no registro | não iniciada | Etapa 5 | Etapa 2 + Etapa 3 | `FilesExecTool::Python` + `FilesExecTool::Node` com aprovação `OneTurn` + audit + comando exato |
-| Etapa 5 — `files.write` / `files.edit` / `files.list` | não iniciada | Etapa 6 | Etapa 2 | `FilesWriteTool` + `FilesEditTool` + `FilesListTool` com Jail + atomicidade + backup + audit |
+| **Etapa 1 — Planejamento** | **concluída** (PR #41, `f7d1ab3`) | Etapa 2 | nenhuma | 6 ADRs + 2 specs novos + 4 specs atualizados + `docs/releases/fase-7/README.md` + `status.md` + `CHANGELOG.md` |
+| **Etapa 2 — Primitivas do sandbox** | **concluída** (PR #42, `930c098`) | Etapa 3 | nenhuma | `crates/security/src/{job_object,restricted_token,env_filter,jail}.rs` + 4 testes de regressão (com teste de negação) |
+| **Etapa 3 — Runtimes embutidos** | **concluída** (PR #43, `da9e98f2`) | Etapa 4 | nenhuma | `crates/runtimes/` com Python + Node portáteis, bootstrap idempotente, resolução de caminho |
+| **Etapa 4 — `exec.python` / `exec.node` no registro** | **concluída** (PR #44, `66bb37a` → CI run `#31384435313` verde após 5 flakes) | Etapa 5 | Etapa 2 + Etapa 3 | `FilesExecTool::Python` + `FilesExecTool::Node` com aprovação `OneTurn` + audit + comando exato. Saga do CI flake e achado do path safety na narrativa. |
+| **Etapa 5 — `files.write` / `files.edit` / `files.list`** | **concluída** (PR #45 files.list + PR #46 files.write+files.edit) | Etapa 6 | Etapa 2 | `FilesWriteTool` + `FilesEditTool` + `FilesListTool` com Jail + atomicidade + backup + audit. **Regra do user 2026-08-10: 2 PRs, não 3** — as ferramentas destrutivas juntas num só diff. |
 | Etapa 6 — `exec.shell` com allowlist | não iniciada | Etapa 7 | Etapa 2 + Etapa 4 | `TerminalPermission::Allowlist` + `Denylist` + aprovação `OneExecution` |
 | Etapa 7 — Rede do sandbox (proxy) + fechamento | não iniciada | — | Etapa 2 | `crates/security/src/network.rs` + `dns_intercept.rs` + UI de `NetworkAccessLog` + remoção da feature flag `FREDERICO_SANDBOX_V1` |
 
@@ -94,3 +94,7 @@ A Etapa 1 fecha os 6 ADRs em **um único PR** (este). É a mesma forma do Etapa 
 ## Histórico de revisão
 
 - 2026-08-08 — Etapa 1 (planejamento) em revisão. 6 ADRs (0031-0036) + 2 specs novos + 4 specs atualizados + este README + `status.md` + `CHANGELOG.md`. Sem código Rust — o planejamento de uma fase estrutural é código também, e ele tem que virar commit. Validação pelo user (via `ask_user`): "A — planejamento primeiro" + "C — tirar Git/GitHub da Fase 7" + a regra de "teste de negação" por etapa. A precedência é a mesma do Etapa 1 da Fase 6 (que planejou o Pipeline Sequencial, ADR-0028): cortar escopo na Etapa 1 é o que destrava a fase.
+- 2026-08-08 — Etapa 2 (primitivas do sandbox) fechada (PR #42, `930c098`). 4 primitivas Rust em `crates/security/src/`. Documentação inline em `status.md` §7.
+- 2026-08-08 — Etapa 3 (runtimes embutidos) fechada (PR #43, `da9e98f2`). Novo crate `frederico-runtimes` com Python 3.12.4 + Node 20.16.0 portáteis, SHA-256 pinned, 5 testes de regressão. Documentação inline em `status.md` §7.
+- 2026-08-10 — Etapa 4 (`exec.python` / `exec.node` no registro) fechada em PR #44 (CI run final verde `#31384435313` 9m2s após 5 falhas consecutivas). **Achado crítico:** o `SecurityJailResolver` v1 (Job + Token + EnvFilter) **NÃO tem path safety enforcement** — o test `child_cannot_write_outside_workspace` (I3) provou que python escapa via `open('..\\evil.txt')` relativo ao workdir. Box::leak + .zip copy + `can_run_python` foram os fixes certos pra fazer o python rodar de verdade; o test catching a falha de path safety é exatamente o que teste de negação existe pra fazer. 3 testes `#[ignore]` serão reabertos na Etapa 5+ quando o sandbox ganhar AppContainer ou ACLs no Restricted Token. Saga completa do CI flake (5 erros distintos: `doc_lazy_continuation`, `build_default_tools` 1-arg duplicate, regex Python quebrando `//` + backticks, unused vars, os error 3 com 5 tentativas de fix) documentada no `status.md` §7 e na narrativa de Etapa 4.
+- 2026-08-10 — Etapa 5 (`files.write` + `files.edit` + `files.list`) fechada em 2 PRs (regra do user 2026-08-10: "2 PRs, não 3 — `files.write` e `files.edit` compartilham a mesma máquina de escrita atômica, backup e auditoria"). **PR #45 = `files.list`** (read-only, sem approval, mergeado). **PR #46 = `files.write` + `files.edit`** (destrutivo, exige approval + race defense via `expected_sha256` — regra do user: "files.edit tem que falhar se o conteúdo mudou"). **4 regras críticas honradas (decisão do user):** (1) atomicidade de verdade — temp no mesmo dir + fsync arquivo + fsync dir + rename (rename entre volumes falha no Windows, registrado no ADR-0035 D7); (2) aprovação obrigatória no manifesto (Passo 9 do validador); (3) `files.edit` recusa se `expected_sha256` não bate (defesa contra race read-modify-write); (4) testes de negação, não só de caminho feliz (3 E2E novos em `crates/e2e/tests/`: `e2e_files_list_under_jail`, `e2e_files_write_under_jail`, `e2e_files_edit_idempotent` — total 26 testes novos). Documentação inline em `status.md` §7.

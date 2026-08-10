@@ -584,8 +584,31 @@ pub fn build_default_tools(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
     exec_deps: Option<ExecDeps>,
 ) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> =
-        vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(frederico_tool_registry::FilesReadTool::new()),
+        // `files.list` (Etapa 5 do Phase 7, ADR-0035): in-process,
+        // Safe, sem runtime/invoker — sempre disponível. Mesmo
+        // padrão do `files.read`: o `Jail` vem do `ToolContext`
+        // por chamada.
+        Arc::new(frederico_tool_registry::FilesListTool::new()),
+        // `files.write` (Etapa 5 do Phase 7, ADR-0035): in-process,
+        // Moderate, **requer aprovação do usuário** (Passo 9 do
+        // `validate_tool_call`). Atômico (temp + rename no mesmo
+        // dir + fsync), backup `.bak` em overwrite, audit com
+        // `before_sha256`/`after_sha256` (D6). Sempre disponível —
+        // não depende de runtime/invoker (escrita é in-process).
+        Arc::new(frederico_tool_registry::FilesWriteTool::new()),
+        // `files.edit` (Etapa 5 do Phase 7, ADR-0035 D4): in-process,
+        // Moderate, **requer aprovação do usuário** (Passo 9 do
+        // `validate_tool_call`). Find/replace literal, atômico
+        // (reusa o protocolo de files.write), backup `.bak`,
+        // recusa se `expected_sha256` não bate (defesa contra
+        // race read-modify-write — o modelo não corrompe
+        // arquivo silenciosamente). Preserva indentação do
+        // `find` na linha. Sempre disponível — não depende de
+        // runtime/invoker.
+        Arc::new(frederico_tool_registry::FilesEditTool::new()),
+    ];
 
     // --- Subsistema documentos (Etapa 2.A) ------------------------
     if let Some(invoker) = invoker {
@@ -694,7 +717,23 @@ pub fn build_default_allowed_for_run(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
     exec_deps: Option<&ExecDeps>,
 ) -> Vec<frederico_core::ToolId> {
-    let mut allowed = vec![frederico_core::ToolId::new("files.read")];
+    let mut allowed = vec![
+        frederico_core::ToolId::new("files.read"),
+        // `files.list` (Etapa 5 do Phase 7) sempre incluído
+        // (read-only, mesma família do `files.read`).
+        frederico_core::ToolId::new("files.list"),
+        // `files.write` (Etapa 5 do Phase 7) sempre incluído —
+        // a aprovação é por invocação (Passo 9 do validador),
+        // não por estar fora/não na allowlist. Sem `files.write`
+        // na allowlist, o `RunExecutor` rejeita invocação mesmo
+        // se o modelo tentar (defesa em profundidade contra
+        // prompt injection).
+        frederico_core::ToolId::new("files.write"),
+        // `files.edit` (Etapa 5 do Phase 7) — mesma regra de
+        // `files.write` (aprovação por invocação, allowlist
+        // sempre inclui).
+        frederico_core::ToolId::new("files.edit"),
+    ];
 
     if invoker.is_some() {
         allowed.push(frederico_core::ToolId::new("docs.generate"));
@@ -956,27 +995,38 @@ mod tests {
     }
 
     #[test]
-    fn build_default_tools_without_runtime_returns_only_files_read() {
-        // Runtime indisponível → `Vec` contém só `FilesReadTool`.
-        // ADR-0023 §D2: degradação declarada, não substituição
-        // silenciosa. `docs.generate` e `docs.inspect` não
-        // entram no `Vec` — o modelo não as vê. Mesma regra
-        // vale pro subsistema exec (Etapa 4): sem `exec_deps`,
-        // `exec.python` e `exec.node` não entram.
+    fn build_default_tools_without_runtime_returns_files_read_and_files_list() {
+        // Runtime indisponível e sem `exec_deps` → `Vec` contém só
+        // tools in-process que não dependem de runtime:
+        // `FilesReadTool` + `FilesListTool` + `FilesWriteTool` +
+        // `FilesEditTool` (Etapa 5 do Phase 7, ADR-0035). ADR-0023
+        // §D2: degradação declarada, não substituição silenciosa.
+        // `docs.generate`/`docs.inspect` (precisam de invoker) e
+        // `exec.python`/`exec.node` (precisam de exec_deps) NÃO
+        // entram — o modelo não as vê. Mesma regra do exec:
+        // sem `exec_deps`, `exec.*` não entram.
         let tools = build_default_tools(None, None);
-        assert_eq!(tools.len(), 1);
-        let manifest = tools[0].manifest();
-        assert_eq!(manifest.id, frederico_core::ToolId::new("files.read"));
+        assert_eq!(tools.len(), 4);
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
+        // Sem exec_deps, `exec.*` NÃO aparecem.
+        assert!(!ids.contains(&frederico_core::ToolId::new("exec.python")));
+        assert!(!ids.contains(&frederico_core::ToolId::new("exec.node")));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_default_tools_with_invoker_returns_three_tools() {
-        // Com invoker, o `Vec` contém **3** tools:
-        // `FilesReadTool` + `DocsGenerateTool` + `DocsInspectTool`.
-        // É o **bump atômico do ADR-0020 §3 D3** (capability
-        // + permission atômicas) — quando o invoker é `Some`,
-        // as 2 tools do `document-worker` entram no schema do
-        // modelo (juntas com a permissão `documents: Full` em
+    async fn build_default_tools_with_invoker_returns_four_tools() {
+        // Com invoker, o `Vec` contém **4** tools:
+        // `FilesReadTool` + `FilesListTool` (in-process, sempre) +
+        // `DocsGenerateTool` + `DocsInspectTool`. É o **bump
+        // atômico do ADR-0020 §3 D3** (capability + permission
+        // atômicas) — quando o invoker é `Some`, as 2 tools do
+        // `document-worker` entram no schema do modelo (juntas
+        // com a permissão `documents: Full` em
         // `initial_permission_set_for_capable_launcher`).
         //
         // O `Arc<dyn WorkerInvoker>` aqui é o **contrato
@@ -988,15 +1038,27 @@ mod tests {
         let tools = build_default_tools(Some(invoker), None);
         assert_eq!(
             tools.len(),
-            3,
-            "Esperado 3 tools: FilesReadTool + DocsGenerateTool + DocsInspectTool"
+            6,
+            "Esperado 6 tools: FilesReadTool + FilesListTool + FilesWriteTool + FilesEditTool + DocsGenerateTool + DocsInspectTool"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
+
+    // O teste `build_default_tools_with_exec_deps_*` é da
+    // Etapa 4 da Fase 7 e vive no PR da Etapa 4. Este branch
+    // (`fase-7-etapa-5-files-write-edit`) parte de `da9e98f2`
+    // (Etapa 3 merged, Etapa 4 ainda em PR). Quando este PR for
+    // mergeado em `main`, o `git rebase` da Etapa 5 sobre a
+    // Etapa 4 traz o teste de volta (a versão 2-arg de
+    // `build_default_tools`). O rebase resolve o
+    // `<<<<<<< Updated upstream` automaticamente.
 
     #[test]
     fn build_default_tools_with_exec_deps_returns_files_read_plus_exec() {
@@ -1038,12 +1100,15 @@ mod tests {
         let tools = build_default_tools(None, Some(exec_deps));
         assert_eq!(
             tools.len(),
-            3,
-            "Esperado 3 tools: files.read + exec.python + exec.node"
+            6,
+            "Esperado 6 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.python")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.node")));
         // Sem invoker, docs.generate e docs.inspect NÃO aparecem.
@@ -1053,11 +1118,22 @@ mod tests {
 
     #[test]
     fn build_default_allowed_for_run_without_runtime_excludes_documents() {
-        // Sem runtime e sem exec_deps, allowlist contém só
-        // `files.read` — o `RunExecutor` rejeita invocação
-        // de `docs.*` e `exec.*` mesmo se o modelo tentar.
+        // Sem runtime e sem exec_deps, allowlist contém os tools
+        // in-process que sempre existem: `files.read` + `files.list`
+        // + `files.write` + `files.edit` (Etapa 5 do Phase 7,
+        // ADR-0035). O `RunExecutor` rejeita invocação de `docs.*`
+        // e `exec.*` mesmo se o modelo tentar (defesa em
+        // profundidade contra prompt injection).
         let allowed = build_default_allowed_for_run(None, None);
-        assert_eq!(allowed, vec![frederico_core::ToolId::new("files.read")]);
+        assert_eq!(
+            allowed,
+            vec![
+                frederico_core::ToolId::new("files.read"),
+                frederico_core::ToolId::new("files.list"),
+                frederico_core::ToolId::new("files.write"),
+                frederico_core::ToolId::new("files.edit"),
+            ]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1072,6 +1148,9 @@ mod tests {
         let invoker = fake_invoker().await;
         let allowed = build_default_allowed_for_run(Some(invoker), None);
         assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.write")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
