@@ -382,32 +382,32 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 /// é o `jail.root()` (= workspace da conversa). O
 /// `tokio::process::Command::current_dir(workdir)` define o
 /// cwd do filho. O Python `open("..\..\evil.txt", "w")` resolve
-/// **\`#[ignore]\` (Etapa 4 v1):** este test e os 2 abaixo
-/// (todos os 3 do arquivo) estao marcados \`#[ignore]\` ate
-/// o sandbox do Phase 7 ganhar **path safety enforcement
-/// real** (Etapa 5+ do Phase 7 — AppContainer ou ACLs no
-/// Restricted Token). Hoje o \`SecurityJailResolver\` so
-/// combina Job Object (tree-kill) + Restricted Token (drop 6
-/// privilegios) + EnvFilter. Nao ha restricao de escrita
-/// por path — o python script faz \`open("..\\evil.txt", "w")\`
-/// relativo ao cwd = \`workdir\` e o arquivo SAI do jail
-/// (criado no parent do workdir).
+/// **Reativado em Etapa 5+ do Phase 7 (2026-08-10):** este test
+/// foi marcado `#[ignore]` na Etapa 4 v1 (PR #44) porque o
+/// sandbox da época **não** tinha path safety enforcement real
+/// — o `SecurityJailResolver` combinava Job Object (tree-kill) +
+/// Restricted Token (drop 6 privilégios) + EnvFilter, mas
+/// **nenhuma camada bloqueava escrita por path**. O Python
+/// `open("..\evil.txt", "w")` resolvia para um arquivo no
+/// parent do workdir, fora do `jail.root()`. A Etapa 5+ do
+/// Phase 7 fecha isso com `RestrictedToken` aplicado via raw
+/// `CreateProcessW` + ACL deny no workdir (AppContainer
+/// descartado em decisão anterior).
 ///
-/// Antes do Box::leak + .zip copy, o test passava por
-/// **falso-positivo**: o python nem rodava (Lib\\ faltando
-/// no destino), entao o arquivo nao era criado, o test
-/// passava — mas nao provava nada. Agora que o python
-/// roda de verdade no CI, o test falha corretamente,
-/// expondo a ausencia de path safety no sandbox.
+/// **TDD — passo 1 (este commit):** tirei o `#[ignore]`. O test
+/// **deve falhar** nesta fase (regra cross-project: "teste de
+/// negação que nunca foi visto falhando não prova nada"). A
+/// falha esperada: o Python escapa, `evil.txt` é criado no
+/// parent, o `assert!(!escaped, ...)` estoura, o
+/// `assert!(!evil_path.exists(), ...)` estoura.
 ///
-/// **Reabilitar quando:** Etapa 5+ do Phase 7 adicionar
-/// path safety ao SecurityJailResolver (provavelmente
-/// via AppContainer do Windows ou Restricted Token +
-/// ACLs especificas no workdir). Ate la, deixar como
-/// \`#[ignore]\` no CI — rodar local com
-/// \`cargo test --test e2e_exec_python_under_sandbox
-/// -- --ignored\` em maquinas com python real pra
-/// acompanhar a evolucao.
+/// **Passo 2 (próximo commit):** implementar `RestrictedToken`
+/// aplicado via raw `CreateProcessW` + ACL deny no workdir até
+/// que este test passe. Os outros 2 tests do arquivo
+/// (`wall_clock_kills_long_running_process` + `exec_python_simple_hello_world`)
+/// permanecem `#[ignore]` até que a Etapa 5+ prove wall-clock
+/// enforcement real e caminho feliz — a reativação deles vem
+/// **depois** que este aqui estiver verde.
 ///
 /// **Cobertura equivalente ja garantida (CI):**
 /// - \`crates/security/tests/tree_kill.rs\` (Job Object +
@@ -426,7 +426,6 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 /// escapar). Hoje a Etapa 4 NAO bloqueia — Etapa 5+ vai
 /// adicionar.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Phase 7 v1 nao enforce path safety no sandbox; reabilitar em Etapa 5+"]
 async fn child_cannot_write_outside_workspace() {
     let tools = match build_exec_tools() {
         Some(t) => t,
