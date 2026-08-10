@@ -94,7 +94,7 @@ pub use permission::{
 };
 pub use permission_loader::{PermissionLoadError, PermissionLoader};
 pub use registry::ToolRegistry;
-pub use tools::{FilesListTool, FilesReadTool, Tool, ToolResult};
+pub use tools::{FilesEditTool, FilesListTool, FilesReadTool, FilesWriteTool, Tool, ToolResult};
 pub use validate::{validate_tool_call, ToolCall, ValidationContext, ValidationOutcome};
 pub use worker_dispatch::{validate_against_allowlist, DispatchError, WorkerToolDispatcher};
 pub use workspace::{Jail, Workspace};
