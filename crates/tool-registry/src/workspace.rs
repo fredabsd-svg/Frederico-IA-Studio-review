@@ -545,4 +545,109 @@ mod tests {
         let err = jail.resolve(Path::new("link.txt")).unwrap_err();
         assert_eq!(err.code, ToolErrorCode::JailViolation);
     }
+
+    // ============================================================
+    // Testes de `resolve_or_create_parents` (Etapa 5 do Phase 7,
+    // ADR-0035 D5). 4 classes:
+    // 1. Path safety (mesma do `resolve_allowing_nonexistent`)
+    // 2. Path que já existe (delega pro `resolve_allowing_nonexistent`)
+    // 3. Path que NÃO existe + ancestral existe (cria dirs intermediários)
+    // 4. Edge case: nenhum ancestral existe dentro do jail
+    // ============================================================
+
+    #[test]
+    fn create_parents_rejects_path_traversal() {
+        let (dir, jail) = setup_workspace();
+        let _ = &dir;
+        let err = jail
+            .resolve_or_create_parents(Path::new("../etc/passwd"))
+            .unwrap_err();
+        assert_eq!(err.code, ToolErrorCode::JailViolation);
+    }
+
+    #[test]
+    fn create_parents_rejects_absolute_path() {
+        let (dir, jail) = setup_workspace();
+        let _ = &dir;
+        let err = jail
+            .resolve_or_create_parents(Path::new("C:\\Windows\\evil.txt"))
+            .unwrap_err();
+        assert_eq!(err.code, ToolErrorCode::JailViolation);
+    }
+
+    #[test]
+    fn create_parents_rejects_unc_path() {
+        let (dir, jail) = setup_workspace();
+        let _ = &dir;
+        let err = jail
+            .resolve_or_create_parents(Path::new("\\\\server\\share\\file"))
+            .unwrap_err();
+        assert_eq!(err.code, ToolErrorCode::JailViolation);
+    }
+
+    #[test]
+    fn create_parents_delegates_to_resolve_when_path_exists() {
+        // `hello.txt` já existe — `create_parents` deve delegar
+        // pro `resolve_allowing_nonexistent` (que exige
+        // canonicalize do path).
+        let (_dir, jail) = setup_workspace();
+        let resolved = jail
+            .resolve_or_create_parents(Path::new("hello.txt"))
+            .unwrap();
+        assert!(resolved.is_file());
+        assert!(resolved.ends_with("hello.txt"));
+    }
+
+    #[test]
+    fn create_parents_creates_intermediate_dirs() {
+        // Workspace tem `sub/`, mas `sub/utils/` não existe.
+        // `create_parents: true` cria `sub/utils/` e devolve
+        // o path final.
+        let (dir, jail) = setup_workspace();
+        let resolved = jail
+            .resolve_or_create_parents(Path::new("sub/utils/helper.py"))
+            .unwrap();
+        assert!(dir.join("sub").join("utils").is_dir());
+        assert!(resolved.ends_with("helper.py"));
+    }
+
+    #[test]
+    fn create_parents_creates_deeply_nested_dirs() {
+        // Setup: cria só `a/`. Pede `a/b/c/d/file.txt` —
+        // cria `b/`, `c/`, `d/`.
+        let (dir, jail) = setup_workspace();
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        let resolved = jail
+            .resolve_or_create_parents(Path::new("a/b/c/d/file.txt"))
+            .unwrap();
+        assert!(dir.join("a").join("b").join("c").join("d").is_dir());
+        assert!(resolved.ends_with("file.txt"));
+    }
+
+    #[test]
+    fn create_parents_works_at_workspace_root() {
+        // Workspace tem `hello.txt`. Pede `newdir/newfile.txt` —
+        // cria `newdir/` na raiz do jail.
+        let (dir, jail) = setup_workspace();
+        let resolved = jail
+            .resolve_or_create_parents(Path::new("newdir/newfile.txt"))
+            .unwrap();
+        assert!(dir.join("newdir").is_dir());
+        assert!(resolved.ends_with("newfile.txt"));
+    }
+
+    #[test]
+    fn create_parents_is_idempotent() {
+        // Chamar 2x no mesmo path não falha (create_dir_all
+        // é idempotente).
+        let (dir, jail) = setup_workspace();
+        let _ = jail
+            .resolve_or_create_parents(Path::new("a/b/c.txt"))
+            .unwrap();
+        let resolved_again = jail
+            .resolve_or_create_parents(Path::new("a/b/c.txt"))
+            .unwrap();
+        assert!(dir.join("a").join("b").is_dir());
+        assert!(resolved_again.ends_with("c.txt"));
+    }
 }
