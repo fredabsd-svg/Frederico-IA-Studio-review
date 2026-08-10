@@ -490,14 +490,23 @@ fn main() {
             // (não tem I/O), pode rodar direto na `setup` da
             // casca.
             //
+            // **Etapa 5+ (2026-08-10):** comentado — era usado
+            // só pelo `exec_deps` (também comentado abaixo).
+            // O `RestrictedToken` continua construído no
+            // `SecurityJailResolver::new` mas não aplicado
+            // no spawn (a Etapa 5+ vai usar raw
+            // `CreateProcessAsUserW` + SID restritivo próprio).
+            // Quando a Etapa 5+ fechar, descomentar.
+            //
             // `new()` já retorna `Arc<SecurityJailResolver>`
             // — não envolver em outro `Arc::new` (causaria
             // `Arc<Arc<...>>`).
-            let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
-                frederico_security::jail::SecurityJailResolver::new(
-                    frederico_security::jail::SecurityJailConfig::secure_default(),
-                )
-                .expect("SecurityJailResolver::new");
+            //
+            // let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
+            //     frederico_security::jail::SecurityJailResolver::new(
+            //         frederico_security::jail::SecurityJailConfig::secure_default(),
+            //     )
+            //     .expect("SecurityJailResolver::new");
 
             // `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
             // Python 3.12.4 + Node 20.16.0. Construtor sync
@@ -556,8 +565,16 @@ fn main() {
             // trabalho da Etapa 5+ — Passo 10 do validador é
             // o lugar natural, e o `Tool::execute` não tem
             // `run_id`).
-            let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
-                Arc::new(frederico_tool_registry::NoopAuditSink);
+            //
+            // **Etapa 5+ (2026-08-10):** comentado — era
+            // usado só pelo `exec_deps` (também comentado).
+            // Quando a Etapa 5+ fechar, descomentar e mover
+            // o `audit_sink` pra dentro do `ExecDeps` no
+            // catálogo de tools que precisam de audit (Etapa
+            // 5+ da Fase 3 fecha o `DbAuditSink`).
+            //
+            // let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
+            //     Arc::new(frederico_tool_registry::NoopAuditSink);
 
             // `exec_deps` da Etapa 4 da Fase 7 (Python + Node sob
             // SecurityJailResolver) **desabilitado** na Etapa 5+
