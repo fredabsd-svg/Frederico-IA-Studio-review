@@ -186,3 +186,6 @@ pub trait Tool: Send + Sync {
 
 pub mod files_read;
 pub use files_read::FilesReadTool;
+
+pub mod files_list;
+pub use files_list::FilesListTool;

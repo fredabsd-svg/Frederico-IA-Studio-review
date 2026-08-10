@@ -552,8 +552,14 @@ pub fn build_default_permission_set(
 pub fn build_default_tools(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
 ) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> =
-        vec![Arc::new(frederico_tool_registry::FilesReadTool::new())];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(frederico_tool_registry::FilesReadTool::new()),
+        // `files.list` (Etapa 5 do Phase 7, ADR-0035): in-process,
+        // Safe, sem runtime/invoker — sempre disponível. Mesmo
+        // padrão do `files.read`: o `Jail` vem do `ToolContext`
+        // por chamada.
+        Arc::new(frederico_tool_registry::FilesListTool::new()),
+    ];
 
     if let Some(invoker) = invoker {
         // Runtime disponível. Constrói o `KitRegistry` com os
@@ -631,7 +637,12 @@ pub fn build_default_tools(
 pub fn build_default_allowed_for_run(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
 ) -> Vec<frederico_core::ToolId> {
-    let mut allowed = vec![frederico_core::ToolId::new("files.read")];
+    let mut allowed = vec![
+        frederico_core::ToolId::new("files.read"),
+        // `files.list` (Etapa 5 do Phase 7) sempre incluído
+        // (read-only, mesma família do `files.read`).
+        frederico_core::ToolId::new("files.list"),
+    ];
 
     if invoker.is_some() {
         allowed.push(frederico_core::ToolId::new("docs.generate"));
@@ -882,25 +893,32 @@ mod tests {
     }
 
     #[test]
-    fn build_default_tools_without_runtime_returns_only_files_read() {
-        // Runtime indisponível → `Vec` contém só `FilesReadTool`.
-        // ADR-0023 §D2: degradação declarada, não substituição
-        // silenciosa. `docs.generate` e `docs.inspect` não
-        // entram no `Vec` — o modelo não as vê.
+    fn build_default_tools_without_runtime_returns_files_read_and_files_list() {
+        // Runtime indisponível → `Vec` contém só tools in-process
+        // que não dependem de runtime: `FilesReadTool` +
+        // `FilesListTool` (Etapa 5 do Phase 7, ADR-0035). ADR-0023
+        // §D2: degradação declarada, não substituição silenciosa.
+        // `docs.generate`/`docs.inspect` (precisam de invoker) e
+        // `exec.python`/`exec.node` (precisam de exec_deps) NÃO
+        // entram — o modelo não as vê. Mesma regra do exec:
+        // sem `exec_deps`, `exec.*` não entram.
         let tools = build_default_tools(None);
-        assert_eq!(tools.len(), 1);
-        let manifest = tools[0].manifest();
-        assert_eq!(manifest.id, frederico_core::ToolId::new("files.read"));
+        assert_eq!(tools.len(), 2);
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_default_tools_with_invoker_returns_three_tools() {
-        // Com invoker, o `Vec` contém **3** tools:
-        // `FilesReadTool` + `DocsGenerateTool` + `DocsInspectTool`.
-        // É o **bump atômico do ADR-0020 §3 D3** (capability
-        // + permission atômicas) — quando o invoker é `Some`,
-        // as 2 tools do `document-worker` entram no schema do
-        // modelo (juntas com a permissão `documents: Full` em
+    async fn build_default_tools_with_invoker_returns_four_tools() {
+        // Com invoker, o `Vec` contém **4** tools:
+        // `FilesReadTool` + `FilesListTool` (in-process, sempre) +
+        // `DocsGenerateTool` + `DocsInspectTool`. É o **bump
+        // atômico do ADR-0020 §3 D3** (capability + permission
+        // atômicas) — quando o invoker é `Some`, as 2 tools do
+        // `document-worker` entram no schema do modelo (juntas
+        // com a permissão `documents: Full` em
         // `initial_permission_set_for_capable_launcher`).
         //
         // O `Arc<dyn WorkerInvoker>` aqui é o **contrato
@@ -912,24 +930,40 @@ mod tests {
         let tools = build_default_tools(Some(invoker));
         assert_eq!(
             tools.len(),
-            3,
-            "Esperado 3 tools: FilesReadTool + DocsGenerateTool + DocsInspectTool"
+            4,
+            "Esperado 4 tools: FilesReadTool + FilesListTool + DocsGenerateTool + DocsInspectTool"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
 
+    // O teste `build_default_tools_with_exec_deps_*` é da
+    // Etapa 4 da Fase 7 e vive no PR da Etapa 4. Este branch
+    // (`fase-7-etapa-5-files-write-edit`) parte de `da9e98f2`
+    // (Etapa 3 merged, Etapa 4 ainda em PR). Quando este PR for
+    // mergeado em `main`, o `git rebase` da Etapa 5 sobre a
+    // Etapa 4 traz o teste de volta (a versão 2-arg de
+    // `build_default_tools`). O rebase resolve o
+    // `<<<<<<< Updated upstream` automaticamente.
+
     #[test]
     fn build_default_allowed_for_run_without_runtime_excludes_documents() {
-        // Sem runtime, allowlist contém só `files.read` —
-        // o `RunExecutor` rejeita invocação de
-        // `docs.generate`/`docs.inspect` mesmo se o modelo
-        // tentar.
+        // Sem runtime, allowlist contém só os tools in-process
+        // que sempre existem: `files.read` + `files.list`
+        // (Etapa 5 do Phase 7) — o `RunExecutor` rejeita
+        // invocação de `docs.*` mesmo se o modelo tentar.
         let allowed = build_default_allowed_for_run(None);
-        assert_eq!(allowed, vec![frederico_core::ToolId::new("files.read")]);
+        assert_eq!(
+            allowed,
+            vec![
+                frederico_core::ToolId::new("files.read"),
+                frederico_core::ToolId::new("files.list"),
+            ]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -944,6 +978,7 @@ mod tests {
         let invoker = fake_invoker().await;
         let allowed = build_default_allowed_for_run(Some(invoker));
         assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.list")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
