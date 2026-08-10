@@ -400,8 +400,10 @@ pub struct SecurityJailResolver {
     total_memory_bytes: u64,
     /// Token restrito (drop dos 6 privilégios). Construído em
     /// `new()` mas **não aplicado** na v1 (a `CreateProcessAsUser`
-    /// via `tokio::process` ainda não tem a integração; Etapa 4
-    /// da Fase 7 implementa via `std::os::windows::process::CommandExt::as_user`).
+    /// via `tokio::process` ainda não tem a integração; Etapa 5+
+    /// da Fase 7 implementa via raw `CreateProcessAsUserW` do
+    /// `windows` crate — `std::os::windows::process::CommandExt::as_user`
+    /// foi removido em Rust 1.97).
     /// Mantido aqui como **infraestrutura** — o teste
     /// `restricted_token_constructed_in_resolver` (Etapa 4) prova
     /// que a peça 3 (restricted_token.rs) está plugada no
@@ -519,17 +521,17 @@ impl SecurityJailResolver {
 
     /// Spawna um processo sob sandbox. Na v1, usa
     /// `tokio::process::Command` (que internamente usa
-    /// `CreateProcessAsUser` no Windows quando combinado com
-    /// `token` — a Etapa 4 pluga o `restricted_token` ao
-    /// `Command` via `windows-rs` raw; por enquanto, a v1
-    /// não tem o caminho completo `CreateProcessAsUser` via
-    /// `tokio::process`).
+    /// `CreateProcessW` no Windows, sem token restrito).
     ///
     /// **Importante:** a v1 deste método **NÃO** aplica o
-    /// `RestrictedToken` (a `CreateProcessAsUser` raw precisa de
-    /// setup manual que `tokio::process::Command` não expõe). A
-    /// Etapa 4 da Fase 7 implementa via `std::os::windows::process::CommandExt::as_user`
-    /// (que aceita um HANDLE de token). Por enquanto, o spawn
+    /// `RestrictedToken` (`CreateProcessAsUser` raw precisa de
+    /// setup manual que `tokio::process::Command` não expõe;
+    /// o `std::os::windows::process::CommandExt::as_user` que
+    /// fazia isso foi removido em Rust 1.97). A Etapa 5+ da
+    /// Fase 7 vai implementar via raw `CreateProcessAsUserW`
+    /// do `windows` crate (precisa de `STARTUPINFOW` +
+    /// `PROCESS_INFORMATION` construídos manualmente + pipes
+    /// piped, é trabalho significativo). Por enquanto, o spawn
     /// aplica só:
     ///
     /// 1. **Env filter** — herda o env do parent, **remove** as
@@ -545,7 +547,8 @@ impl SecurityJailResolver {
     ///
     /// O `RestrictedToken` é construído em `new()` mas não
     /// aplicado nesta v1 — fica como **infraestrutura** para a
-    /// Etapa 4.
+    /// Etapa 5+ (que vai usar raw `CreateProcessAsUserW` do
+    /// `windows` crate direto, sem o `std::process::Command`).
     pub fn spawn(self: &Arc<Self>, config: SandboxConfig) -> Result<SandboxedProcess, SpawnError> {
         if !self.platform_supported {
             return Err(SpawnError::Unsupported(
