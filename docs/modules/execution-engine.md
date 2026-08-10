@@ -1,6 +1,6 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-07
+Verificado contra o código em: 2026-08-08
 Fase correspondente: 3 (Etapa 4 + 4.x + 4.x.y) + Fase de Ligação (Etapa 1) + Fase 6 (Etapa 2 + Etapa 3 PR 1 + PR 2 + Etapa 4 PR 1 + Etapa 4 PR 2)
 -->
 
@@ -473,20 +473,44 @@ novos: `set_state` (legado), `set_state_and_heartbeat_tx`
 que o `RunExecutor` está vivo e mantém o `last_heartbeat_at`
 fresco. Mas se a casca Tauri crashar no meio de um run (Tauri
 crash, Windows reinicia, OOM, etc.), o run fica preso num
-estado não-terminal com heartbeat velho. O novo módulo
+estado não-terminal com heartbeat velho. O módulo
 `recovery::recover_stale_runs` lista runs não-terminais com
 `last_heartbeat_at < datetime('now', '-N seconds')` e marca
 cada um como `interrupted` (terminal — a view
 `runs_with_status` mapeia `interrupted → timeout`). Threshold
 default `DEFAULT_STALE_THRESHOLD_SECS = 120` (2 min — maior que
 o `event_timeout` de 60s porque o executor pode estar esperando
-o delta final do provider). A casca Tauri chama
-`spawn_recover_stale_runs(db.clone(), Duration::from_secs(120))`
-no `.setup`, em background (`tokio::spawn`) — não bloqueia o
-startup. O helper recebe `Database` (não `RunRepo`) porque o
-`RunRepo` tem borrow do `Database`, e a casca Tauri proíbe
-`unsafe` (o `spawn` precisa de `'static`). O `RunRepo` é
-construído dentro do closure da task.
+o delta final do provider).
+
+**Spawn é responsabilidade da casca.** A v1 expunha um helper
+`spawn_recover_stale_runs(db, threshold)` que usava
+`tokio::spawn` direto. Esse helper panicava com `"there is no
+reactor running, must be called from the context of a Tokio 1.x
+runtime"` quando invocado de dentro do `.setup` do Tauri (que é
+**síncrono** — não está dentro de um `Handle::current()`). A v2
+removeu o helper e passou a responsabilidade do spawn pra casca
+(`apps/desktop/src-tauri/src/main.rs::spawn_startup_recovery`),
+que usa `tauri::async_runtime::spawn` (o wrapper do Tauri usa o
+runtime que ele próprio configurou — tokio por default — e o
+`.setup` já é chamado com o runtime ativo). O crate
+`frederico-execution-engine` continua puro (sem dependência de
+`tauri`) — Regra do ADR-0003.
+
+O `RunRepo` e o `RunEventRepo` são construídos dentro do
+closure da task (o borrow do `&Database` não pode escapar pra
+um `Future + 'static`; o `Database` é `Arc<SqlitePool>`
+internamente — clonar é barato). A casca chama o helper
+`spawn_startup_recovery(&db, Duration::from_secs(120))` no
+`.setup` — não bloqueia o startup.
+
+**Cobertura de E2E (gate contra regressão).** O smoke test
+`apps/desktop/src-tauri/tests/smoke_startup.rs`
+(`binary_does_not_panic_on_startup`) spawna o binário
+`frederico-desktop`, espera 5s e falha se o processo sair com
+status não-zero. Foi a regressão exata que pegou o panic do
+`tokio::spawn` no `.setup` (cargo test reportou o panic
+completo do Tauri no stderr). Roda em todo PR via
+`cargo test --workspace`.
 
 **5.x.5 — Passo 10 de auditoria.** O spec
 `tool-registry-specification.md` §7.7 lista 10 passos pra

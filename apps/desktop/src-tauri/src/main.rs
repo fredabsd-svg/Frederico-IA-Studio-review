@@ -17,9 +17,7 @@ use std::sync::Arc;
 use frederico_core::{MemoryHit, MemoryScopeType, MemorySourceType, WorkerInvoker};
 use frederico_diagnostics as diagnostics;
 use frederico_execution_engine::orchestrator::ChatOrchestrator;
-use frederico_execution_engine::recovery::{
-    spawn_recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS,
-};
+use frederico_execution_engine::recovery::{recover_stale_runs, DEFAULT_STALE_THRESHOLD_SECS};
 use frederico_memory::retriever::{HybridRetriever, Retriever};
 use frederico_memory::MemoryRepo;
 use frederico_model_catalog::Catalog;
@@ -32,7 +30,9 @@ use frederico_shared_contracts::{
     MemoryView, MessageEventView, MessageSendResult, MessageView, ModelDescriptorView,
     ProviderConfigView, ScoreBreakdownView,
 };
-use frederico_storage::{ApprovalQueueRepo, ConversationRepo, Database, MessageRepo};
+use frederico_storage::{
+    ApprovalQueueRepo, ConversationRepo, Database, MessageRepo, RunEventRepo, RunRepo,
+};
 use tauri::{Manager, State};
 
 mod sink;
@@ -162,6 +162,49 @@ fn resolve_runtime_context(app: &tauri::AppHandle) -> frederico_app::runtime::Ru
         app_resources,
         dev_repo,
     }
+}
+
+/// Dispara o recovery de crash no startup em background.
+///
+/// **Por que este helper existe:** a `recover_stale_runs` do
+/// `frederico-execution-engine` é `async` pura — não spawna nada.
+/// A casca (Tauri) é quem decide como disparar. Usar
+/// `tauri::async_runtime::spawn` aqui (e não `tokio::spawn`
+/// direto) é o que evita o panic "there is no reactor running"
+/// que aconteceu na v1 (ver `recovery.rs` §"Spawn é
+/// responsabilidade do caller" e o smoke test
+/// `apps/desktop/src-tauri/tests/smoke_startup.rs`).
+///
+/// **O que acontece dentro do task:** abre o `Database` clonado
+/// (cheap, `Arc<SqlitePool>`), constrói `RunRepo` + `RunEventRepo`
+/// (borrow do `Database` que vive só dentro do `async move`),
+/// chama `recover_stale_runs` e loga o resultado. O `JoinHandle`
+/// é descartado (`spawn` retorna `JoinHandle`, não esperamos) — o
+/// recovery é best-effort: se falhar, logamos `warn` e seguimos
+/// (a próxima inicialização tenta de novo).
+fn spawn_startup_recovery(db: &Arc<Database>, threshold: std::time::Duration) {
+    let recovery_db = (*db).clone();
+    tauri::async_runtime::spawn(async move {
+        let run_repo = RunRepo::new(&recovery_db);
+        let run_event_repo = RunEventRepo::new(&recovery_db);
+        match recover_stale_runs(&run_repo, &run_event_repo, threshold).await {
+            Ok(marked) if marked > 0 => {
+                tracing::info!(
+                    recovered = marked,
+                    "startup recovery: runs stale marcados como interrupted"
+                );
+            }
+            Ok(_) => {
+                tracing::debug!("startup recovery: nenhum run stale");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "startup recovery falhou — runs stale serão revisados na próxima inicialização"
+                );
+            }
+        }
+    });
 }
 
 /// Constrói o `ProviderMap` com adapters pré-registrados. O
@@ -414,31 +457,143 @@ fn main() {
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem do
             // `build_default_tools`, que retorna o **mínimo
-            // comum** (1 tool: `FilesReadTool`) quando o
-            // invoker é `None`, e `FilesReadTool +
-            // DocsGenerateTool + DocsInspectTool` quando o
-            // invoker é `Some`. O `ToolRegistry` é construído
-            // a partir dessas tools concretas em
-            // `frederico_app::build_tool_registry` (commit 4b)
-            // — não há mais `ToolRegistry::new()` solto.
+            // comum** (1 tool: `FilesReadTool`) quando ambos
+            // `invoker` e `exec_deps` são `None`, e vai
+            // bumpando os subsistemas atômicos. O
+            // `ToolRegistry` é construído a partir dessas
+            // tools concretas em
+            // `frederico_app::build_tool_registry` — não há
+            // mais `ToolRegistry::new()` solto.
             //
-            // **Bump atômico capability + permission**
-            // (ADR-0020 §3 D3, ADR-0024 §D2): mesma
-            // `Option<Arc<dyn WorkerInvoker>>` passada pra
+            // **Bump atômico capability + permission** (Etapa
+            // 4 da Fase 7 + ADR-0020 §3 D3, ADR-0024 §D2):
+            // mesmas `Option`s passadas pra
             // `build_default_tools`, `build_default_allowed_for_run`
             // e pro ternário do `permission_set` — quando
-            // `Some`, as 2 tools do `document-worker`
-            // aparecem no `ToolRegistry`, os 2 `ToolId`s
-            // aparecem na allowlist do `RunExecutor`, e
-            // `documents` vira `Full`; quando `None`, em
-            // nenhum dos três lugares. A simetria é o que
-            // garante que o modelo **nunca** vê um tool que
-            // não consegue invocar (degradação declarada, não
-            // substituição silenciosa).
-            let tools =
-                frederico_app::composition::build_default_tools(document_worker_invoker.clone());
+            // `Some`, o subsistema aparece no `ToolRegistry`
+            // + na allowlist + com a permissão bumpada;
+            // quando `None`, em nenhum dos três lugares. A
+            // simetria é o que garante que o modelo **nunca**
+            // vê um tool que não consegue invocar (degradação
+            // declarada, não substituição silenciosa).
+            //
+            // (SpecialistRegistry + PermissionLoader são
+            // construídos mais abaixo, perto de onde o
+            // `ChatOrchestratorParts` os consome — ver bloco
+            // `ChatOrchestratorParts::new`.)
+
+            // `SecurityJailResolver` (Etapa 2 da Fase 7,
+            // ADR-0031 + ADR-0036). Orquestrador do sandbox
+            // Windows. Em Linux, retorna `platform_supported =
+            // false` e o `spawn` retorna `Err(Unsupported)`
+            // (degradação declarada). Construtor é **sync**
+            // (não tem I/O), pode rodar direto na `setup` da
+            // casca.
+            //
+            // `new()` já retorna `Arc<SecurityJailResolver>`
+            // — não envolver em outro `Arc::new` (causaria
+            // `Arc<Arc<...>>`).
+            let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
+                frederico_security::jail::SecurityJailResolver::new(
+                    frederico_security::jail::SecurityJailConfig::secure_default(),
+                )
+                .expect("SecurityJailResolver::new");
+
+            // `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
+            // Python 3.12.4 + Node 20.16.0. Construtor sync
+            // (cria `install_root` se não existir). O
+            // `bootstrap_all` (download + extract + validate)
+            // é **async** — rodamos em background task pra
+            // não bloquear a abertura do app (pode levar
+            // minutos em primeira execução).
+            //
+            // **Fail-soft:** se o bootstrap falhar (sem rede,
+            // disco cheio, etc.), as tools `exec.python` /
+            // `exec.node` são registradas mesmo assim (o
+            // modelo as vê no schema), mas `execute` retorna
+            // erro `"runtime 'python-3.12.4' nao registrado"`
+            // — degradação declarada, não substituição
+            // silenciosa.
+            let runtime_registry = Arc::new(
+                frederico_runtimes::RuntimeRegistry::new(
+                    frederico_runtimes::RuntimeConfig::secure_default(),
+                )
+                .expect("RuntimeRegistry::new"),
+            );
+            // Spawn do bootstrap em background. A task é
+            // fire-and-forget; o log mostra progresso
+            // (bootstrapped vs cached vs failed). O
+            // `tokio::spawn` no `tauri::async_runtime` usa
+            // o runtime do Tauri (criado no `Builder`).
+            let runtimes_for_bootstrap = runtime_registry.clone();
+            tauri::async_runtime::spawn(async move {
+                match runtimes_for_bootstrap.bootstrap_all().await {
+                    Ok(report) => {
+                        tracing::info!(
+                            python_3_12_4 = ?report.cached.contains(&frederico_runtimes::RuntimeId::new("python-3.12.4")),
+                            node_20_16_0 = ?report.cached.contains(&frederico_runtimes::RuntimeId::new("node-20.16.0")),
+                            bootstrapped_count = report.bootstrapped.len(),
+                            cached_count = report.cached.len(),
+                            failed_count = report.failed.len(),
+                            duration_ms = report.total_duration.as_millis() as u64,
+                            "runtimes: bootstrap_all completou"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "runtimes: bootstrap_all falhou (degracao declarada; \
+                             exec.python/exec.node vao falhar ate reiniciar)"
+                        );
+                    }
+                }
+            });
+
+            // `AuditSink` (Etapa 1 da Fase 3, Passo 10 do
+            // `validate_tool_call`). v1 da Etapa 4 da Fase 7
+            // usa `NoopAuditSink` (a implementação concreta
+            // `DbAuditSink` que grava em `tool_audit` é
+            // trabalho da Etapa 5+ — Passo 10 do validador é
+            // o lugar natural, e o `Tool::execute` não tem
+            // `run_id`).
+            let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
+                Arc::new(frederico_tool_registry::NoopAuditSink);
+
+            let exec_deps = frederico_app::composition::ExecDeps {
+                resolver: security_jail_resolver.clone(),
+                runtimes: runtime_registry.clone(),
+                audit: audit_sink,
+            };
+
+            // Tools concretas. A Etapa 6 (UI de configuração)
+            // permite ligar/desligar; aqui vem do
+            // `build_default_tools`, que retorna o **mínimo
+            // comum** (1 tool: `FilesReadTool`) quando ambos
+            // `invoker` e `exec_deps` são `None`, e vai
+            // bumpando os subsistemas atômicos. O
+            // `ToolRegistry` é construído a partir dessas
+            // tools concretas em
+            // `frederico_app::build_tool_registry` — não há
+            // mais `ToolRegistry::new()` solto.
+            //
+            // **Bump atômico capability + permission** (Etapa
+            // 4 da Fase 7 + ADR-0020 §3 D3, ADR-0024 §D2):
+            // mesmas `Option`s passadas pra
+            // `build_default_tools`, `build_default_allowed_for_run`
+            // e pro ternário do `permission_set` — quando
+            // `Some`, o subsistema aparece no `ToolRegistry`
+            // + na allowlist + com a permissão bumpada;
+            // quando `None`, em nenhum dos três lugares. A
+            // simetria é o que garante que o modelo **nunca**
+            // vê um tool que não consegue invocar (degradação
+            // declarada, não substituição silenciosa).
+            let tools = frederico_app::composition::build_default_tools(
+                document_worker_invoker.clone(),
+                Some(exec_deps.clone()),
+            );
             let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
                 document_worker_invoker.clone(),
+                Some(&exec_deps),
             );
             let permission_set = if document_worker_invoker.is_some() {
                 frederico_app::composition::initial_permission_set_for_capable_launcher()
@@ -542,12 +697,25 @@ fn main() {
             // porque o executor pode estar esperando o delta final
             // do provider.
             //
+            // **Por que `tauri::async_runtime::spawn` (não
+            // `tokio::spawn`):** o `.setup` do Tauri é **síncrono**
+            // (não `async`) — `tokio::spawn` panica com "there is
+            // no reactor running, must be called from the context
+            // of a Tokio 1.x runtime" quando invocado de fora de
+            // um contexto de runtime. O wrapper do Tauri usa o
+            // runtime que ele próprio configurou (tokio por
+            // default) e o `.setup` já é chamado com o runtime
+            // ativo. Ver `crates/execution-engine/src/recovery.rs`
+            // §"Spawn é responsabilidade do caller" e o smoke
+            // test `apps/desktop/src-tauri/tests/smoke_startup.rs`
+            // que prova que o setup passa sem panic.
+            //
             // O `Database` é `Arc<SqlitePool>` internamente — clonar
-            // é barato. O `spawn_recover_stale_runs` recebe o
-            // `Database` e constrói o `RunRepo` dentro do closure
-            // (sem `unsafe`).
-            let _recovery_handle = spawn_recover_stale_runs(
-                (*db).clone(),
+            // é barato. O `RunRepo` é construído dentro do closure
+            // da task (o borrow do `&Database` não pode escapar
+            // pra um `Future + 'static`).
+            spawn_startup_recovery(
+                &db,
                 std::time::Duration::from_secs(DEFAULT_STALE_THRESHOLD_SECS),
             );
 

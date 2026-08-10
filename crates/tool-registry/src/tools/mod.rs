@@ -195,3 +195,6 @@ pub use files_write::FilesWriteTool;
 
 pub mod files_edit;
 pub use files_edit::FilesEditTool;
+
+// Re-exports das `exec.*` tools (Etapa 4 da Fase 7).
+pub use crate::exec::{FilesExecNodeTool, FilesExecPythonTool};

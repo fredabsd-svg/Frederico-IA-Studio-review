@@ -57,6 +57,7 @@
 pub mod approval;
 pub mod audit;
 pub mod error;
+pub mod exec;
 pub mod jail_resolver;
 pub mod manifest;
 pub mod permission;

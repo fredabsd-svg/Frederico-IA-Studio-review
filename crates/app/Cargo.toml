@@ -16,6 +16,10 @@ frederico-provider-engine = { workspace = true }
 frederico-model-catalog = { workspace = true }
 frederico-storage = { workspace = true }
 frederico-security = { workspace = true }
+# Etapa 4 da Fase 7: runtimes portateis (Python + Node) consumidos
+# pelas tools `exec.python` / `exec.node` (construidas via
+# `tool_registry::exec::build_default_exec_tools`).
+frederico-runtimes = { workspace = true }
 frederico-execution-engine = { workspace = true }
 frederico-memory = { workspace = true }
 frederico-document-kits = { workspace = true }

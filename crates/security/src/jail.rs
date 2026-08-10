@@ -60,14 +60,23 @@
 //!
 //! ## v1 simplificações
 //!
-//! - **Sem criação de pipes para stdout/stderr** — a v1 retorna
-//!   o PID + handle do processo; o caller é responsável por criar
-//!   pipes e fazer `read` assíncrono. A Etapa 4 da Fase 7 (criação
-//!   do `RunExecutor` integrado) pluga isso.
+//! - **Pipes stdout/stderr são criados pelo `spawn`** — a v1 já
+//!   passa `Stdio::piped` no `Command`, e o caller toma as
+//!   handles via `SandboxedProcess::stdout()` / `stderr()`. A
+//!   Etapa 5 pode estender pra streaming parcial.
 //! - **Sem `OutputCollector` (teto 10 MB + chunks 64 KB)** —
-//!   mesma razão. Implementação fica na Etapa 4.
-//! - **Sem wall-clock timeout** — caller pode usar `tokio::time::timeout`
-//!   em volta de `wait()` (similar ao `Command::output` com timeout).
+//!   implementado em `frederico-tool-registry::exec::output`
+//!   (Etapa 4 da Fase 7). O `collect_output` usa
+//!   `wait_with_timeout` (wall-clock enforcement real) e toma
+//!   as handles via `stdout()`/`stderr()` sem consumir o
+//!   `SandboxedProcess`.
+//! - **Wall-clock enforcement via `wait_with_timeout(Duration)`**
+//!   — a v1 do Etapa 2 tinha o campo `wall_clock` como
+//!   "apenas informativo" no `SandboxConfig`. A Etapa 4 da Fase
+//!   7 conecta o campo ao `tokio::time::timeout`; em timeout,
+//!   o processo é marcado pra kill + o drop do SandboxedProcess
+//!   cascateia via `KILL_ON_JOB_CLOSE` (mata netos que
+//!   sobreviveriam ao `TerminateProcess` do pai).
 //! - **Sem feature flag `FREDERICO_SANDBOX_V1`** — o orchestrator
 //!   é opt-in por construção (não há fallback não-sandbox). A
 //!   feature flag entra quando o `RunExecutor` da Etapa 4 é
@@ -187,28 +196,52 @@ pub enum SpawnError {
 }
 
 /// Handle para um processo filho sob sandbox. Quando droppado,
-/// o processo é morto via `TerminateProcess` (não cascateia pro
-/// neto; para isso, `Drop` do `SecurityJailResolver`).
+/// o **Job Object per-invocation** é fechado, o que dispara
+/// `KILL_ON_JOB_CLOSE` no Windows e mata **toda a árvore**
+/// (filho + netos + bisnetos).
 ///
-/// **Lifetime:** o caller é responsável por chamar `wait()` para
-/// coletar o exit code; caso contrário, o processo vira órfão
-/// (até o Job Object do root matar via `KILL_ON_JOB_CLOSE` no
-/// shutdown do app).
+/// **Lifetime (Etapa 4 da Fase 7):** o caller chama `wait_with_timeout(wall_clock)`
+/// para coletar o exit code OU o timeout. Se o caller dropar
+/// o `SandboxedProcess` sem chamar `wait_with_timeout`, o `Drop`
+/// fecha o job handle e mata os handles do child — `KILL_ON_JOB_CLOSE`
+/// dispara e a árvore é morta via o Job.
+///
+/// **API de I/O:** use [`Self::stdout`] e [`Self::stderr`] para
+/// tomar as handles de stdout/stderr **sem** consumir o
+/// `SandboxedProcess`. O Job fica vivo até o `Drop` final. O
+/// `into_child` da v1 foi **removido** (Etapa 4 da Fase 7):
+/// ele consumia o `SandboxedProcess` e portanto fechava o Job
+/// prematuramente, deixando o `Child` órfão (fora do Job) —
+/// exatamente o bug que o per-invocation Job Object foi criado
+/// pra evitar.
+///
+/// **Cancelamento:** o `RunExecutor` da Fase 3 pode dropar o
+/// `SandboxedProcess` (via wrapper) para cancelar. A per-invocation
+/// Job garante que netos não sobrevivem — o mesmo problema
+/// da Fase 5 Etapa 2.A que a Etapa 2 da Fase 7 fechou com o
+/// `KILL_ON_JOB_CLOSE` do root job, agora aplicado per-invocation.
 pub struct SandboxedProcess {
     pid: u32,
-    /// Processo tokio (mantido vivo até `wait()` ou `Drop`).
+    /// Processo tokio (mantido vivo até `wait_with_timeout()` ou `Drop`).
     child: Option<tokio::process::Child>,
+    /// Job Object per-invocation (Windows). Drop fecha o handle
+    /// → `KILL_ON_JOB_CLOSE` mata a árvore. `cfg(windows)` porque
+    /// em Linux a Etapa 2 não tem Job Object (cross-platform é
+    /// roadmap).
+    #[cfg(target_os = "windows")]
+    job: Option<crate::windows::JobObject>,
     /// ID único da invocação (para logs).
     invocation_id: u64,
 }
 
 // Manually implement Debug pra evitar expor o `Child` (que tem
-// handles Windows).
+// handles Windows) nem o `JobObject`.
 impl std::fmt::Debug for SandboxedProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SandboxedProcess")
             .field("pid", &self.pid)
             .field("invocation_id", &self.invocation_id)
+            .field("has_job", &self.job.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -238,9 +271,50 @@ impl SandboxedProcess {
         }
     }
 
+    /// Espera o processo terminar com timeout. Se o timeout expirar,
+    /// chama `start_kill` no child E fecha o job handle (drop do
+    /// `SandboxedProcess`) — `KILL_ON_JOB_CLOSE` mata a árvore
+    /// inteira (caller é responsável por dropar o `SandboxedProcess`
+    /// após o timeout pra fechar o job).
+    ///
+    /// **Etapa 4 da Fase 7**: este método é o ponto de wall-clock
+    /// enforcement usado pelos `exec.*` tools. O `SandboxConfig.wall_clock`
+    /// deixa de ser "apenas informativo" — é a duração do timeout
+    /// aqui.
+    pub async fn wait_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<std::process::ExitStatus, std::io::Error> {
+        let child = self.child.as_mut().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "processo ja foi consumido",
+            )
+        })?;
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(status) => status,
+            Err(_) => {
+                // Timeout: mata o child (não-await). O drop do
+                // `SandboxedProcess` depois fecha o job handle,
+                // o que cascateia via `KILL_ON_JOB_CLOSE` — o caller
+                // deve dropar o `SandboxedProcess` após este erro
+                // pra completar a limpeza.
+                let _ = child.start_kill();
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "wall-clock excedido (>{:?}); processo marcado pra kill, drop do SandboxedProcess cascateia",
+                        timeout
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Mata o processo via `TerminateProcess` (Windows) ou
     /// `Child::kill` (tokio cross-platform). **Não** cascateia pro
-    /// neto — para isso, drop o `SecurityJailResolver` inteiro.
+    /// neto sozinho — o `Drop` do `SandboxedProcess` é o que fecha
+    /// o Job handle e dispara `KILL_ON_JOB_CLOSE` na árvore.
     pub async fn kill(&mut self) -> Result<(), std::io::Error> {
         if let Some(child) = self.child.as_mut() {
             child.start_kill()?;
@@ -248,28 +322,53 @@ impl SandboxedProcess {
         Ok(())
     }
 
-    /// Consome o `tokio::process::Child` interno (para o caller
-    /// fazer I/O async diretamente). Após isso, `wait()` e
-    /// `kill()` retornam erro.
-    pub fn into_child(mut self) -> tokio::process::Child {
-        self.child.take().expect("into_child chamado 2x")
+    /// Toma a handle de stdout do `Child` interno (se ainda não
+    /// foi tomada). O `SandboxedProcess` continua vivo — o Job
+    /// segue aberto até o `Drop`. Retorna `None` se o `Child`
+    /// já foi consumido, se stdout não foi piped, ou se já
+    /// foi tomado por chamada anterior.
+    ///
+    /// **Por que `&mut self` em vez de `self`:** tomar stdout
+    /// **não** deve fechar o Job. O caller típico é o
+    /// `output::collect_output` que toma stdout + stderr +
+    /// chama `wait_with_timeout` — todas operações que precisam
+    /// do `SandboxedProcess` vivo.
+    ///
+    /// **Por que `&mut` no campo em vez de método:** `tokio::process::Child`
+    /// expõe `stdout` e `stderr` como **campos públicos** (não
+    /// métodos), em `tokio` 1.x. O `take()` no `Option<ChildStdout>`
+    /// consome o campo e devolve o valor.
+    #[must_use]
+    pub fn stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        self.child.as_mut()?.stdout.take()
+    }
+
+    /// Toma a handle de stderr do `Child` interno (se ainda não
+    /// foi tomada). Mesma semântica de [`Self::stdout`].
+    #[must_use]
+    pub fn stderr(&mut self) -> Option<tokio::process::ChildStderr> {
+        self.child.as_mut()?.stderr.take()
     }
 }
 
 impl Drop for SandboxedProcess {
     fn drop(&mut self) {
-        // Sem `kill()` explícito: se o caller não chamar `wait()`,
-        // o processo fica até o `SecurityJailResolver` ser
-        // droppado (que fecha o Job Object e mata tudo via
-        // KILL_ON_JOB_CLOSE). Em prática isso é o desejado — o
-        // caller deve `wait()` pra coletar exit, mas se ele
-        // esquecer, o shutdown limpa.
-        if let Some(mut child) = self.child.take() {
-            // Tenta `start_kill` (não-await) — se o processo
-            // terminar por KILL_ON_JOB_CLOSE no shutdown do
-            // SecurityJailResolver, isso evita zumbis.
-            let _ = child.start_kill();
-        }
+        // Etapa 4 da Fase 7: o `JobObject` per-invocation é o
+        // coração do cancelamento. Quando o `SandboxedProcess` é
+        // droppado (fim do `execute` da Tool, ou cancelamento
+        // do `Run`), o `Option<JobObject>` é droppado aqui, o
+        // `JobObject::drop` fecha o handle do job, e o Windows
+        // dispara `KILL_ON_JOB_CLOSE`, matando **toda a árvore**
+        // (filho + netos + bisnetos).
+        //
+        // O `child` (se ainda existe) também é droppado junto —
+        // não chamamos `start_kill` explícito porque o
+        // `KILL_ON_JOB_CLOSE` já cuida da terminação. Em
+        // prática, `start_kill` seria redundante e faria
+        // `TerminateProcess` no PID direto (que não cascateia).
+        let _ = self.child.take();
+        // O `self.job` (Option<JobObject>) tem `Drop` automático
+        // que fecha o handle. Não precisa `take()` manual.
     }
 }
 
@@ -277,11 +376,28 @@ impl Drop for SandboxedProcess {
 /// + Job Object + Restricted Token + Env Filter. Por design, **só
 ///   Windows** é suportado na v1; Linux retorna
 ///   `SpawnError::Unsupported` (degradação declarada).
+///
+/// ## Per-invocation Job Object (Etapa 4 da Fase 7)
+///
+/// Cada `spawn()` cria um `JobObject` **novo** (per-invocation) com
+/// `KILL_ON_JOB_CLOSE`. O `SandboxedProcess` carrega o handle; quando
+/// droppado, fecha o handle e o Windows mata a **árvore inteira**
+/// (filho + netos + bisnetos) do processo.
+///
+/// Não há mais "root job" compartilhado — o `SecurityJailResolver`
+/// NÃO mata nada ao ser droppado (a v1 tem expectativa de que o
+/// app chame `wait_with_timeout()` ou drope cada `SandboxedProcess`
+/// individualmente). O test da Etapa 2
+/// `job_object_kills_tree_on_resolver_drop` foi renomeado para
+/// `job_object_kills_tree_on_sandboxed_process_drop` (dropa o
+/// `SandboxedProcess`, não o resolver).
 pub struct SecurityJailResolver {
-    /// Root Job Object (vive até o `Drop` do resolver). Todos
-    /// os processos filhos são atribuídos a este Job.
-    #[cfg(target_os = "windows")]
-    root_job: crate::windows::JobObject,
+    /// Memória por processo (bytes) — aplicada em cada job
+    /// per-invocation no `spawn()`.
+    per_process_memory_bytes: u64,
+    /// Memória total (bytes) — aplicada em cada job per-invocation
+    /// no `spawn()`.
+    total_memory_bytes: u64,
     /// Token restrito (drop dos 6 privilégios). Construído em
     /// `new()` mas **não aplicado** na v1 (a `CreateProcessAsUser`
     /// via `tokio::process` ainda não tem a integração; Etapa 4
@@ -326,12 +442,6 @@ impl SecurityJailResolver {
     pub fn new(config: SecurityJailConfig) -> Result<Arc<Self>, SpawnError> {
         #[cfg(target_os = "windows")]
         {
-            let root_job = crate::windows::JobObject::with_memory_limits(
-                config.per_process_memory_bytes,
-                config.total_memory_bytes,
-            )
-            .map_err(|e| SpawnError::SpawnFailed(format!("JobObject::with_memory_limits: {e}")))?;
-
             let restricted_token = crate::windows::RestrictedToken::from_current_process()
                 .map_err(|e| {
                     SpawnError::SpawnFailed(format!("RestrictedToken::from_current_process: {e}"))
@@ -340,7 +450,8 @@ impl SecurityJailResolver {
             let env_filter = EnvFilter::new(config.env_allowlist);
 
             Ok(Arc::new(Self {
-                root_job,
+                per_process_memory_bytes: config.per_process_memory_bytes,
+                total_memory_bytes: config.total_memory_bytes,
                 restricted_token,
                 env_filter,
                 next_id: AtomicU64::new(1),
@@ -358,6 +469,8 @@ impl SecurityJailResolver {
             let _ = config; // suprimir warning de unused
             let _ = EnvFilter::new(EnvAllowlist::secure_default());
             Ok(Arc::new(Self {
+                per_process_memory_bytes: 0,
+                total_memory_bytes: 0,
                 env_filter: EnvFilter::new(EnvAllowlist::secure_default()),
                 next_id: AtomicU64::new(1),
                 platform_supported: false,
@@ -500,23 +613,51 @@ impl SecurityJailResolver {
             SpawnError::SpawnFailed("Child::id() retornou None (sem PID)".to_string())
         })?;
 
-        // 5. Atribui o PID ao root Job (Windows). Falha
-        //    silenciosamente se a atribuição falhar — o
-        //    `KILL_ON_JOB_CLOSE` não dispara, mas o processo
-        //    ainda roda (degradação controlada, logada).
+        // 5. Cria o Job Object per-invocation (Windows) com
+        //    `KILL_ON_JOB_CLOSE` + os limites de memória. Drop do
+        //    `SandboxedProcess` (ou drop do `Job` no final do
+        //    `execute` da Tool) fecha o handle → mata a árvore
+        //    inteira via `KILL_ON_JOB_CLOSE`.
+        //
+        //    **Falha aqui é erro duro** (não silenciosa como era
+        //    na v1 com o root job compartilhado). Sem o Job, o
+        //    processo não está sob `KILL_ON_JOB_CLOSE`, e o
+        //    tree-kill da Etapa 2 fica quebrado — exatamente o
+        //    bug que o `tree_kill.rs::fase5_etapa2a_incomplete`
+        //    testa.
         #[cfg(target_os = "windows")]
-        {
-            if let Err(e) = self.root_job.assign_pid(pid) {
-                eprintln!(
-                    "[SecurityJailResolver] AVISO: assign_pid falhou (pid={pid}): {e}. \
-                     Processo não está no Job Object — tree-kill não vai cascatear."
-                );
+        let job = {
+            let job = crate::windows::JobObject::with_memory_limits(
+                self.per_process_memory_bytes,
+                self.total_memory_bytes,
+            )
+            .map_err(|e| {
+                SpawnError::SpawnFailed(format!(
+                    "JobObject per-invocation falhou (pid={pid}): {e}. \
+                     Tree-kill da Etapa 2 fica quebrado sem Job — abortando."
+                ))
+            })?;
+            // Atribui o PID ao Job recém-criado.
+            if let Err(e) = job.assign_pid(pid) {
+                // Rollback: o `Child` está vivo mas não está
+                // sob Job. Matamos o PID (best-effort, sem await)
+                // e propagamos o erro. O OS reaps o processo
+                // quando o último handle fechar.
+                let mut child = child;
+                let _ = child.start_kill();
+                return Err(SpawnError::SpawnFailed(format!(
+                    "assign_pid per-invocation falhou (pid={pid}): {e}. \
+                     Processo foi marcado pra kill (rollback). Sem Job = tree-kill quebrado."
+                )));
             }
-        }
+            job
+        };
 
         Ok(SandboxedProcess {
             pid,
             child: Some(child),
+            #[cfg(target_os = "windows")]
+            job: Some(job),
             invocation_id,
         })
     }
