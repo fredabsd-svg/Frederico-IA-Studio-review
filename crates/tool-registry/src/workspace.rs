@@ -224,6 +224,167 @@ impl Jail {
         Ok(final_path)
     }
 
+    /// **`files.write` com `create_parents: true`** (Etapa 5 do
+    /// Phase 7, ADR-0035 D5). Valida que o caminho está dentro do
+    /// jail **e** cria os diretórios intermediários que não existem.
+    ///
+    /// **Algoritmo:**
+    ///
+    /// 1. Mesma validação textual de [`Jail::resolve_allowing_nonexistent`]
+    ///    (rejeita `..`, absoluto, UNC) — barreira de jail não muda.
+    /// 2. Acha o ancestral mais próximo que **existe** (sobe na
+    ///    hierarquia até `parent.exists()`).
+    ///    - Se nenhum ancestral existe (até a raiz do jail), o
+    ///      `create_parents` não tem pra onde criar — erro.
+    /// 3. Canonicaliza esse ancestral, valida que está dentro do
+    ///    jail (`starts_with(root_canonical)`).
+    /// 4. Cria os diretórios intermediários do ancestral até o
+    ///    **pai** do `path` (não cria o `path` em si — isso é
+    ///    trabalho do `files.write`).
+    ///    - `std::fs::create_dir_all` é idempotente (não falha
+    ///      se já existe).
+    /// 5. Retorna o `path` final = `ancestral + componentes_faltantes`.
+    ///
+    /// **Por que subir a hierarquia:** o `Jail` só conhece a sua
+    /// `root_canonical`. Se o `path` é `src/utils/helper.py` e
+    /// `src/utils/` não existe, precisamos achar `src/` (que
+    /// existe) e validar ele como ancestral; depois criar `utils/`
+    /// abaixo dele. Sem essa subida, o método seria
+    /// "canonicalize o pai" e falharia quando o pai não existe.
+    ///
+    /// **Teste de regressão** (coberto em
+    /// `e2e_files_write_under_jail::create_parents_makes_intermediate_dirs`):
+    /// `path = "src/utils/helper.py"` em workspace onde só `src/`
+    /// existe — o método cria `src/utils/` e devolve o path
+    /// final; o `files.write` então cria `helper.py` lá.
+    pub fn resolve_or_create_parents(&self, requested: &Path) -> Result<PathBuf, ToolError> {
+        // 1. Validação textual (mesma do `resolve_allowing_nonexistent`).
+        for comp in requested.components() {
+            match comp {
+                Component::ParentDir => {
+                    return Err(self.violation("'..' não permitido", None));
+                }
+                Component::Prefix(_) => {
+                    return Err(self.violation("caminho absoluto ou UNC não permitido", None));
+                }
+                Component::RootDir => {
+                    return Err(self.violation("caminho absoluto não permitido", None));
+                }
+                _ => {}
+            }
+        }
+        // UNC verbatim — mesma proteção do `resolve`.
+        if let Some(Component::Prefix(p)) = requested.components().next() {
+            if matches!(
+                p.kind(),
+                std::path::Prefix::UNC(_, _)
+                    | std::path::Prefix::VerbatimUNC(_, _)
+                    | std::path::Prefix::VerbatimDisk(_)
+                    | std::path::Prefix::DeviceNS(_)
+                    | std::path::Prefix::Verbatim(_)
+            ) {
+                return Err(self.violation("UNC path não permitido", None));
+            }
+        }
+
+        // 2. Se o `path` completo (caminho absoluto via
+        //    `self.root.join(requested)`) **já existe**, delega
+        //    pro `resolve_allowing_nonexistent` (que valida jail).
+        //    Caso comum de "create_parents: true" em path que
+        //    existe (substituição de arquivo).
+        let full_path = self.root.join(requested);
+        if full_path.exists() {
+            return self.resolve_allowing_nonexistent(requested);
+        }
+
+        // 3. `path` não existe. Acha o ancestral mais próximo
+        //    existente subindo na hierarquia. Para `src/utils/
+        //    helper.py` em workspace com só `src/`, itera:
+        //    `src/utils/helper.py` (não) → `src/utils` (não) →
+        //    `src` (sim!). O root em si sempre existe.
+        //
+        //    Para `current`, começamos com o `full_path` e
+        //    subimos `parent()` até achar um que existe ou
+        //    chegar no root_canonical (que sempre existe).
+        let mut current = full_path.clone();
+        let mut found_existing = false;
+        loop {
+            if current.exists() {
+                found_existing = true;
+                break;
+            }
+            // Sobe um nível.
+            let parent = match current.parent() {
+                Some(p) => p.to_path_buf(),
+                None => break, // sem pai (raiz do filesystem)
+            };
+            // Se chegamos no root canonical, paramos (root sempre
+            // existe por construção no `Jail::new`).
+            if parent == self.root_canonical {
+                current = parent;
+                found_existing = true;
+                break;
+            }
+            current = parent;
+        }
+        if !found_existing {
+            return Err(self.violation(
+                "nenhum ancestral existente dentro do jail; \
+                 `create_parents` não tem pra onde criar",
+                Some(serde_json::json!({
+                    "requested": requested.display().to_string(),
+                })),
+            ));
+        }
+
+        // 3. Canonicaliza o ancestral encontrado. Esse é o ponto
+        //    onde a barreira de jail é **real** — symlinks que
+        //    apontam pra fora são detectados aqui.
+        let ancestor_canonical = current.canonicalize().map_err(|e| {
+            self.violation(
+                &format!("ancestral não pôde ser canonicalizado: {e}"),
+                Some(serde_json::json!({"ancestor": current.display().to_string()})),
+            )
+        })?;
+        if !ancestor_canonical.starts_with(&self.root_canonical) {
+            return Err(self.violation(
+                "ancestral fora do jail (symlink aponta pra fora?)",
+                Some(serde_json::json!({
+                    "ancestor_canonical": ancestor_canonical.display().to_string(),
+                    "root_canonical": self.root_canonical.display().to_string(),
+                })),
+            ));
+        }
+
+        // 4. Constrói o `path` final a partir do ancestral + os
+        //    componentes do `requested` que ainda não foram
+        //    cobertos. Na prática, é `self.root.join(requested)`
+        //    — porque `requested` é relativo e a junção é
+        //    determinística. O caminho final **ainda não existe**
+        //    (é o que o `files.write` vai criar), mas o pai
+        //    imediato existe ou foi criado abaixo.
+        let final_path = self.root.join(requested);
+
+        // 5. Cria os diretórios intermediários. Começa do
+        //    ancestral (que existe) e vai descendo até o **pai**
+        //    do `path` (não cria o `path` em si).
+        //    `create_dir_all` é idempotente: se um dir já existe,
+        //    não falha.
+        let parent_of_final = final_path
+            .parent()
+            .ok_or_else(|| self.violation("path sem pai (caminho raiz?)", None))?;
+        std::fs::create_dir_all(parent_of_final).map_err(|e| {
+            self.violation(
+                &format!("`create_dir_all` falhou: {e}"),
+                Some(serde_json::json!({
+                    "parent": parent_of_final.display().to_string(),
+                })),
+            )
+        })?;
+
+        Ok(final_path)
+    }
+
     fn violation(&self, msg: &str, details: Option<serde_json::Value>) -> ToolError {
         let mut err = ToolError::new(ToolErrorCode::JailViolation, msg);
         if let Some(d) = details {

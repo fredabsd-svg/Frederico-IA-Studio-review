@@ -559,6 +559,13 @@ pub fn build_default_tools(
         // padrão do `files.read`: o `Jail` vem do `ToolContext`
         // por chamada.
         Arc::new(frederico_tool_registry::FilesListTool::new()),
+        // `files.write` (Etapa 5 do Phase 7, ADR-0035): in-process,
+        // Moderate, **requer aprovação do usuário** (Passo 9 do
+        // `validate_tool_call`). Atômico (temp + rename no mesmo
+        // dir + fsync), backup `.bak` em overwrite, audit com
+        // `before_sha256`/`after_sha256` (D6). Sempre disponível —
+        // não depende de runtime/invoker (escrita é in-process).
+        Arc::new(frederico_tool_registry::FilesWriteTool::new()),
     ];
 
     if let Some(invoker) = invoker {
@@ -642,6 +649,13 @@ pub fn build_default_allowed_for_run(
         // `files.list` (Etapa 5 do Phase 7) sempre incluído
         // (read-only, mesma família do `files.read`).
         frederico_core::ToolId::new("files.list"),
+        // `files.write` (Etapa 5 do Phase 7) sempre incluído —
+        // a aprovação é por invocação (Passo 9 do validador),
+        // não por estar fora/não na allowlist. Sem `files.write`
+        // na allowlist, o `RunExecutor` rejeita invocação mesmo
+        // se o modelo tentar (defesa em profundidade contra
+        // prompt injection).
+        frederico_core::ToolId::new("files.write"),
     ];
 
     if invoker.is_some() {
@@ -903,11 +917,12 @@ mod tests {
         // entram — o modelo não as vê. Mesma regra do exec:
         // sem `exec_deps`, `exec.*` não entram.
         let tools = build_default_tools(None);
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
         assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -930,13 +945,14 @@ mod tests {
         let tools = build_default_tools(Some(invoker));
         assert_eq!(
             tools.len(),
-            4,
-            "Esperado 4 tools: FilesReadTool + FilesListTool + DocsGenerateTool + DocsInspectTool"
+            5,
+            "Esperado 5 tools: FilesReadTool + FilesListTool + FilesWriteTool + DocsGenerateTool + DocsInspectTool"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
         assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(ids.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
@@ -962,6 +978,7 @@ mod tests {
             vec![
                 frederico_core::ToolId::new("files.read"),
                 frederico_core::ToolId::new("files.list"),
+                frederico_core::ToolId::new("files.write"),
             ]
         );
     }
@@ -979,6 +996,7 @@ mod tests {
         let allowed = build_default_allowed_for_run(Some(invoker));
         assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
         assert!(allowed.contains(&frederico_core::ToolId::new("files.list")));
+        assert!(allowed.contains(&frederico_core::ToolId::new("files.write")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));
     }
