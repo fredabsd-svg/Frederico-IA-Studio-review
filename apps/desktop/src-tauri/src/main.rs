@@ -31,9 +31,11 @@ use frederico_shared_contracts::{
     ProviderConfigView, ScoreBreakdownView,
 };
 use frederico_storage::{
-    ApprovalQueueRepo, ConversationRepo, Database, MessageRepo, RunEventRepo, RunRepo,
+    ApprovalQueueRepo, ConversationRepo, Database, MessageRepo, MigrateError, RunEventRepo,
+    RunRepo, StorageError,
 };
 use tauri::{Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 mod sink;
 
@@ -81,7 +83,36 @@ struct AppState {
 /// Diretório local de dados do aplicativo (Windows: `%LOCALAPPDATA%\studio\frederico\ia`).
 /// Resolvido uma vez por chamada — `ProjectDirs::from` é barato,
 /// mas é guard de invariante (`expect` em vez de `unwrap_or`).
+///
+/// **Override via `FREDERICO_DATA_DIR`:** se a env var estiver
+/// setada, **retornamos o valor dela** (criado se necessário).
+/// Caso contrário, caímos no `ProjectDirs`. O override é
+/// necessário pro smoke test (`apps/desktop/src-tauri/tests/
+/// smoke_startup.rs`) **nunca** tocar o banco de produção do
+/// usuário — o test cria um `tempdir()`, seta a env var, e o
+/// binário abre o banco **dentro do tempdir**, não em
+/// `%LOCALAPPDATA%`. Sem isso, qualquer `cargo test` destruiria
+/// conversas/memórias/runs do usuário real (lição da sessão
+/// 2026-08-10 — o smoke test truncateou um `.db` de produção
+/// durante a investigação do `Migrate(VersionMismatch)`).
+///
+/// **Convenção de nomenclatura:** env vars com prefixo
+/// `FREDERICO_` são o ponto de override público da casca. Já
+/// existia `FREDERICO_DOCUMENT_WORKER_RUNTIME` (Etapa 2.A da
+/// fase de Ligação) com o mesmo papel pro path do `document-worker`.
+/// O `FREDERICO_DATA_DIR` segue o mesmo padrão.
 fn data_local_dir() -> PathBuf {
+    if let Ok(custom) = std::env::var("FREDERICO_DATA_DIR") {
+        let path = PathBuf::from(custom);
+        // Cria o diretório se não existir. O `Database::open` faz
+        // isso também, mas queremos que `data_local_dir()` retorne
+        // um path utilizável mesmo antes do `Database::open` (ex.:
+        // pra criar `workspaces/`).
+        if !path.exists() {
+            let _ = std::fs::create_dir_all(&path);
+        }
+        return path;
+    }
     directories::ProjectDirs::from("studio", "frederico", "ia")
         .expect("diretórios do projeto resolvem em Windows")
         .data_local_dir()
@@ -266,19 +297,358 @@ fn build_provider_map(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderMap>
     Arc::new(map)
 }
 
+/// Mostra um diálogo nativo do Windows descrevendo por que
+/// `Database::open` falhou no startup e o que o usuário pode
+/// fazer pra recuperar. Chamado quando o `.setup` da casca
+/// não consegue abrir o banco — substitui o `.expect("abre o
+/// banco SQLite")` que gerava pânico sem mensagem.
+///
+/// **Por que existe:** `Database::open` faz duas coisas —
+/// cria a pool SQLite e roda `sqlx::migrate!` no diretório
+/// `crates/storage/migrations/`. As falhas mais comuns são:
+///
+/// 1. `Migrate(VersionMismatch(N))` — o arquivo de migração
+///    `N` foi editado **depois de aplicado** (regra do
+///    `sqlx::migrate!`: migração aplicada é imutável; checksum
+///    SHA-384 do arquivo no disco tem que bater com o que está
+///    gravado em `_sqlx_migrations.checksum`). Costuma acontecer
+///    quando o usuário roda uma build de commit X com um
+///    banco criado por uma build de commit Y — o schema
+///    divergiu. **Recovery:** resetar o banco (perde
+///    conversas/memórias/runs) ou restaurar de backup.
+/// 2. `Migrate(Dirty(N))` — uma migração anterior falhou no
+///    meio, deixando `_sqlx_migrations.success = 0` pra
+///    versão `N`. **Recovery:** investigar o estado da
+///    tabela; nunca é problema do usuário.
+/// 3. `Migrate(MissingVersion(N))` — o arquivo de migração
+///    sumiu do diretório. **Recovery:** reinstalar a build
+///    correta.
+/// 4. Erro de I/O do SQLite (arquivo trancado, permissão,
+///    disco cheio) — variantes `Open { path, source }` /
+///    `Query`.
+///
+/// O diálogo mostra a causa específica + caminho do banco +
+/// passos de recuperação. O processo sai logo depois com
+/// código não-zero — o smoke test detecta isso como falha
+/// de startup **legível** (não mais pânico genérico).
+///
+/// **Por que `String` (não `Box<dyn Error>` direto):** o
+/// `.setup` retorna `Result<(), Box<dyn Error>>` mas queremos
+/// também logar a mensagem com `tracing::error!` antes de
+/// mostrar o diálogo. Logar e mostrar a mesma string é mais
+/// fácil de auditar do que encadear erros.
+fn handle_startup_db_error(
+    handle: &tauri::AppHandle,
+    db_path: &std::path::Path,
+    err: &StorageError,
+) -> String {
+    // Log sempre — `frederico-mind.log` no data dir guarda
+    // pra diagnóstico posterior mesmo se o usuário só
+    // fechar o diálogo sem anotar.
+    tracing::error!(
+        error = %err,
+        db_path = %db_path.display(),
+        "falha fatal ao abrir banco SQLite no startup"
+    );
+
+    // Texto do diálogo: 2 partes — o que aconteceu + o que
+    // fazer. Linguagem direta, PT-BR (a UI do app é PT-BR;
+    // o sistema de mensagens de erro segue o mesmo padrão
+    // do `ProviderErrorView`).
+    let (cause_line, recovery_lines) = match err {
+        StorageError::Migrate(migrate_err) => {
+            // `sqlx::migrate::MigrateError` tem variantes
+            // como `VersionMismatch`, `Dirty`, `MissingVersion`
+            // etc. A `Display` já produz algo útil (ex.:
+            // "migration 1 was previously applied but its
+            // file has been modified"); usamos isso na
+            // mensagem mas complementamos com o caminho de
+            // recuperação específico.
+            match migrate_err {
+                MigrateError::VersionMismatch(_) => (
+                    "o arquivo de migração mudou desde que a \
+                     migração foi aplicada ao banco (regra do \
+                     `sqlx`: migração aplicada é imutável)."
+                        .to_string(),
+                    vec![
+                        "1. Feche este diálogo.".to_string(),
+                        format!("2. Faça backup do banco: copie `{}` para um lugar seguro.", db_path.display()),
+                        "3. Apague o arquivo `frederico.db` (o app recria do zero com o schema atual).".to_string(),
+                        "4. Reinicie o app.".to_string(),
+                        "ATENÇÃO: conversas, memórias e runs serão perdidos. \
+                         Se você tem dados importantes, abra o `frederico-mind.log` \
+                         no mesmo diretório e procure ajuda antes de apagar."
+                            .to_string(),
+                    ],
+                ),
+                MigrateError::VersionMissing(_) => (
+                    "um arquivo de migração esperado \
+                     não está no diretório da build."
+                        .to_string(),
+                    vec![
+                        "A build está corrompida ou incompleta. \
+                         Reinstale o app (ou rode `cargo install` \
+                         de novo se for dev).".to_string(),
+                    ],
+                ),
+                MigrateError::VersionNotPresent(_) => (
+                    "uma migração aplicada está ausente da build \
+                     atual (a build tem versão mais antiga que \
+                     o banco)."
+                        .to_string(),
+                    vec![
+                        "A build é mais antiga que a versão que \
+                         criou este banco. Atualize o app para a \
+                         versão mais recente e reabra.".to_string(),
+                    ],
+                ),
+                MigrateError::VersionTooOld(_, _) | MigrateError::VersionTooNew(_, _) => (
+                    "a ordem das migrações na build não \
+                     corresponde ao histórico do banco."
+                        .to_string(),
+                    vec![
+                        "A build está fora de ordem com o banco. \
+                         Atualize o app para a versão correta ou \
+                         apague o banco (perde dados).".to_string(),
+                    ],
+                ),
+                MigrateError::Dirty(_) => (
+                    "uma migração anterior foi marcada como \
+                     parcial (sucesso=0). Em SQLite isso é \
+                     raro mas pode acontecer após uma \
+                     interrupção."
+                        .to_string(),
+                    vec![
+                        format!("Abra o banco `{}` com `sqlite3`, marque a migração como sucesso (UPDATE _sqlx_migrations SET success=1) ou apague a linha, depois reabra o app.", db_path.display()),
+                    ],
+                ),
+                MigrateError::ExecuteMigration(_, _) | MigrateError::Execute(_) => (
+                    "uma migração falhou ao executar (erro de SQL ou violação de constraint)."
+                        .to_string(),
+                    vec![
+                        format!("Reporte o problema incluindo o arquivo `{}` e o `frederico-mind.log`.", db_path.display()),
+                    ],
+                ),
+                MigrateError::Source(_) => (
+                    "não consegui ler o diretório de migrações \
+                     embutido no binário."
+                        .to_string(),
+                    vec![
+                        "A build está corrompida. Reinstale o app.".to_string(),
+                    ],
+                ),
+                other => (
+                    format!("falha de migração: {other}"),
+                    vec![
+                        "Verifique o `frederico-mind.log` no \
+                         mesmo diretório do banco para mais detalhes."
+                            .to_string(),
+                    ],
+                ),
+            }
+        }
+        StorageError::Open { path, source } => (
+            format!("não consegui abrir/criar o banco SQLite: {source}"),
+            vec![
+                format!("Caminho: {}", path.display()),
+                "Verifique se o diretório existe e é gravável, \
+                 se o disco não está cheio, e se outro processo \
+                 não está segurando o arquivo."
+                    .to_string(),
+            ],
+        ),
+        StorageError::Query(source) => (
+            format!("query falhou ao abrir o banco: {source}"),
+            vec!["Verifique o `frederico-mind.log` para mais detalhes.".to_string()],
+        ),
+        other => (
+            format!("erro de storage: {other}"),
+            vec!["Verifique o `frederico-mind.log` para mais detalhes.".to_string()],
+        ),
+    };
+
+    let mut message = String::new();
+    message.push_str("O Frederico IA Studio não conseguiu abrir o banco de dados.\n\n");
+    message.push_str("Causa: ");
+    message.push_str(&cause_line);
+    message.push_str("\n\nCaminho do banco:\n  ");
+    message.push_str(&db_path.display().to_string());
+    message.push_str("\n\nO que fazer:\n");
+    for line in &recovery_lines {
+        message.push('\n');
+        message.push_str(line);
+    }
+    message.push_str(
+        "\n\n(O diagnóstico completo está no stderr do app — capture-o com `cargo run 2> erro.log` ou via Event Viewer do Windows.)\n",
+    );
+
+    // Mostra o diálogo com **timeout de 3s** (caminho não
+    // interativo pro CI / serviços / desktop sem sessão).
+    // Justificativa: `blocking_show` original segurava o
+    // processo indefinidamente esperando o usuário fechar a
+    // janela. Em ambiente headless (runner de CI, Windows
+    // session 0, container sem desktop), `blocking_show` ou
+    // pendura ou retorna erro silencioso — em ambos os casos
+    // o processo não sai. O CI do `frederico-process-architecture`
+    // roda em headless e ficaria travado.
+    //
+    // Estratégia:
+    // 1. Spawn uma thread que chama `blocking_show`. A
+    //    thread sinaliza via `mpsc::channel` quando o
+    //    dialog fecha.
+    // 2. O thread principal espera até 3s pelo sinal.
+    // 3. Se o sinal chegou: usuário fechou, retorna mensagem
+    //    (normal).
+    // 4. Se timeoutou: ambiente headless — loga warning,
+    //    segue. O dialog continua aberto na thread em
+    //    background e é morto quando o processo sair (Err do
+    //    setup propaga via `Builder::run`).
+    //
+    // Por que 3s e não mais: smoke test espera 5s no grace
+    // window. Se o dialog levasse 5s+ pra timeoutar, o test
+    // mataria o processo antes do timeout — desperdício. 3s
+    // dá folga pra usuário real (que tipicamente clica em
+    // <1s) sem prender o CI.
+    //
+    // Por que `mpsc::channel` (não `Condvar`): o `recv_timeout`
+    // é direto, sem lock manual. O canal é consumido uma vez
+    // (ou pelo recv com timeout, ou por `Drop` quando a
+    // thread morre com o processo — `send` em canal fechado
+    // é no-op).
+    let (dialog_done_tx, dialog_done_rx) = std::sync::mpsc::channel::<()>();
+    let dialog_handle = handle.clone();
+    let message_for_thread = message.clone();
+    std::thread::spawn(move || {
+        // **`catch_unwind` é necessário aqui:** o
+        // `tauri-plugin-dialog::blocking_show` (via `rfd` no
+        // Windows) **panica** em vez de retornar `Err` quando
+        // não há GUI disponível (headless, Windows session 0,
+        // runner de CI sem desktop). Verificado na sessão
+        // 2026-08-10: `thread '<unnamed>' panicked at
+        // ...tauri-plugin-dialog-2.7.2/src/lib.rs:358:9: called
+        // \`Result::unwrap()\` on an \`Err\` value`. Sem o
+        // `catch_unwind`, o panic da thread do dialog
+        // contaminaria o stderr do test (que procura
+        // `panicked at` pra detectar pânico do `.setup`) e
+        // quebraria a distinção entre "panic genuíno" e
+        // "recovery gracioso".
+        //
+        // O `catch_unwind` captura o panic, loga, e
+        // prossegue. O diagnóstico completo já está no
+        // stderr via `tracing::error!` lá em cima — o
+        // dialog é uma camada opcional de UX, não a
+        // fonte de verdade do erro.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dialog_handle
+                .dialog()
+                .message(&message_for_thread)
+                .title("Frederico IA Studio — falha ao abrir o banco")
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }));
+        if let Err(panic_payload) = result {
+            // Converte o payload (geralmente `&str` ou `String`)
+            // em uma string logável. `downcast_ref::<&str>` é
+            // o caso comum; o fallback cobre outros tipos.
+            let msg: &str = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "<payload não-string>"
+            };
+            tracing::warn!(
+                panic = msg,
+                "blocking_show panico — provavelmente headless (sem GUI). \
+                 Diagnóstico já está no stderr via tracing::error! acima."
+            );
+        }
+        // Sinaliza que o dialog fechou. Se o canal já estiver
+        // fechado (main thread saiu após timeout), o `send`
+        // retorna Err — ignoramos.
+        let _ = dialog_done_tx.send(());
+    });
+
+    match dialog_done_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(()) => {
+            // Usuário fechou o dialog. Normal.
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Ambiente headless (ou usuário distraído). Loga
+            // warning — o diagnóstico completo já está no
+            // stderr via `tracing::error!` lá em cima.
+            tracing::warn!(
+                timeout_secs = 3,
+                "dialog de erro não foi fechado em 3s — provavelmente headless; prosseguindo para shutdown"
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            // Thread do dialog morreu sem sinalizar (não
+            // deveria acontecer, mas o tipo cobre).
+            tracing::warn!("thread do dialog de erro desconectou inesperadamente");
+        }
+    }
+
+    message
+}
+
 fn main() {
     diagnostics::init();
     tracing::info!("Frederico IA Studio iniciando…");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let db_path = resolve_db_path();
             tracing::info!(?db_path, "abrindo banco SQLite");
 
-            let db = tauri::async_runtime::block_on(async { Database::open(&db_path).await })
-                .expect("abre o banco SQLite");
-            let db = Arc::new(db);
+            // **Caminho de erro do startup (Etapa 6+):** o
+            // `Database::open` pode falhar por várias razões
+            // (migrations incompatíveis, I/O, etc.). A v1 do
+            // código tinha `.expect("abre o banco SQLite")` que
+            // panicava no stderr sem mostrar nada pro usuário.
+            // A Etapa 6+ substitui por:
+            //
+            // 1. `handle_startup_db_error` mostra um dialog
+            //    nativo do Windows com a causa específica + o
+            //    caminho de recuperação, e loga via
+            //    `tracing::error!` pro stderr. Aguarda até 3s
+            //    pelo dialog fechar (caminho não interativo
+            //    cai pro `tracing::warn!` + segue).
+            // 2. `std::process::exit(1)` mata o processo
+            //    **sem** passar pelo Tauri runtime (sem
+            //    `App::exit`, sem `Builder::run` retornando
+            //    Err) — o que evita o "Failed to setup app"
+            //    panic do main thread (`tauri-2.11.5/src/app.rs:
+            //    1425` verificado em 2026-08-10). Sem essa
+            //    distinção, o smoke test
+            //    (`apps/desktop/src-tauri/tests/smoke_startup.rs`)
+            //    confunde o startup recovery com a regressão
+            //    do `tokio::spawn` (v1 — Etapa 5.x Fase 3).
+            //
+            // **Por que não `return Err(...)`:** Tauri trata
+            // como panic (verificado). **Por que não
+            // `handle.exit(1)`:** também passa pelo panic do
+            // runtime. **`std::process::exit(1)` é a única
+            // saída que mata o processo sem o runtime panicar.
+            //
+            // **Trade-off:** destructors não rodam (DB não
+            // fecha, sockets não fecham). Aceitável porque o
+            // DB está em estado inconsistente de qualquer
+            // jeito (o `Database::open` falhou). A sessão
+            // 2026-08-10 confirmou que o Tauri panic é pior
+            // (ruído no stderr, falso positivo no smoke).
+            if let Err(err) = tauri::async_runtime::block_on(async {
+                Database::open(&db_path).await
+            }) {
+                handle_startup_db_error(&handle, &db_path, &err);
+                std::process::exit(1);
+            }
+            let db = Arc::new(
+                tauri::async_runtime::block_on(async { Database::open(&db_path).await })
+                    .expect("abre o banco SQLite (após verificação de erro acima)"),
+            );
 
             // `purge_expired` na inicialização (Etapa 4 da Fase 4,
             // `ADR-0014 §3` — coleta preguiçosa na leitura, com

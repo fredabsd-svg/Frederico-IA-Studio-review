@@ -4,6 +4,7 @@
   "description": "Permissões padrão da Fase 1. Apenas IPC e lifecycle são necessários; tools e filesystem entram nas fases seguintes.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:default"
   ]
 }

@@ -22,6 +22,18 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+// Re-exporta `sqlx::migrate::MigrateError` pra que a casca
+// (Tauri) consiga fazer pattern matching nas variantes
+// (`VersionMismatch`, `Dirty`, `MissingVersion`) sem
+// precisar de `sqlx` como dep direto. A casca usa isso
+// no `handle_startup_db_error` (`apps/desktop/src-tauri/
+// src/main.rs`) pra produzir mensagens de erro com
+// recovery específico por classe de falha de migração.
+// Sem este re-export, a casca teria que usar `Display`/
+// `Debug` (frágil) ou adicionar `sqlx` como dep (vazamento
+// de fronteira).
+pub use sqlx::migrate::MigrateError;
+
 // ============================================================================
 // Submódulo de Pipeline Sequencial (Etapa 5 da Fase 6, ADR-0028)
 // ============================================================================
