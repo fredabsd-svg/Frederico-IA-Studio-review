@@ -14,6 +14,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Dialog nativo (Etapa 6+ — startup recovery): usado no `.setup`
+# pra mostrar erro legível quando `Database::open` falha
+# (ex.: `Migrate(VersionMismatch(...))` em banco de versão
+# anterior). Substitui o `expect("abre o banco SQLite")` que
+# saía com pânico e deixava o usuário sem mensagem. Ver
+# `apps/desktop/src-tauri/src/main.rs` §"startup recovery".
+tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 frederico-core = { workspace = true }
@@ -45,3 +52,17 @@ chrono = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dev-dependencies]
+# `tempfile` pro smoke test (`apps/desktop/src-tauri/tests/
+# smoke_startup.rs`) criar um diretório temporário para o
+# binário usar como `FREDERICO_DATA_DIR`. Sem isso, o
+# test abriria o banco de produção em `%LOCALAPPDATA%` —
+# qualquer `cargo test` destruiria conversas/memórias/runs
+# do usuário real (lição da sessão 2026-08-10). O test
+# `binary_handles_db_open_failure_with_recovery` também
+# usa `std::fs::write` dentro do tempdir pra forçar um
+# erro de I/O (`FREDERICO_DATA_DIR` aponta pra um arquivo,
+# não diretório), o que faz `Database::open` falhar em
+# `create_dir_all(parent)` e disparar o startup recovery.
+tempfile = "3"
