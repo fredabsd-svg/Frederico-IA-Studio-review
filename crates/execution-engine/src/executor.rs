@@ -216,6 +216,16 @@ pub struct RunExecutor {
     /// `NoopAuditSink` (não grava nada). O caller (chat
     /// orchestrator) injeta um `DbAuditSink` em produção.
     audit_sink: Arc<dyn AuditSink>,
+    /// Sink de eventos de stream (PR do bug do stream — Etapa 5.X).
+    /// Default `NoopEventSink` (não emite nada — preserva o
+    /// comportamento da Etapa 4 antes do fix; o caller deve injetar
+    /// o `TauriEventSink` em produção). Cada `StreamEvent` é
+    /// emitido **após** o `persist_journal` (regra do
+    /// `chat-and-providers.md` §"Journal de eventos"), com o
+    /// `seq` do journal dentro do envelope
+    /// (`StreamEventEnvelope { seq, event }`) — a UI usa o `seq`
+    /// pra reconectar sem perder nem duplicar.
+    event_sink: Arc<dyn frederico_provider_engine::event_sink::EventSink>,
 }
 
 impl RunExecutor {
@@ -269,6 +279,11 @@ impl RunExecutor {
             cancel,
             event_timeout: Duration::from_secs(60),
             audit_sink: Arc::new(NoopAuditSink),
+            // Default: no-op. Em produção, o `ChatOrchestrator`
+            // injeta o `TauriEventSink` via [`with_event_sink`].
+            // O comportamento pré-fix (não emitir pra UI) é
+            // preservado em testes que não chamam `with_event_sink`.
+            event_sink: Arc::new(frederico_provider_engine::event_sink::NoopEventSink),
         }
     }
 
@@ -279,6 +294,31 @@ impl RunExecutor {
     #[must_use]
     pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
         self.audit_sink = sink;
+        self
+    }
+
+    /// Sobrescreve o sink de eventos de stream (PR do bug do
+    /// stream — Etapa 5.X).
+    ///
+    /// Em produção, o `ChatOrchestrator` injeta o `TauriEventSink`
+    /// que veio em `ChatOrchestratorParts.sink` (mesma instância
+    /// que emite o `RunStatus` final). Cada `StreamEvent` é
+    /// emitido **após** `persist_journal` (regra do spec
+    /// `chat-and-providers.md` §"Journal de eventos"), com o
+    /// `seq` do journal dentro do envelope
+    /// (`StreamEventEnvelope { seq, event }`).
+    ///
+    /// **Falha ao emitir vira `tracing::warn!`, não propaga** —
+    /// o journal no SQLite é a fonte de verdade e o
+    /// `reloadStreamingMessage` da UI recupera. O run **nunca**
+    /// é abortado por falha de emit (princípio "sink é UX puro,
+    /// journal é contrato").
+    #[must_use]
+    pub fn with_event_sink(
+        mut self,
+        sink: Arc<dyn frederico_provider_engine::event_sink::EventSink>,
+    ) -> Self {
+        self.event_sink = sink;
         self
     }
 
@@ -528,6 +568,45 @@ impl RunExecutor {
                 // continuação), o `MessageEvent` recebe `run_seq =
                 // NULL` e o `RunEvent` não é gravado.
                 let message_seq = persist_journal(&event_repo, &message_id, &ev).await?;
+
+                // **PR do bug do stream (Etapa 5.X) — emit
+                // journal-then-emit.** A spec
+                // `chat-and-providers.md` §"Journal de eventos" exige
+                // que cada `StreamEvent` seja **persistido antes** de
+                // ser emitido (regra "journal-then-emit" — se a
+                // janela cair entre o `persist_journal` e o `emit`,
+                // o `reloadStreamingMessage` ainda recupera via
+                // `RunGetEvents`). O envelope
+                // `StreamEventEnvelope { seq, event }` carrega o
+                // `seq` do journal (`message_seq`, retornado por
+                // `persist_journal`) — a UI usa pra reconectar por
+                // `fromSeq` sem perder nem duplicar.
+                //
+                // **Falha ao emitir vira `tracing::warn!`, não
+                // propaga** — o journal é a fonte de verdade; o run
+                // nunca é abortado por falha de emit. O
+                // `TauriEventSink` também loga localmente quando
+                // `Window::emit` falha, mas aqui o envelope é o que
+                // importa: se a serialização do envelope falhar
+                // (improvável, é tudo nosso tipo), o log fica
+                // próximo do local onde o evento foi produzido.
+                let envelope = frederico_provider_engine::types::StreamEventEnvelope {
+                    seq: message_seq,
+                    event: ev.clone(),
+                };
+                match serde_json::to_value(&envelope) {
+                    Ok(payload) => self.event_sink.emit_run_event(run_id, payload),
+                    Err(e) => tracing::warn!(
+                        run_id = %run_id,
+                        seq = message_seq,
+                        error = %e,
+                        "RunExecutor: falha ao serializar StreamEventEnvelope \
+                         pra emit (journal tem o evento; UI vai recuperar via \
+                         RunGetEvents). Esse caminho é improvável — tipos \
+                         nossos serializam limpo — mas o log fica pra \
+                         diagnóstico se algum dia aparecer."
+                    ),
+                }
 
                 // Portão único de mudança de estado. Se o portão
                 // rejeita (transição inválida pela tabela), aborta

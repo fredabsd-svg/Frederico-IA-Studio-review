@@ -66,10 +66,18 @@ async function reloadStreamingMessage(
     return () => {};
   }
   // Senão, subscreve.
-  const sub = await subscribeRun(message.run_id, (ev) => {
-    // Tauri events carregam apenas o payload, sem o envelope. A
-    // casca emite o `StreamEvent` serializado direto. Mapeamos:
-    onEventToCallbacks(ev, onDelta, onError);
+  const sub = await subscribeRun(message.run_id, (envelope) => {
+    // PR do bug do stream (Etapa 5.X): o payload é um
+    // `StreamEventEnvelope { seq, event }` — o backend agora
+    // carrega o `seq` do journal pra que a reconexão seja exata
+    // (sem perder nem duplicar). A camada de apresentação
+    // continua consumindo o `event` puro; o `seq` é relevante
+    // só pra reconexão via `RunGetEvents { since_seq }`, que
+    // hoje é feita com `since_seq: 0` no mount (suficiente
+    // porque o reload de janela é raro). A Etapa futura
+    // "reconexão por `fromSeq`" usa o `lastSeq()` retornado
+    // pelo `RunStreamSubscription`.
+    onEventToCallbacks(envelope.event, onDelta, onError);
   }, onStatus);
   return sub.unlisten;
 }
@@ -244,7 +252,13 @@ export function Chat() {
           setStreamingMessageId(asst.id);
           const sub = await subscribeRun(
             runId,
-            (ev) => {
+            (envelope) => {
+              // PR do bug do stream: o payload é `StreamEventEnvelope
+              // { seq, event }` (não mais `StreamEvent` cru). O `seq`
+              // carrega o número do journal — fica disponível via
+              // `sub.lastSeq()` pra reconexão futura. Aqui, só o
+              // `event` interessa pra acumular o delta.
+              const ev = envelope.event;
               if (ev.kind === "delta") {
                 accumRef.current.set(
                   asst.id,
