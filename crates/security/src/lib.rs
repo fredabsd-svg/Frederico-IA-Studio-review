@@ -77,6 +77,7 @@ pub trait Platform: Send + Sync {
 pub mod env_filter;
 pub mod fake;
 pub mod jail;
+pub mod raw_child;
 
 #[cfg(target_os = "windows")]
 pub mod windows;

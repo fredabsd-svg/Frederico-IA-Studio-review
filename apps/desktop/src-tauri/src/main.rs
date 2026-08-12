@@ -860,23 +860,21 @@ fn main() {
             // (não tem I/O), pode rodar direto na `setup` da
             // casca.
             //
-            // **Etapa 5+ (2026-08-10):** comentado — era usado
-            // só pelo `exec_deps` (também comentado abaixo).
-            // O `RestrictedToken` continua construído no
-            // `SecurityJailResolver::new` mas não aplicado
-            // no spawn (a Etapa 5+ vai usar raw
-            // `CreateProcessAsUserW` + SID restritivo próprio).
-            // Quando a Etapa 5+ fechar, descomentar.
+            // **Etapa 5+ (2026-08-10) — reativado:** a
+            // Etapa 5+ fechou (PR #48 — raw CreateProcessAsUserW
+            // + Mandatory Label\Low via SetFileSecurityW no
+            // workdir). O `RestrictedToken` agora É aplicado
+            // no spawn (TokenIntegrityLevel=Low + drop dos 6
+            // privilégios). O `exec_deps` volta ao catálogo.
             //
             // `new()` já retorna `Arc<SecurityJailResolver>`
             // — não envolver em outro `Arc::new` (causaria
             // `Arc<Arc<...>>`).
-            //
-            // let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
-            //     frederico_security::jail::SecurityJailResolver::new(
-            //         frederico_security::jail::SecurityJailConfig::secure_default(),
-            //     )
-            //     .expect("SecurityJailResolver::new");
+            let security_jail_resolver: Arc<frederico_security::jail::SecurityJailResolver> =
+                frederico_security::jail::SecurityJailResolver::new(
+                    frederico_security::jail::SecurityJailConfig::secure_default(),
+                )
+                .expect("SecurityJailResolver::new");
 
             // `RuntimeRegistry` (Etapa 3 da Fase 7). Hard-coda
             // Python 3.12.4 + Node 20.16.0. Construtor sync
@@ -936,55 +934,48 @@ fn main() {
             // o lugar natural, e o `Tool::execute` não tem
             // `run_id`).
             //
-            // **Etapa 5+ (2026-08-10):** comentado — era
-            // usado só pelo `exec_deps` (também comentado).
-            // Quando a Etapa 5+ fechar, descomentar e mover
-            // o `audit_sink` pra dentro do `ExecDeps` no
-            // catálogo de tools que precisam de audit (Etapa
-            // 5+ da Fase 3 fecha o `DbAuditSink`).
-            //
-            // let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
-            //     Arc::new(frederico_tool_registry::NoopAuditSink);
+            // **Etapa 5+ (2026-08-10) — reativado:** `NoopAuditSink`
+            // entra no `ExecDeps` (a `DbAuditSink` real é trabalho
+            // da Etapa 5+ da Fase 3, depois).
+            let audit_sink: Arc<dyn frederico_tool_registry::AuditSink> =
+                Arc::new(frederico_tool_registry::NoopAuditSink);
 
             // `exec_deps` da Etapa 4 da Fase 7 (Python + Node sob
-            // SecurityJailResolver) **desabilitado** na Etapa 5+
-            // (regra "capacidade incompleta é capacidade
-            // indisponível"). O test de negação
-            // `child_cannot_write_outside_workspace` em
+            // SecurityJailResolver) **reativado** pela Etapa 5+
+            // (2026-08-10). A path safety enforcement fechou:
+            //   1. `SetFileSecurityW(workdir, LABEL_SECURITY_INFORMATION)`
+            //      aplica `Mandatory Label\Low` no workdir
+            //      (SACL com SYSTEM_MANDATORY_LABEL_ACE_TYPE
+            //      + policy NO_WRITE_UP).
+            //   2. Token do child = `RestrictedToken` (drop 6
+            //      privilégios) + `TokenIntegrityLevel = Low`
+            //      via `duplicate_as_primary()`.
+            //   3. Spawn via `CreateProcessAsUserW` raw com
+            //      `CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT`.
+            //   4. `AssignProcessToJobObject` per-invocation
+            //      (KILL_ON_JOB_CLOSE) + `ResumeThread`.
+            //   5. Pipes stdout/stderr SEM label (Medium) — child
+            //      (Low) consegue escrever porque pipes anônimos
+            //      sem label passam o Mandatory Label check.
+            //      (Pendência Fase 8: rótulo nos pipes exigiria
+            //      SeSecurityPrivilege no caller; trade-off
+            //      documentado em SECURITY.md §"O que essa
+            //      combinação NÃO protege".)
+            //
+            // **Bump atômico (Etapa 5+):** o `exec_deps` é
+            // `Some(exec_deps)` em `build_default_tools` e
+            // `build_default_allowed_for_run` — `exec.python`
+            // e `exec.node` voltam ao catálogo. Validação
+            // garantida pelos 3 tests em
             // `crates/e2e/tests/e2e_exec_python_under_sandbox.rs`
-            // **provou** que python escapa do workdir (cria
-            // arquivo no parent via `open("..\evil.txt", "w")`)
-            // sem path safety enforcement no sandbox. O
-            // RestrictedToken está construído no
-            // `SecurityJailResolver::new` mas não aplicado no
-            // spawn (o `std::os::windows::process::CommandExt::as_user`
-            // que facilitaria isso foi removido em Rust 1.97;
-            // a Etapa 5+ vai precisar de raw `CreateProcessAsUserW`
-            // do windows crate com SID restritivo próprio
-            // — trabalho significativo).
-            //
-            // Por isso passamos `None` pro `exec_deps` em
-            // `build_default_tools` e `build_default_allowed_for_run`
-            // — o catálogo volta pro mínimo (4 tools: files.read +
-            // files.list + files.write + files.edit; + docs.generate
-            // + docs.inspect se invoker for Some). Sem exec, sem
-            // risco de escape.
-            //
-            // O `SecurityJailResolver` continua construído (vai ser
-            // usado pela Etapa 5+ quando implementar path safety).
-            // O `RuntimeRegistry` continua bootstrap-ado em
-            // background (cache fica populado pra quando Etapa 5+
-            // religar). Só o **registro no catálogo** está
-            // desabilitado.
-            //
-            // A construção do `ExecDeps` é comentada (não deletada)
-            // pra documentar o que volta quando Etapa 5+ fechar.
-            //
-            // let exec_deps = frederico_app::composition::ExecDeps {
-            //     resolver: security_jail_resolver.clone(),
-            //     runtimes: runtime_registry.clone(),
-            //     audit: audit_sink,
-            // };
+            // (`child_cannot_write_outside_workspace`,
+            // `exec_python_simple_hello_world`,
+            // `wall_clock_kills_long_running_process`).
+            let exec_deps = frederico_app::composition::ExecDeps {
+                resolver: security_jail_resolver.clone(),
+                runtimes: runtime_registry.clone(),
+                audit: audit_sink,
+            };
 
             // Tools concretas. A Etapa 6 (UI de configuração)
             // permite ligar/desligar; aqui vem do
@@ -1009,21 +1000,56 @@ fn main() {
             // vê um tool que não consegue invocar (degradação
             // declarada, não substituição silenciosa).
             //
-            // **Etapa 5+ da Fase 7:** `exec_deps` é `None` até a
-            // path safety enforcement fechar. Ver bloco comentado
-            // acima.
+            // **Etapa 5+ da Fase 7 (2026-08-10) — reativado:**
+            // `exec_deps` é `Some(exec_deps)` (path safety
+            // enforcement fechou, ver bloco acima). O catálogo
+            // volta a incluir `exec.python` + `exec.node` (com
+            // `Mandatory Label\Low` no workdir + token restrito
+            // no child).
+            // Flag de subsistema exec disponível (a Etapa 5+
+            // sempre constrói `exec_deps` aqui, então é `true`
+            // no caminho feliz). Mantida como `let` separado
+            // pra documentar a simetria com o match 4-estados
+            // abaixo — facilita Etapas futuras onde o
+            // `exec_deps` pode falhar em `Some` (ex.: bootstrap
+            // da runtime falha, ou sandbox init falha). Por
+            // ora, hard-coded `true` (mesma regra do `Some(exec_deps)`
+            // acima).
+            let exec_deps_available = true;
             let tools = frederico_app::composition::build_default_tools(
                 document_worker_invoker.clone(),
-                None,
+                Some(exec_deps.clone()),
             );
             let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
                 document_worker_invoker.clone(),
-                None,
+                Some(&exec_deps),
             );
-            let permission_set = if document_worker_invoker.is_some() {
-                frederico_app::composition::initial_permission_set_for_capable_launcher()
-            } else {
-                frederico_app::composition::initial_permission_set()
+            // **Permission set 4-estados (Etapa 5+):** os 2
+            // subsistemas (document-worker + exec) são
+            // independentes — o document-worker pode estar
+            // disponível (runtime resolvido) sem o exec, e
+            // vice-versa. Combinamos em 4 ramos:
+            //   - ambos Some → `capable_launcher_and_exec`
+            //     (documents: Full + python/node: Sandboxed).
+            //   - só invoker Some → `for_capable_launcher`
+            //     (documents: Full só).
+            //   - só exec_deps Some → `for_exec` (python/node:
+            //     Sandboxed só).
+            //   - nenhum Some → `initial_permission_set` (deny
+            //     default, Etapa 1).
+            //
+            // **Bump atômico capability + permission** (ADR-0020
+            // §3 D3): a mesma `Option` que foi pra
+            // `build_default_tools` / `build_default_allowed_for_run`
+            // é refletida no `PermissionSet` — sem meia-medida.
+            let permission_set = match (
+                document_worker_invoker.is_some(),
+                exec_deps_available,
+            ) {
+                (true, true) => frederico_app::composition::initial_permission_set_for_capable_launcher_and_exec(),
+                (true, false) => frederico_app::composition::initial_permission_set_for_capable_launcher(),
+                (false, true) => frederico_app::composition::initial_permission_set_for_exec(),
+                (false, false) => frederico_app::composition::initial_permission_set(),
             };
 
             // `MemoryExtractor` (Fase 4, Etapa 5; Fase de Ligação

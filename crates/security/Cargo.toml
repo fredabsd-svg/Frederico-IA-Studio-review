@@ -36,12 +36,28 @@ tokio = { workspace = true, features = ["process"] }
 # entram aqui, **dentro do mesmo módulo `windows`** (a única ponte
 # com Win32 no núcleo, ADR-0007). Ver scripts/check-core-purity.ps1
 # para a allowlist de `windows` em `crates/security/src/windows*`.
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security"] }
+#
+# Etapa 5+ da Fase 7 (PR atual): path safety enforcement via raw
+# `CreateProcessAsUserW`. Features adicionais:
+# - `Win32_System_Pipes` — `CreatePipe` + `SetHandleInformation`
+#   (read/write ends dos stdout/stderr/stdin pipes).
+# - `Win32_Security_Authorization` — `SetEntriesInAclW` + `SetSecurityInfo`
+#   (DACL no workdir permitindo só o SID restritivo próprio).
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_Security"] }
 
 [dev-dependencies]
 frederico-core = { workspace = true }
 secrecy = { workspace = true }
 serde_json = { workspace = true }
+# Etapa 5+ da Fase 7 (path safety): o `set_low_integrity_label` em
+# `crates/security/src/jail.rs::spawn_windows` rotula o workdir via
+# `SetFileSecurityW` — exige que o workdir seja owned pelo user.
+# `std::env::current_dir()` no test v1 (`tree_kill.rs`) apontava
+# pra `C:\src\Frederico-IA\crates\security` que **não** é owned
+# pelo user de CI (`%USERPROFILE%`), então a Etapa 5+ fez o test
+# quebrar com `ERROR_ACCESS_DENIED` (5). Fix: tempdir owned pelo
+# user, que sobrevive enquanto o test roda (drop no fim do test).
+tempfile = "3"
 tokio = { workspace = true }
 
 # Re-expor `windows` para os integration tests (`#[cfg(windows)]`).
@@ -49,4 +65,4 @@ tokio = { workspace = true }
 # não para `tests/`. Adicione aqui as features que os testes em
 # `crates/security/tests/*` precisem usar (Job Object, token, etc.).
 [target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security_Authorization", "Win32_Security"] }
