@@ -1344,6 +1344,7 @@ dependencies = [
  "frederico-storage",
  "secrecy",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "windows 0.58.0",

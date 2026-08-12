@@ -113,6 +113,19 @@ foreach ($rs in $rsFiles) {
         }
     }
 
+    # Detecta arquivos que são parte da ponte Win32 via marker
+    # `#![allow(unsafe_code)]` no topo (o `Cargo.toml` do crate tem
+    # `unsafe_code = "deny"`, então `#![allow(unsafe_code)]` é
+    # explícito e intencional). Esses arquivos são a extensão
+    # do módulo `windows/` (que já é allowlisted por path) —
+    # tratar como ponte Win32 também. Usado por `jail.rs` (o
+    # orquestrador) e `raw_child.rs` (wrapper sobre handles
+    # Win32, Etapa 5+ da Fase 7).
+    $hasUnsafeAllow = $content -match '(?m)^\s*#!\[allow\(unsafe_code\)\]'
+    if ($hasUnsafeAllow) {
+        $inAllowed = $true
+    }
+
     if ($content -match '(?m)^\s*use\s+(tauri|tauri_runtime|tauri_runtime_wry|windows|winapi|winrt)') {
         if (-not $inAllowed) {
             $violations.Add("$rel usa crate proibido no núcleo")

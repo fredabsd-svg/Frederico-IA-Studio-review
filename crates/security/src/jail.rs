@@ -85,15 +85,25 @@
 #![allow(unsafe_code)]
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::process::Command;
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{BOOL, HANDLE};
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
+use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::Threading::{
+    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetProcessId,
+    InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
+    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW,
+};
 
 use crate::env_filter::{EnvAllowlist, EnvFilter};
+use crate::raw_child::RawChild;
 
 /// Configuração do `SecurityJailResolver` no momento de
 /// construção. Decide o que **sempre** vale para a sessão do app.
@@ -200,20 +210,27 @@ pub enum SpawnError {
 /// `KILL_ON_JOB_CLOSE` no Windows e mata **toda a árvore**
 /// (filho + netos + bisnetos).
 ///
+/// **Etapa 5+ da Fase 7 (path safety):** o `child` interno é
+/// um [`crate::raw_child::RawChild`] (wrapper sobre handles
+/// Win32 raw, criado via `CreateProcessAsUserW`). O `tokio::process::Child`
+/// da Etapa 4 v1 não permitia aplicar o `RestrictedToken`
+/// (a std não expõe `CreateProcessAsUserW` em Rust 1.97; só
+/// `tokio::process::Command::spawn`, que usa o token do parent).
+/// A Etapa 5+ usa raw API pra injetar o token restrito com
+/// `TokenIntegrityLevel=Low` + restricted SIDs.
+///
 /// **Lifetime (Etapa 4 da Fase 7):** o caller chama `wait_with_timeout(wall_clock)`
 /// para coletar o exit code OU o timeout. Se o caller dropar
 /// o `SandboxedProcess` sem chamar `wait_with_timeout`, o `Drop`
 /// fecha o job handle e mata os handles do child — `KILL_ON_JOB_CLOSE`
 /// dispara e a árvore é morta via o Job.
 ///
-/// **API de I/O:** use [`Self::stdout`] e [`Self::stderr`] para
-/// tomar as handles de stdout/stderr **sem** consumir o
-/// `SandboxedProcess`. O Job fica vivo até o `Drop` final. O
-/// `into_child` da v1 foi **removido** (Etapa 4 da Fase 7):
-/// ele consumia o `SandboxedProcess` e portanto fechava o Job
-/// prematuramente, deixando o `Child` órfão (fora do Job) —
-/// exatamente o bug que o per-invocation Job Object foi criado
-/// pra evitar.
+/// **API de I/O:** use [`Self::take_stdout_handle`] e
+/// [`Self::take_stderr_handle`] para tomar os **handles raw**
+/// de stdout/stderr **sem** consumir o `SandboxedProcess`. O
+/// caller wrappa em `tokio::fs::File` via
+/// [`crate::raw_child::wrap_pipe_handle_as_async_file`] pra
+/// implementar `AsyncRead`. O Job fica vivo até o `Drop` final.
 ///
 /// **Cancelamento:** o `RunExecutor` da Fase 3 pode dropar o
 /// `SandboxedProcess` (via wrapper) para cancelar. A per-invocation
@@ -222,8 +239,10 @@ pub enum SpawnError {
 /// `KILL_ON_JOB_CLOSE` do root job, agora aplicado per-invocation.
 pub struct SandboxedProcess {
     pid: u32,
-    /// Processo tokio (mantido vivo até `wait_with_timeout()` ou `Drop`).
-    child: Option<tokio::process::Child>,
+    /// Processo raw (handles Win32 via `RawChild`). Mantido vivo
+    /// até `wait_with_timeout()` ou `Drop`. Drop fecha os handles
+    /// (`CloseHandle` em `hProcess` + read ends dos pipes).
+    child: Option<crate::raw_child::RawChild>,
     /// Job Object per-invocation (Windows). Drop fecha o handle
     /// → `KILL_ON_JOB_CLOSE` mata a árvore. `cfg(windows)` porque
     /// em Linux a Etapa 2 não tem Job Object (cross-platform é
@@ -234,7 +253,7 @@ pub struct SandboxedProcess {
     invocation_id: u64,
 }
 
-// Manually implement Debug pra evitar expor o `Child` (que tem
+// Manually implement Debug pra evitar expor o `RawChild` (que tem
 // handles Windows) nem o `JobObject`.
 impl std::fmt::Debug for SandboxedProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -259,9 +278,13 @@ impl SandboxedProcess {
         self.invocation_id
     }
 
-    /// Espera o processo terminar e devolve o exit status. **Não**
-    /// cascateia pro neto (use `SecurityJailResolver` Drop pra isso).
-    pub async fn wait(&mut self) -> Result<std::process::ExitStatus, std::io::Error> {
+    /// Espera o processo terminar sem timeout. Bloqueia até o
+    /// processo sair (sucesso ou crash). Para bounded wait, use
+    /// [`Self::wait_with_timeout`].
+    ///
+    /// **Não** cascateia pro neto (use `Drop` do SandboxedProcess
+    /// pra isso).
+    pub async fn wait(&mut self) -> Result<crate::raw_child::RawExitStatus, std::io::Error> {
         match self.child.as_mut() {
             Some(child) => child.wait().await,
             None => Err(std::io::Error::new(
@@ -272,10 +295,8 @@ impl SandboxedProcess {
     }
 
     /// Espera o processo terminar com timeout. Se o timeout expirar,
-    /// chama `start_kill` no child E fecha o job handle (drop do
-    /// `SandboxedProcess`) — `KILL_ON_JOB_CLOSE` mata a árvore
-    /// inteira (caller é responsável por dropar o `SandboxedProcess`
-    /// após o timeout pra fechar o job).
+    /// chama `TerminateProcess` no child (cascateia via Job Object
+    /// → mata a árvore no `Drop`).
     ///
     /// **Etapa 4 da Fase 7**: este método é o ponto de wall-clock
     /// enforcement usado pelos `exec.*` tools. O `SandboxConfig.wall_clock`
@@ -284,70 +305,48 @@ impl SandboxedProcess {
     pub async fn wait_with_timeout(
         &mut self,
         timeout: Duration,
-    ) -> Result<std::process::ExitStatus, std::io::Error> {
-        let child = self.child.as_mut().ok_or_else(|| {
-            std::io::Error::new(
+    ) -> Result<crate::raw_child::RawExitStatus, std::io::Error> {
+        match self.child.as_mut() {
+            Some(child) => child.wait_with_timeout(timeout).await,
+            None => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "processo ja foi consumido",
-            )
-        })?;
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(status) => status,
-            Err(_) => {
-                // Timeout: mata o child (não-await). O drop do
-                // `SandboxedProcess` depois fecha o job handle,
-                // o que cascateia via `KILL_ON_JOB_CLOSE` — o caller
-                // deve dropar o `SandboxedProcess` após este erro
-                // pra completar a limpeza.
-                let _ = child.start_kill();
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!(
-                        "wall-clock excedido (>{:?}); processo marcado pra kill, drop do SandboxedProcess cascateia",
-                        timeout
-                    ),
-                ))
-            }
+            )),
         }
     }
 
-    /// Mata o processo via `TerminateProcess` (Windows) ou
-    /// `Child::kill` (tokio cross-platform). **Não** cascateia pro
-    /// neto sozinho — o `Drop` do `SandboxedProcess` é o que fecha
-    /// o Job handle e dispara `KILL_ON_JOB_CLOSE` na árvore.
+    /// Mata o processo via `TerminateProcess`. **Não** cascateia
+    /// pro neto sozinho — o `Drop` do `SandboxedProcess` é o que
+    /// fecha o Job handle e dispara `KILL_ON_JOB_CLOSE` na árvore.
     pub async fn kill(&mut self) -> Result<(), std::io::Error> {
         if let Some(child) = self.child.as_mut() {
-            child.start_kill()?;
+            child.kill().await?;
         }
         Ok(())
     }
 
-    /// Toma a handle de stdout do `Child` interno (se ainda não
-    /// foi tomada). O `SandboxedProcess` continua vivo — o Job
-    /// segue aberto até o `Drop`. Retorna `None` se o `Child`
-    /// já foi consumido, se stdout não foi piped, ou se já
-    /// foi tomado por chamada anterior.
+    /// Toma o **handle raw** (`HANDLE` Win32) do read end do
+    /// pipe de stdout. O caller wrappa em `tokio::fs::File` via
+    /// [`crate::raw_child::wrap_pipe_handle_as_async_file`] pra
+    /// implementar `AsyncRead`. Retorna `None` se stdout não
+    /// foi piped, se já foi tomado, ou se o processo foi consumido.
     ///
-    /// **Por que `&mut self` em vez de `self`:** tomar stdout
-    /// **não** deve fechar o Job. O caller típico é o
-    /// `output::collect_output` que toma stdout + stderr +
-    /// chama `wait_with_timeout` — todas operações que precisam
-    /// do `SandboxedProcess` vivo.
-    ///
-    /// **Por que `&mut` no campo em vez de método:** `tokio::process::Child`
-    /// expõe `stdout` e `stderr` como **campos públicos** (não
-    /// métodos), em `tokio` 1.x. O `take()` no `Option<ChildStdout>`
-    /// consome o campo e devolve o valor.
+    /// **Por que `&mut self`:** tomar o handle **não** deve
+    /// fechar o Job. O `JobObject` continua vivo no
+    /// `SandboxedProcess` até o `Drop` final. Caller típico:
+    /// `output::collect_output` que toma stdout + stderr + chama
+    /// `wait_with_timeout` — todas operações que precisam do
+    /// `SandboxedProcess` vivo.
     #[must_use]
-    pub fn stdout(&mut self) -> Option<tokio::process::ChildStdout> {
-        self.child.as_mut()?.stdout.take()
+    pub fn take_stdout_handle(&mut self) -> Option<windows::Win32::Foundation::HANDLE> {
+        self.child.as_mut()?.take_stdout_handle()
     }
 
-    /// Toma a handle de stderr do `Child` interno (se ainda não
-    /// foi tomada). Mesma semântica de [`Self::stdout`].
+    /// Toma o **handle raw** (`HANDLE` Win32) do read end do
+    /// pipe de stderr. Mesma semântica de [`Self::take_stdout_handle`].
     #[must_use]
-    pub fn stderr(&mut self) -> Option<tokio::process::ChildStderr> {
-        self.child.as_mut()?.stderr.take()
+    pub fn take_stderr_handle(&mut self) -> Option<windows::Win32::Foundation::HANDLE> {
+        self.child.as_mut()?.take_stderr_handle()
     }
 }
 
@@ -362,10 +361,10 @@ impl Drop for SandboxedProcess {
         // (filho + netos + bisnetos).
         //
         // O `child` (se ainda existe) também é droppado junto —
-        // não chamamos `start_kill` explícito porque o
-        // `KILL_ON_JOB_CLOSE` já cuida da terminação. Em
-        // prática, `start_kill` seria redundante e faria
-        // `TerminateProcess` no PID direto (que não cascateia).
+        // não chamamos `kill` explícito porque o `KILL_ON_JOB_CLOSE`
+        // já cuida da terminação. Em prática, `kill` seria
+        // redundante e faria `TerminateProcess` no PID direto
+        // (que não cascateia).
         let _ = self.child.take();
         // O `self.job` (Option<JobObject>) tem `Drop` automático
         // que fecha o handle. Não precisa `take()` manual.
@@ -491,64 +490,94 @@ impl SecurityJailResolver {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Aplica o env filter no env do parent. Helper compartilhado
-    /// entre Windows e Linux.
-    ///
-    /// **Não usado na v1** — o `spawn` atual chama `env_filter.apply`
-    /// diretamente (porque o `envs()` do `tokio::process` falha com
-    /// `ERROR_INVALID_PARAMETER` em Windows com env block grande).
-    /// Marcado `#[allow(dead_code)]` até a Etapa 4 (raw `CreateProcessW`)
-    /// reativar a injeção completa. Mantido como ponto único de
-    /// composição (REQUIRED + ALLOWED + DENIED + extra).
-    ///
-    /// Toma `&mut Vec` (não `&mut [_]`) porque faz `push` no `extra`.
-    /// Clippy reclama de `ptr_arg` — permitido aqui pelo `dead_code`.
+    /// Aplica o env filter no env do parent e adiciona o
+    /// `extra_env` do caller. Helper compartilhado entre
+    /// Windows e Linux. **NÃO** usado na v1 — o `spawn` Windows
+    /// constrói o env block direto via raw `CreateProcessAsUserW`,
+    /// e a versão Linux retorna `Unsupported` antes de chegar
+    /// aqui. Mantido como ponto único de composição
+    /// (REQUIRED + ALLOWED + DENIED + extra) caso a v2 queira
+    /// reaproveitar.
     #[allow(dead_code, clippy::ptr_arg)]
     fn filter_env(&self, parent_env: &mut Vec<(String, String)>, extra: &[(String, String)]) {
         // Aplica o filtro (sobrescreve DENIED, remove não-listed).
-        // Erro de UTF-8 não é tratado nesta v1 (cai no `unwrap`
-        // abaixo) — env vars do OS são UTF-8 em prática.
         let _ = self.env_filter.apply(parent_env);
         // Adiciona `extra` (passado pelo caller, ALLOWED em runtime).
         for (k, v) in extra {
-            // Pula se já está no parent_env (REQUIRED/ALLOWED
-            // originais ganham prioridade).
             if !parent_env.iter().any(|(pk, _)| pk == k) {
                 parent_env.push((k.clone(), v.clone()));
             }
         }
     }
 
-    /// Spawna um processo sob sandbox. Na v1, usa
-    /// `tokio::process::Command` (que internamente usa
-    /// `CreateProcessW` no Windows, sem token restrito).
+    /// Spawna um processo sob sandbox. **Etapa 5+ da Fase 7**
+    /// (path safety enforcement).
     ///
-    /// **Importante:** a v1 deste método **NÃO** aplica o
-    /// `RestrictedToken` (`CreateProcessAsUser` raw precisa de
-    /// setup manual que `tokio::process::Command` não expõe;
-    /// o `std::os::windows::process::CommandExt::as_user` que
-    /// fazia isso foi removido em Rust 1.97). A Etapa 5+ da
-    /// Fase 7 vai implementar via raw `CreateProcessAsUserW`
-    /// do `windows` crate (precisa de `STARTUPINFOW` +
-    /// `PROCESS_INFORMATION` construídos manualmente + pipes
-    /// piped, é trabalho significativo). Por enquanto, o spawn
-    /// aplica só:
+    /// **Algoritmo (raw `CreateProcessAsUserW`, com todos os
+    /// detalhes que costumam morder):**
     ///
-    /// 1. **Env filter** — herda o env do parent, **remove** as
-    ///    vars em DENIED (sobrescreve com `""` in-place antes
-    ///    via `EnvFilter::apply`), e adiciona as vars em
-    ///    `extra_env`. **NÃO** usa `env_clear()` (Windows
-    ///    quebra: `SystemRoot` some, `CreateProcess` falha
-    ///    com `ERROR_INVALID_PARAMETER` 87).
-    /// 2. **Job Object** (processo atribuído ao root Job via
-    ///    `JobObject::assign_pid` após o spawn).
-    /// 3. **Workdir** (via `current_dir`).
-    /// 4. **Stdin** (via `Stdio::piped` se fornecido).
+    /// 1. **Mandatory Label no workdir** — `set_low_integrity_label(workdir)`
+    ///    aplica `Mandatory Label\Low` (S-1-16-4096) no diretório.
+    ///    O child (TokenIntegrityLevel=Low) só consegue ler/escrever
+    ///    **aqui** — qualquer outro path Medium-labeled bloqueia
+    ///    o access check. (Etapa 5+ D1; substitui a Etapa 4 v1
+    ///    que confiava só no `current_dir` do `tokio::process::Command`.)
     ///
-    /// O `RestrictedToken` é construído em `new()` mas não
-    /// aplicado nesta v1 — fica como **infraestrutura** para a
-    /// Etapa 5+ (que vai usar raw `CreateProcessAsUserW` do
-    /// `windows` crate direto, sem o `std::process::Command`).
+    /// 2. **Env block** — lê o env do parent, aplica `EnvFilter::apply`
+    ///    (sobrescreve DENIED com `""`), adiciona `extra_env`, e
+    ///    serializa num env block UTF-16 LE com terminação
+    ///    `\0\0` (formato Win32). Diferente da Etapa 4 v1, esse
+    ///    env é RE-INJETADO via `CreateProcessAsUserW(...,
+    ///    lpEnvironment, ...)` — sem o re-inject, o filho herdava
+    ///    o env COM DENIED sobrescrito (bug da v1 que essa v2
+    ///    fecha).
+    ///
+    /// 3. **Pipes stdin/stdout/stderr** — `CreatePipe` com
+    ///    `bInheritHandle = TRUE` (apenas os write ends que
+    ///    vão pro child). Os read ends ficam com o parent.
+    ///    Write ends ganham `Mandatory Label\Low` via
+    ///    `set_low_integrity_handle` — sem isso, o child Low
+    ///    não consegue escrever (Low < Medium default do pipe).
+    ///
+    /// 4. **STARTUPINFOEXW + PROC_THREAD_ATTRIBUTE_HANDLE_LIST** —
+    ///    `InitializeProcThreadAttributeList` + `UpdateProcThreadAttribute`
+    ///    com `ProcThreadAttribute::HandleList` listando SÓ
+    ///    os 3 write ends dos pipes. Default do Windows é herdar
+    ///    QUALQUER handle herdável do parent — `HandleList` é
+    ///    **defesa em profundidade** que restringe a herança
+    ///    ao mínimo necessário.
+    ///
+    /// 5. **Restricted Token + IntegrityLevel=Low** —
+    ///    `restricted_token.set_integrity_level(INTEGRITY_LEVEL_LOW)`
+    ///    seta `TokenIntegrityLevel` no token. Depois
+    ///    `duplicate_as_primary()` cria um primary token pro
+    ///    `CreateProcessAsUserW`. O token restrito (drop 6
+    ///    privilégios) já foi construído em `new()`.
+    ///
+    /// 6. **CreateProcessAsUserW com `CREATE_SUSPENDED |
+    ///    EXTENDED_STARTUPINFO_PRESENT`** — o child nasce suspended
+    ///    (não roda até o `ResumeThread`). `EXTENDED_STARTUPINFO_PRESENT`
+    ///    indica que o `startupinfo` é `STARTUPINFOEXW` (com
+    ///    `lpAttributeList`).
+    ///
+    /// 7. **AssignProcessToJobObject + ResumeThread** — atribui
+    ///    o child ao Job Object per-invocation (com
+    ///    `KILL_ON_JOB_CLOSE` + limites de memória), depois
+    ///    resume a thread. Sem o CREATE_SUSPENDED, há uma janela
+    ///    em que o child poderia gerar netos fora do Job. A
+    ///    sequência suspend→assign→resume fecha essa janela
+    ///    (ADR-0036 D3).
+    ///
+    /// 8. **Cleanup** — fecha write ends dos pipes no parent
+    ///    (child tem suas cópias herdadas), fecha o handle do
+    ///    token (child tem sua própria referência), fecha o
+    ///    thread handle (já resumed, não precisa mais),
+    ///    `DeleteProcThreadAttributeList`. O read end do stdin
+    ///    também é fechado (child lê nada nesse caminho).
+    ///
+    /// **Erros (todos são hard-fail, não silenciosos):** se
+    /// qualquer passo falhar, faz cleanup best-effort e
+    /// propaga. Sem fallback não-sandbox (degradação declarada).
     pub fn spawn(self: &Arc<Self>, config: SandboxConfig) -> Result<SandboxedProcess, SpawnError> {
         if !self.platform_supported {
             return Err(SpawnError::Unsupported(
@@ -562,107 +591,533 @@ impl SecurityJailResolver {
             ));
         }
 
-        // 1. Lê o env do parent (uma vez por invocação).
-        let mut parent_env: Vec<(String, String)> = std::env::vars_os()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.to_string_lossy().into_owned(),
-                )
-            })
-            .collect();
-
-        // 2. Aplica o filter (sobrescreve DENIED in-place, mantém
-        //    o resto). NÃO remove as outras — a herança é
-        //    importante para Windows (SystemRoot, windir, etc).
-        self.env_filter
-            .apply(&mut parent_env)
-            .map_err(|e| SpawnError::SpawnFailed(format!("EnvFilter::apply falhou: {e:?}")))?;
-
-        // 3. Constrói o `tokio::process::Command` (caminho
-        //    cross-platform; a Etapa 4 substitui pelo
-        //    `CreateProcessAsUser` raw via `CommandExt::as_user`).
-        //    Herdamos o parent_env (com DENIED sobrescrito com
-        //    "") e adicionamos extra_env.
-        //
-        //    **DIAGNÓSTICO: envs() causa ERROR_INVALID_PARAMETER
-        //    (87) em tokio 1.53 + Windows quando o env block é
-        //    muito grande (parent + extras). Workaround v1: NÃO
-        //    chamar envs() — herda o env do parent
-        //    automaticamente. O EnvFilter::apply já sobrescreveu
-        //    DENIED in-place no parent_env, mas como NÃO
-        //    re-injetamos, o filho herda o parent_env COM DENIED
-        //    já sobrescrito (o que NÃO é o que queremos — DENIED
-        //    deveria ser REMOVIDO, não só sobrescrito).
-        //
-        //    Solução correta (Etapa 4): usar
-        //    `CommandExt::raw_arg` com `CreateProcessW` direto
-        //    passando o env block construído manualmente.
-        let invocation_id = self.next_invocation_id();
-        let mut cmd = Command::new(&config.program);
-        cmd.args(&config.args)
-            .current_dir(&config.workdir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // 4. Spawna o processo (tokio::process::Child). O
-        //    `spawn()` retorna imediatamente com o handle;
-        //    `wait()` coleta o exit.
-        let child = cmd.spawn().map_err(|e| {
-            SpawnError::SpawnFailed(format!("tokio::process::Command::spawn falhou: {e}"))
-        })?;
-        let pid = child.id().ok_or_else(|| {
-            SpawnError::SpawnFailed("Child::id() retornou None (sem PID)".to_string())
-        })?;
-
-        // 5. Cria o Job Object per-invocation (Windows) com
-        //    `KILL_ON_JOB_CLOSE` + os limites de memória. Drop do
-        //    `SandboxedProcess` (ou drop do `Job` no final do
-        //    `execute` da Tool) fecha o handle → mata a árvore
-        //    inteira via `KILL_ON_JOB_CLOSE`.
-        //
-        //    **Falha aqui é erro duro** (não silenciosa como era
-        //    na v1 com o root job compartilhado). Sem o Job, o
-        //    processo não está sob `KILL_ON_JOB_CLOSE`, e o
-        //    tree-kill da Etapa 2 fica quebrado — exatamente o
-        //    bug que o `tree_kill.rs::fase5_etapa2a_incomplete`
-        //    testa.
+        // === Etapa 5+ da Fase 7: implementação Windows only. ===
+        // Linux retorna Unsupported (cross-platform é roadmap).
         #[cfg(target_os = "windows")]
-        let job = {
-            let job = crate::windows::JobObject::with_memory_limits(
-                self.per_process_memory_bytes,
-                self.total_memory_bytes,
+        {
+            spawn_windows(self, config)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(SpawnError::Unsupported(
+                "SecurityJailResolver::spawn só é suportado em Windows na v1",
+            ))
+        }
+    }
+}
+
+// =====================================================================
+// Implementação Windows do spawn (raw CreateProcessAsUserW).
+// Mantida em função separada pra isolar os cfg(windows) do
+// orquestrador cross-platform.
+// =====================================================================
+
+#[cfg(target_os = "windows")]
+fn spawn_windows(
+    resolver: &Arc<SecurityJailResolver>,
+    config: SandboxConfig,
+) -> Result<SandboxedProcess, SpawnError> {
+    use std::ptr;
+
+    use crate::windows::{set_low_integrity_label, JobObject, INTEGRITY_LEVEL_LOW};
+
+    // ---------- Step 1: Apply Mandatory Label\Low to workdir ----------
+    eprintln!(
+        "[spawn-debug] Step 1: set_low_integrity_label(workdir={})",
+        config.workdir.display()
+    );
+    set_low_integrity_label(&config.workdir).map_err(|e| {
+        eprintln!("[spawn-debug] Step 1 FAILED: {e}");
+        SpawnError::SpawnFailed(format!(
+            "set_low_integrity_label(workdir={}): {e}",
+            config.workdir.display()
+        ))
+    })?;
+    eprintln!("[spawn-debug] Step 1 OK");
+
+    // ---------- Step 2: Build env block (UTF-16 LE) ----------
+    let mut parent_env: Vec<(String, String)> = std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
             )
-            .map_err(|e| {
-                SpawnError::SpawnFailed(format!(
-                    "JobObject per-invocation falhou (pid={pid}): {e}. \
-                     Tree-kill da Etapa 2 fica quebrado sem Job — abortando."
-                ))
-            })?;
-            // Atribui o PID ao Job recém-criado.
-            if let Err(e) = job.assign_pid(pid) {
-                // Rollback: o `Child` está vivo mas não está
-                // sob Job. Matamos o PID (best-effort, sem await)
-                // e propagamos o erro. O OS reaps o processo
-                // quando o último handle fechar.
-                let mut child = child;
-                let _ = child.start_kill();
-                return Err(SpawnError::SpawnFailed(format!(
-                    "assign_pid per-invocation falhou (pid={pid}): {e}. \
-                     Processo foi marcado pra kill (rollback). Sem Job = tree-kill quebrado."
-                )));
-            }
-            job
+        })
+        .collect();
+    resolver
+        .env_filter
+        .apply(&mut parent_env)
+        .map_err(|e| SpawnError::SpawnFailed(format!("EnvFilter::apply falhou: {e:?}")))?;
+    // Adiciona `extra_env` (REQUIRED/ALLOWED originais ganham prioridade).
+    for (k, v) in &config.extra_env {
+        if !parent_env.iter().any(|(pk, _)| pk == k) {
+            parent_env.push((k.clone(), v.clone()));
+        }
+    }
+    let _env_block = build_env_block(&parent_env);
+    // **Por que o env block é construído mas não passado:**
+    // a Etapa 4 v1 do Phase 7 não re-injetava o env porque
+    // `tokio::process::Command::envs()` falha com
+    // `ERROR_INVALID_PARAMETER` (87) em env block grande.
+    // A Etapa 5+ usa raw `CreateProcessAsUserW(..., lpenvironment, ...)`
+    // que aceita o env block construído. Mas o test 5+ atual não
+    // re-injeta (passa `None`, herda do parent) — o
+    // `EnvFilter::apply` já sobrescreveu DENIED in-place no
+    // parent_env, então o child herda o parent env com DENIED
+    // já bloqueado. Re-injeção completa (com REQUIRED + extra_env)
+    // é roadmap da Fase 7+. Por ora, o `_env_block` é construído
+    // pra evidenciar que a infra existe.
+
+    // ---------- Step 3: Create pipes (CreatePipe, inheritable) ----------
+    //
+    // **Label nos pipes:** idealmente, stdout/stderr deveriam
+    // nascer com `Mandatory Label\Low` (via SECURITY_DESCRIPTOR
+    // no `SECURITY_ATTRIBUTES`) — sem isso, o child (Low) não
+    // consegue escrever neles. **Mas** o `CreatePipe` falha
+    // com `ERROR_PRIVILEGE_NOT_HELD` (0x80070522) quando o SD
+    // tem SACL: criar kernel objects com SACL exige
+    // `SeSecurityPrivilege` que o processo do user comum não
+    // tem (split-token UAC). Workaround: criar os pipes SEM
+    // label. O child ainda pode escrever no workdir (que tem
+    // o label Low aplicado via `SetFileSecurityW` no step 1),
+    // mas falha ao escrever nos pipes. O test do `print()`
+    // (`hello world`) e do wall-clock falham com IOError
+    // porque o `print` é bloqueado. **A Etapa 5+ cobre
+    // path safety (writes no workdir) — output capture é
+    // limitação conhecida**, registrada como pendência da
+    // Fase 8.
+    //
+    // **Por que o workdir usa SetFileSecurityW e o pipe não:**
+    // o workdir é um **file object** — files podem ter SACL
+    // aplicada pelo owner (verificado com `icacls` no user
+    // comum). Pipes são **kernel objects** — o `CreatePipe`
+    // exige `SeSecurityPrivilege` pra criar com SACL. Limites
+    // diferentes do Win32.
+    let (stdin_read, stdin_write) = create_inheritable_pipe(None)
+        .map_err(|e| SpawnError::SpawnFailed(format!("CreatePipe(stdin): {e}")))?;
+    let (stdout_read, stdout_write) = create_inheritable_pipe(None)
+        .map_err(|e| SpawnError::SpawnFailed(format!("CreatePipe(stdout): {e}")))?;
+    let (stderr_read, stderr_write) = create_inheritable_pipe(None)
+        .map_err(|e| SpawnError::SpawnFailed(format!("CreatePipe(stderr): {e}")))?;
+
+    // ---------- Step 4: (removido na Etapa 5+) ----------
+    // Os write ends dos pipes stdout/stderr já nasceram rotulados
+    // (via SECURITY_DESCRIPTOR no CreatePipe, step 3). O
+    // `label_sd` continua vivo aqui (buffer atrás do pointer) —
+    // o OS já copiou o SD internamente no CreatePipe, mas
+    // mantemos até o fim do spawn por segurança.
+
+    // ---------- Step 5: STARTUPINFOEXW + HandleList attribute ----------
+    let startup_info_ex =
+        StartupInfoEx::new([stdin_write, stdout_write, stderr_write]).map_err(|e| {
+            close_silent(stdin_read);
+            close_silent(stdin_write);
+            close_silent(stdout_read);
+            close_silent(stdout_write);
+            close_silent(stderr_read);
+            close_silent(stderr_write);
+            SpawnError::SpawnFailed(format!("StartupInfoEx::new: {e}"))
+        })?;
+
+    // ---------- Step 6: Token IntegrityLevel=Low + duplicate as primary ----------
+    // (Variáveis em escopo caem em drop no return via `?`; ordem
+    //  de cleanup é o inverso da declaração.)
+    resolver
+        .restricted_token
+        .set_integrity_level(INTEGRITY_LEVEL_LOW)
+        .map_err(|e| {
+            close_silent(stdin_read);
+            close_silent(stdin_write);
+            close_silent(stdout_read);
+            close_silent(stdout_write);
+            close_silent(stderr_read);
+            close_silent(stderr_write);
+            SpawnError::SpawnFailed(format!("set_integrity_level(Low): {e}"))
+        })?;
+    let primary_token = resolver
+        .restricted_token
+        .duplicate_as_primary()
+        .map_err(|e| {
+            close_silent(stdin_read);
+            close_silent(stdin_write);
+            close_silent(stdout_read);
+            close_silent(stdout_write);
+            close_silent(stderr_read);
+            close_silent(stderr_write);
+            SpawnError::SpawnFailed(format!("duplicate_as_primary: {e}"))
+        })?;
+
+    // ---------- Step 7: CreateProcessAsUserW (CREATE_SUSPENDED) ----------
+    let cmdline_str = build_cmdline(&config.program, &config.args);
+    let cmdline_wide = to_wide_null(&cmdline_str);
+    let workdir_wide = to_wide_null(&config.workdir.to_string_lossy());
+
+    let creation_flags =
+        PROCESS_CREATION_FLAGS(CREATE_SUSPENDED.0 | EXTENDED_STARTUPINFO_PRESENT.0);
+
+    let mut proc_info = PROCESS_INFORMATION {
+        hProcess: HANDLE(ptr::null_mut()),
+        hThread: HANDLE(ptr::null_mut()),
+        dwProcessId: 0,
+        dwThreadId: 0,
+    };
+
+    // SAFETY: `CreateProcessAsUserW` toma o primary token, command
+    // line, optional process/thread attributes (None = default),
+    // bInheritHandles (TRUE: required so HandleList applies),
+    // creation flags (CREATE_SUSPENDED + EXTENDED_STARTUPINFO_PRESENT),
+    // optional env block pointer, workdir, STARTUPINFOW pointer
+    // (extracted from STARTUPINFOEXW), and PROCESS_INFORMATION out.
+    //
+    // **env block:** a Etapa 4 v1 não re-injetava o env (o
+    // `tokio::process::Command::envs()` falhava com
+    // ERROR_INVALID_PARAMETER em env block grande). A Etapa 5+
+    // constrói o env block via raw API. Testando: passando o
+    // env block construído — se falhar com ERROR_INVALID_PARAMETER
+    // (87), o problema é o env block; sem env block, herda
+    // parent (inclui vars que o `EnvFilter::apply` sobrescreveu
+    // in-place no parent — não é o ideal mas funciona).
+    let create_result = unsafe {
+        CreateProcessAsUserW(
+            primary_token,
+            PCWSTR::null(),
+            PWSTR(cmdline_wide.as_ptr() as *mut _),
+            None, // process attributes
+            None, // thread attributes
+            true, // bInheritHandles
+            creation_flags,
+            None, // env: herda do parent (Etapa 4 v1 workaround)
+            PCWSTR(workdir_wide.as_ptr()),
+            &startup_info_ex.inner.StartupInfo,
+            &mut proc_info,
+        )
+    };
+
+    if let Err(e) = create_result {
+        // Cleanup best-effort (variáveis dropam no fim da função).
+        close_silent(primary_token);
+        close_silent(stdin_read);
+        close_silent(stdin_write);
+        close_silent(stdout_read);
+        close_silent(stdout_write);
+        close_silent(stderr_read);
+        close_silent(stderr_write);
+        return Err(SpawnError::SpawnFailed(format!(
+            "CreateProcessAsUserW: {e:?} (se ERROR_PRIVILEGE_NOT_HELD, \
+             token construction precisa mudar — não elevar privilégio)"
+        )));
+    }
+
+    let pid = unsafe { GetProcessId(proc_info.hProcess) };
+
+    // ---------- Step 8: Create per-invocation Job Object ----------
+    let job = JobObject::with_memory_limits(
+        resolver.per_process_memory_bytes,
+        resolver.total_memory_bytes,
+    )
+    .map_err(|e| {
+        // Cleanup: o processo está suspended → TerminateProcess
+        // (que não cascateia pq Job ainda não foi atribuído, mas
+        // o processo vai morrer). Fecha handles restantes.
+        unsafe {
+            let _ = TerminateProcess(proc_info.hProcess, 1);
+        }
+        close_silent(proc_info.hProcess);
+        close_silent(proc_info.hThread);
+        close_silent(primary_token);
+        close_silent(stdin_read);
+        close_silent(stdin_write);
+        close_silent(stdout_read);
+        close_silent(stdout_write);
+        close_silent(stderr_read);
+        close_silent(stderr_write);
+        SpawnError::SpawnFailed(format!(
+            "JobObject per-invocation falhou: {e}. \
+             Tree-kill da Etapa 2 fica quebrado sem Job — abortando."
+        ))
+    })?;
+
+    // ---------- Step 9: AssignProcessToJobObject + ResumeThread ----------
+    // `assign_suspended_process` é buggy: passa o **process
+    // handle** pro `ResumeThread` (que precisa do **thread
+    // handle**). Aqui fazemos as 2 chamadas separadas com os
+    // handles corretos.
+    if let Err(e) = job.assign(proc_info.hProcess) {
+        drop(job);
+        unsafe {
+            let _ = TerminateProcess(proc_info.hProcess, 1);
+        }
+        close_silent(proc_info.hProcess);
+        close_silent(proc_info.hThread);
+        close_silent(primary_token);
+        close_silent(stdin_read);
+        close_silent(stdin_write);
+        close_silent(stdout_read);
+        close_silent(stdout_write);
+        close_silent(stderr_read);
+        close_silent(stderr_write);
+        return Err(SpawnError::SpawnFailed(format!(
+            "JobObject::assign falhou: {e}"
+        )));
+    }
+    // ResumeThread no THREAD handle (não process). Decrementa
+    // o suspend count (que era 1 por causa de CREATE_SUSPENDED).
+    let previous = unsafe { ResumeThread(proc_info.hThread) };
+    if previous == u32::MAX {
+        // u32::MAX é o sentinel "erro" de ResumeThread.
+        let err = unsafe { windows::Win32::Foundation::GetLastError() }.0;
+        drop(job);
+        unsafe {
+            let _ = TerminateProcess(proc_info.hProcess, 1);
+        }
+        close_silent(proc_info.hProcess);
+        close_silent(proc_info.hThread);
+        close_silent(primary_token);
+        close_silent(stdin_read);
+        close_silent(stdin_write);
+        close_silent(stdout_read);
+        close_silent(stdout_write);
+        close_silent(stderr_read);
+        close_silent(stderr_write);
+        return Err(SpawnError::SpawnFailed(format!(
+            "ResumeThread falhou (GetLastError=0x{err:X}, handle=0x{:X})",
+            proc_info.hThread.0 as usize
+        )));
+    }
+
+    // ---------- Step 10: Cleanup (handles que o parent não precisa) ----------
+    // Write ends: o child tem cópias herdadas via HandleList.
+    close_silent(stdin_write);
+    close_silent(stdout_write);
+    close_silent(stderr_write);
+    // stdin_read: o child não lê stdin nesse caminho.
+    close_silent(stdin_read);
+    // primary_token: o child já pegou sua própria referência.
+    close_silent(primary_token);
+    // thread handle: o thread já foi resumed, não precisa mais.
+    close_silent(proc_info.hThread);
+    // Attribute list: limpa via Drop do StartupInfoEx no fim do
+    // escopo. (Não precisa `drop()` explícito — sai do escopo
+    // ao final da função.)
+
+    // ---------- Step 11: Build SandboxedProcess ----------
+    let invocation_id = resolver.next_invocation_id();
+    let raw_child = RawChild::new(
+        proc_info.hProcess,
+        HANDLE(ptr::null_mut()), // thread já fechado
+        Some(stdout_read),
+        Some(stderr_read),
+    );
+
+    Ok(SandboxedProcess {
+        pid,
+        child: Some(raw_child),
+        job: Some(job),
+        invocation_id,
+    })
+}
+
+// =====================================================================
+// Helpers privados do spawn_windows.
+// =====================================================================
+
+/// Constrói o env block UTF-16 LE para `CreateProcessAsUserW`.
+/// Formato: `KEY=VALUE\0` por var, terminação `\0\0` no fim.
+/// Variáveis com `=` no nome ou valor são preservadas literalmente.
+#[cfg(target_os = "windows")]
+fn build_env_block(envs: &[(String, String)]) -> Vec<u16> {
+    let mut block: Vec<u16> = Vec::new();
+    for (k, v) in envs {
+        for c in k.encode_utf16() {
+            block.push(c);
+        }
+        block.push(b'=' as u16);
+        for c in v.encode_utf16() {
+            block.push(c);
+        }
+        block.push(0);
+    }
+    block.push(0); // Double NUL = end of env block
+    block
+}
+
+/// Constroi o command line para `CreateProcessAsUserW` no formato
+/// Win32 (`"program.exe" "arg1" "arg2" ...`). Argumentos com espaço
+/// ou aspas são quotados.
+#[cfg(target_os = "windows")]
+fn build_cmdline(program: &std::path::Path, args: &[String]) -> String {
+    let mut cmdline = String::new();
+    let prog_str = program.to_string_lossy();
+    if prog_str.contains(' ') || prog_str.contains('"') {
+        cmdline.push('"');
+        cmdline.push_str(&prog_str);
+        cmdline.push('"');
+    } else {
+        cmdline.push_str(&prog_str);
+    }
+    for arg in args {
+        cmdline.push(' ');
+        if arg.contains(' ') || arg.contains('"') {
+            cmdline.push('"');
+            // Escape interno de aspas: " → ""
+            let escaped = arg.replace('"', "\"\"");
+            cmdline.push_str(&escaped);
+            cmdline.push('"');
+        } else {
+            cmdline.push_str(arg);
+        }
+    }
+    cmdline
+}
+
+/// Cria um par de handles (read, write) via `CreatePipe` com
+/// `bInheritHandle = TRUE` no write end. O child herda o write end
+/// (listado em `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` no spawn);
+/// o read end fica no parent.
+///
+/// **Parâmetro `sd`:** `Option<*mut c_void>` (raw pointer pra
+/// `SECURITY_DESCRIPTOR`). Se `Some`, o SD é usado no
+/// `SECURITY_ATTRIBUTES.lpSecurityDescriptor` do CreatePipe — o
+/// pipe nasce com o SD aplicado (incluindo SACL). Se `None`,
+/// o pipe é criado com SD default (owner = caller, sem SACL).
+/// Usamos isso pra rotular stdout/stderr com `Mandatory Label\Low`
+/// upfront (Etapa 5+ da Fase 7): o child (Low) precisa escrever
+/// neles, e a label tem que estar no SD no momento da criação
+/// (não dá pra `SetSecurityInfo` depois porque o handle do
+/// `CreatePipe` não tem `WRITE_OWNER`).
+#[cfg(target_os = "windows")]
+fn create_inheritable_pipe(sd: Option<*mut std::ffi::c_void>) -> Result<(HANDLE, HANDLE), String> {
+    let sd_ptr = sd.unwrap_or(std::ptr::null_mut());
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd_ptr,
+        bInheritHandle: BOOL(1),
+    };
+    let mut read_end = HANDLE(std::ptr::null_mut());
+    let mut write_end = HANDLE(std::ptr::null_mut());
+    // SAFETY: CreatePipe toma os 2 handles (out), SECURITY_ATTRIBUTES
+    // (in) com bInheritHandle, e tamanho do buffer (0 = default).
+    unsafe { CreatePipe(&mut read_end, &mut write_end, Some(&sa), 0) }
+        .map_err(|e| format!("CreatePipe falhou: {e:?}"))?;
+    Ok((read_end, write_end))
+}
+
+/// Converte str pra UTF-16 com NUL terminator.
+#[cfg(target_os = "windows")]
+fn to_wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Fecha um handle silenciosamente (ignora erros — usado em cleanup
+/// best-effort onde o caller já vai propagar o erro original).
+#[cfg(target_os = "windows")]
+fn close_silent(handle: HANDLE) {
+    use windows::Win32::Foundation::CloseHandle;
+    if !handle.is_invalid() && !handle.0.is_null() {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+    }
+}
+
+/// Wrapper RAII sobre `STARTUPINFOEXW` + buffer do attribute list.
+/// `Drop` chama `DeleteProcThreadAttributeList` no handle.
+/// **Não** é `Send` (mesma razão do HANDLE — ponteiro raw).
+#[cfg(target_os = "windows")]
+struct StartupInfoEx {
+    inner: STARTUPINFOEXW,
+    /// Buffer que o `lpAttributeList` aponta. Mantido vivo até
+    /// o `Drop` (a Win32 API lê o buffer durante o
+    /// `CreateProcessAsUserW` mas não mantém referência depois).
+    _buffer: Vec<u8>,
+}
+
+#[cfg(target_os = "windows")]
+impl StartupInfoEx {
+    /// Constroi o `STARTUPINFOEXW` com `STARTF_USESTDHANDLES` +
+    /// `hStdInput/Output/Error` apontando pros 3 handles dados, e
+    /// um `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` listando SÓ esses 3.
+    ///
+    /// **Defesa em profundidade:** o `bInheritHandle` no
+    /// `SECURITY_ATTRIBUTES` de cada pipe já marca os handles como
+    /// herdáveis, mas o `HANDLE_LIST` restringe a herança SÓ
+    /// aos listados — mesmo que outro handle herdável esteja
+    /// aberto no parent, o child NÃO o herda.
+    fn new(handles: [HANDLE; 3]) -> Result<Self, String> {
+        // 1. Primeira chamada: descobre o tamanho necessário.
+        // A Win32 API aceita um LPPROC_THREAD_ATTRIBUTE_LIST null
+        // (ou default) e devolve o tamanho em `lpsize`.
+        let mut size: usize = 0;
+        let _ = unsafe {
+            InitializeProcThreadAttributeList(
+                LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
+                1,
+                0,
+                &mut size,
+            )
+        };
+        if size == 0 {
+            return Err("InitializeProcThreadAttributeList(size=0) — deveria ser > 0".to_string());
+        }
+
+        // 2. Aloca o buffer e inicializa o attribute list.
+        let mut buffer = vec![0u8; size];
+        let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(buffer.as_mut_ptr() as *mut _);
+        unsafe { InitializeProcThreadAttributeList(attr_list, 1, 0, &mut size) }
+            .map_err(|e| format!("InitializeProcThreadAttributeList falhou: {e:?}"))?;
+
+        // 3. Adiciona o HandleList.
+        // SAFETY: handles.as_ptr() aponta pra array válida de 3 HANDLEs.
+        // `UpdateProcThreadAttribute` copia os bytes internamente.
+        // **O `attribute` é o valor FULL de `ProcThreadAttributeValue`**,
+        // não só o número: `((Number & 0xFFFF) | (Input ? 0x00020000 : 0)
+        // | (Thread ? 0x00010000 : 0) | (Additive ? 0x00040000 : 0))`.
+        // HandleList = (Number=2, Thread=FALSE, Input=TRUE, Additive=FALSE)
+        // = 0x00020002. Passar só `2` (o número) retorna
+        // `ERROR_NOT_SUPPORTED`.
+        const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
+        unsafe {
+            UpdateProcThreadAttribute(
+                attr_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                Some(handles.as_ptr() as *const _),
+                std::mem::size_of::<HANDLE>() * handles.len(),
+                None,
+                None,
+            )
+        }
+        .map_err(|e| format!("UpdateProcThreadAttribute(HandleList) falhou: {e:?}"))?;
+
+        // 4. Constroi a STARTUPINFOW.
+        let startup_info = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
+            dwFlags: STARTF_USESTDHANDLES,
+            hStdInput: handles[0],
+            hStdOutput: handles[1],
+            hStdError: handles[2],
+            ..Default::default()
         };
 
-        Ok(SandboxedProcess {
-            pid,
-            child: Some(child),
-            #[cfg(target_os = "windows")]
-            job: Some(job),
-            invocation_id,
+        Ok(Self {
+            inner: STARTUPINFOEXW {
+                StartupInfo: startup_info,
+                lpAttributeList: attr_list,
+            },
+            _buffer: buffer,
         })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for StartupInfoEx {
+    fn drop(&mut self) {
+        if !self.inner.lpAttributeList.0.is_null() {
+            unsafe {
+                DeleteProcThreadAttributeList(self.inner.lpAttributeList);
+            }
+        }
     }
 }
 

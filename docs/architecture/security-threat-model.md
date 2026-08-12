@@ -1,7 +1,7 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-07-29
-Fase correspondente: 1-3
+Verificado contra o código em: 2026-08-10
+Fase correspondente: 1-3, 7
 -->
 
 # Modelo de Ameaça de Segurança
@@ -86,9 +86,10 @@ A REGRA 1.1 e a honestidade do `SECURITY.md` exigem que o documento diga o que o
 | Filho exfiltra via DNS | **sim** | `netsh dns set` força DNS via proxy, que valida hostname **antes** de resolver (ADR-0033 D5) |
 | Filho lê `SAM` (Windows Security Account Manager) | **sim** | `SeBackup` removido pelo Restricted Token (ADR-0036 D4) |
 | Filho faz `rm -rf /` no host | **dentro do sandbox: sim (afeta apenas workdir)** | `exec.shell` com `Denylist` proíbe comandos destrutivos (Etapa 6); `exec.python` requer aprovação (ADR-0034) |
+| Filho **lê** arquivo Medium-labeled fora do workdir (read-up) | **não** | Mandatory Label\Low (Etapa 5+ da Fase 7) só bloqueia **write-up** (`NO_WRITE_UP`). Child (Low) **consegue ler** paths Medium-labeled (default do filesystem): `%LOCALAPPDATA%\studio\frederico\ia\data\frederico.db`, `%USERPROFILE%\Documents`, `%APPDATA%`, etc. DACL permite o user ler seus próprios arquivos; Mandatory Label só nega **escrita** se `token_integrity < object_label`. **Lacuna documentada** — Etapa 5+ (Fase 7) + roadmap Fase 8 (SID restritivo próprio + DACL custom fecha). |
 | Usuário malicioso bypassa o sandbox | **não** (esperado) | Sandbox é defesa contra o **filho**, não contra o usuário. Usuário admin pode matar o app, debugar, editar config. **Esperado e documentado.** |
 
-**A frase que vale para o usuário é literal:** *"O sandbox da Fase 7 é defesa em profundidade contra as ameaças I1, I2, I3, e a classe 'filho malicioso/invadido' das ameaças STRIDE. Não é sandbox de contêiner (Docker/runc), não é VPN, não é firewall. Lacunas explícitas: bypass de proxy via socket raw, HTTP/3, certificate pinning bypass, privilégios SeNetworkLogonRight. Mitigações estão em roadmap de Fase 8+."*
+**A frase que vale para o usuário é literal:** *"O sandbox da Fase 7 é defesa em profundidade contra as ameaças I1, I2, I3, e a classe 'filho malicioso/invadido' das ameaças STRIDE. Não é sandbox de contêiner (Docker/runc), não é VPN, não é firewall. Lacunas explícitas: bypass de proxy via socket raw, HTTP/3, certificate pinning bypass, privilégios SeNetworkLogonRight, **read-up de paths Medium-labeled** (Mandatory Label só bloqueia write-up; fechamento exige SID restritivo próprio, Fase 8+). Mitigações estão em roadmap de Fase 8+."*
 
 ## LGPD (`PROMPT MESTRE` §25.4)
 

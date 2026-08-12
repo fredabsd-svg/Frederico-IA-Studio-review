@@ -48,6 +48,18 @@ pub use job_object::{JobError, JobObject};
 mod restricted_token;
 pub use restricted_token::{RestrictedToken, RestrictedTokenError, DROPPED_PRIVILEGE_NAMES};
 
+/// Etapa 5+ da Fase 7 (path safety enforcement): helper pra
+/// aplicar `Mandatory Label\Low` no workdir. Combinado com
+/// `TokenIntegrityLevel = Low` no token (setado em
+/// `RestrictedToken::set_integrity_level`), fecha path safety:
+/// o processo Low só consegue acessar o workdir (que tem
+/// label Low), não o parent (label Medium default).
+mod integrity_label;
+pub use integrity_label::{
+    build_low_label_security_descriptor, set_low_integrity_label, IntegrityLabelError, LabelSd,
+    INTEGRITY_LEVEL_LOW,
+};
+
 /// Prefixo do `TargetName`. Usado em `list_providers` como filtro
 /// (`Frederico-IA-Studio:provider:*`).
 const TARGET_PREFIX: &str = "Frederico-IA-Studio:provider:";

@@ -29,6 +29,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
 
 use frederico_security::jail::SandboxedProcess;
+use frederico_security::raw_child::{wrap_pipe_handle_as_async_file, RawExitStatus};
 
 /// Teto total de output (stdout + stderr somados) por invocação.
 /// 10 MB é o limite do spec §"Output collection e limites".
@@ -88,19 +89,33 @@ pub(crate) async fn collect_output(
 ) -> Result<RawOutput, String> {
     let start = std::time::Instant::now();
 
-    // Toma as handles ANTES do join (depois de tomar, o
-    // SandboxedProcess só carrega child + job — o `wait_with_timeout`
-    // consegue rodar concorrentemente com as leituras).
-    let stdout = sandboxed.stdout().ok_or_else(|| {
-        "stdout nao piped (SecurityJailResolver::spawn deveria ter feito Stdio::piped)".to_string()
+    // Toma as handles ANTES do join. A Etapa 5+ da Fase 7
+    // mudou a API: o `SandboxedProcess` retorna **HANDLEs raw**
+    // (Win32), que o caller wrappa em `tokio::fs::File` via
+    // `wrap_pipe_handle_as_async_file` pra implementar `AsyncRead`.
+    // Motivo: o `tokio::process::Child` da Etapa 4 v1 não
+    // permitia aplicar o `RestrictedToken` (a std não expõe
+    // `CreateProcessAsUserW` em Rust 1.97). A Etapa 5+ usa
+    // raw `CreateProcessAsUserW` (com `HANDLE_LIST` +
+    // `CREATE_SUSPENDED` + `TokenIntegrityLevel=Low` +
+    // `Mandatory Label\Low` no workdir/pipes). Resultado:
+    // handle raw, wrappear é responsabilidade do caller.
+    let stdout_handle = sandboxed.take_stdout_handle().ok_or_else(|| {
+        "stdout nao piped (SecurityJailResolver::spawn deveria ter feito CreatePipe)".to_string()
     })?;
-    let stderr = sandboxed
-        .stderr()
+    let stdout = wrap_pipe_handle_as_async_file(stdout_handle)
+        .map_err(|e| format!("wrap_pipe_handle_as_async_file(stdout): {e}"))?;
+    let stderr_handle = sandboxed
+        .take_stderr_handle()
         .ok_or_else(|| "stderr nao piped (mesma razão de stdout)".to_string())?;
+    let stderr = wrap_pipe_handle_as_async_file(stderr_handle)
+        .map_err(|e| format!("wrap_pipe_handle_as_async_file(stderr): {e}"))?;
 
     // Concorrência: 3 futures. O wait_with_timeout é o gate —
-    // em timeout, ele já fez start_kill no child. O caller
-    // dropa o SandboxedProcess depois → Job fecha → KILL_ON_JOB_CLOSE.
+    // em timeout, ele já fez kill no child (via
+    // `RawChild::wait_with_timeout` → `TerminateProcess`). O
+    // caller dropa o SandboxedProcess depois → Job fecha →
+    // KILL_ON_JOB_CLOSE na árvore.
     let (stdout_bytes, stderr_bytes, wait_res) = tokio::join!(
         read_stream_to_cap(stdout, MAX_OUTPUT_BYTES),
         read_stream_to_cap(stderr, MAX_OUTPUT_BYTES),
@@ -115,8 +130,13 @@ pub(crate) async fn collect_output(
         }
     }
 
-    let exit_status = wait_res.map_err(|e| format!("wait falhou: {e}"))?;
-    let exit_code = exit_status.code().unwrap_or(-1);
+    // `RawExitStatus` (Etapa 5+) expõe o `code` como campo público
+    // (`u32`), não como método `.code() -> Option<i32>`. Convenção
+    // C: 0 = sucesso; diferente de 0 = erro. Não há "no status"
+    // (RawChild garante que sempre lê o exit code se o wait
+    // succeeded).
+    let exit_status: RawExitStatus = wait_res.map_err(|e| format!("wait falhou: {e}"))?;
+    let exit_code = exit_status.code as i32;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
@@ -133,8 +153,13 @@ pub(crate) async fn collect_output(
     })
 }
 
-/// Lê um `ChildStdout` ou `ChildStderr` em chunks até o teto.
-/// Retorna o `Vec<u8>` acumulado (truncado se excedeu o teto).
+/// Lê um `tokio::fs::File` (wrappado de um `HANDLE` de pipe) em
+/// chunks até o teto. Retorna o `Vec<u8>` acumulado (truncado se
+/// excedeu o teto).
+///
+/// A Etapa 5+ da Fase 7 troca `ChildStdout`/`ChildStderr` (que
+/// vinham de `tokio::process::Child`) por `tokio::fs::File`
+/// (wrappado de `HANDLE` raw do `CreatePipe`).
 async fn read_stream_to_cap<R>(reader: R, max: usize) -> Vec<u8>
 where
     R: tokio::io::AsyncRead + Unpin,

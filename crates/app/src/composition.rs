@@ -30,7 +30,7 @@ use frederico_model_catalog::{
     SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
 };
 use frederico_tool_registry::{
-    DocumentPermission, FileReadPermission, PermissionSet, Tool, ToolRegistry,
+    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, Tool, ToolRegistry,
 };
 
 // ============================================================================
@@ -474,6 +474,70 @@ pub fn initial_permission_set_for_capable_launcher() -> PermissionSet {
     }
 }
 
+/// `PermissionSet` para casca com `exec_deps` Some (sandbox
+/// + runtimes Python/Node disponíveis). **Bump atômico** do
+///   `python/node: None → Sandboxed` (Etapa 4/5+ da Fase 7,
+///   ADR-0036).
+///
+/// A casca Tauri deve chamar esta função **somente se** o
+/// [`ExecDeps`] foi construído com sucesso (sandbox + runtimes
+/// prontos). Se o subsistema exec está indisponível,
+/// [`initial_permission_set`] é o caminho certo —
+/// `exec.python`/`exec.node` não entram no `ToolRegistry` (o
+/// modelo não as vê), e o `runtime` fica em `None` (deny) pra
+/// refletir a indisponibilidade honestamente. **Bump capability
+/// + permission atômicas** — sem meia-medida.
+///
+/// **Etapa 5+ (2026-08-10):** reativado. A Etapa 5+ fechou a
+/// path safety enforcement (Mandatory Label\Low no workdir +
+/// TokenIntegrityLevel=Low no child), permitindo bumpar
+/// `runtime` de `None` pra `Sandboxed` com segurança.
+#[must_use]
+pub fn initial_permission_set_for_exec() -> PermissionSet {
+    PermissionSet {
+        file_read: FileReadPermission::WorkspaceOnly,
+        documents: DocumentPermission::None,
+        // Etapa 4/5+ da Fase 7: runtime = Sandboxed (BUMP
+        // atômico — vai junto com o registro de exec.python +
+        // exec.node no `build_default_tools`). `Sandboxed`
+        // (não `Unrestricted`) reflete o fato de o child
+        // rodar sob SecurityJailResolver (path safety +
+        // restricted token).
+        python: RuntimePermission::Sandboxed,
+        node: RuntimePermission::Sandboxed,
+        ..PermissionSet::default()
+    }
+}
+
+/// `PermissionSet` para casca com **ambos** os subsistemas
+/// disponíveis: document-worker (Etapa 2.A) **e** exec (Etapa
+/// 5+). **Bump atômico combinado** de `documents: None → Full`
+/// (ADR-0023) **e** `python/node: None → Sandboxed` (Etapa 5+).
+///
+/// Esta função é a usada pela casca em produção (Etapa 5+)
+/// — tanto o `document-worker` quanto o `exec.python`/`exec.node`
+/// são dependências resolvidas no startup, então o
+/// `PermissionSet` carrega ambos os bumps. É a única forma
+/// de manter a regra **bump atômico capability + permission**
+/// (ADR-0020 §3 D3) sem meia-medida: ou o tool está no
+/// `ToolRegistry` + na allowlist + com permissão bumpada, ou
+/// em nenhum dos três.
+#[must_use]
+pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
+    PermissionSet {
+        file_read: FileReadPermission::WorkspaceOnly,
+        // Etapa 2.A: documents = Full (BUMP atômico — vai
+        // junto com o registro de docs.generate + docs.inspect
+        // no `build_default_tools`). ADR-0020 §3 D3.
+        documents: DocumentPermission::Full,
+        // Etapa 5+ da Fase 7: python/node = Sandboxed. Ver
+        // `initial_permission_set_for_exec` acima.
+        python: RuntimePermission::Sandboxed,
+        node: RuntimePermission::Sandboxed,
+        ..PermissionSet::default()
+    }
+}
+
 /// Constrói o `PermissionSet` **real** da cadeia
 /// `user ∩ project ∩ assistant` via
 /// `PermissionLoader::load_effective_permission_set`.
@@ -572,9 +636,10 @@ pub struct ExecDeps {
 /// - `invoker.is_some()` → `initial_permission_set_for_capable_launcher`
 ///   (bumpa `documents: None → Full`).
 /// - `exec_deps.is_some()` → `initial_permission_set_for_exec`
-///   (bumpa `runtime: None → ReadWrite` no `PermissionSet`,
+///   (bumpa `python/node: None → Sandboxed` no `PermissionSet`,
 ///   Etapa 4 da Fase 7).
-/// - Ambos `Some` → função que combina os dois bumps.
+/// - Ambos `Some` → `initial_permission_set_for_capable_launcher_and_exec`
+///   (combina os dois bumps).
 ///
 /// A casca é quem passa o `PermissionSet` correto (regra de
 /// consistência: a mesma `Option<...>` vai pra
@@ -710,7 +775,7 @@ pub fn build_default_tools(
 /// **Bump atômico:** a casca **deve** passar a **mesma**
 /// `Option` que passou pra `build_default_tools` (regra de
 /// consistência: `invoker` Some → `documents: Full` no
-/// `PermissionSet`; `exec_deps` Some → `runtime: ReadWrite`
+/// `PermissionSet`; `exec_deps` Some → `python/node: Sandboxed`
 /// no `PermissionSet` — bumps atômicos).
 #[must_use]
 pub fn build_default_allowed_for_run(
@@ -741,12 +806,12 @@ pub fn build_default_allowed_for_run(
     }
 
     if exec_deps.is_some() {
-        // Etapa 4 da Fase 7: o `PermissionSet::runtime` deve
-        // ser `ReadWrite` quando o subsistema exec está
-        // disponível. A casca cuida do bump atômico via
-        // `initial_permission_set_for_exec` (especificado
-        // separadamente; ainda não implementado no v1 da
-        // Etapa 4 — o teste E2E cobre o caminho).
+        // Etapa 4/5+ da Fase 7: o `PermissionSet::python` e
+        // `PermissionSet::node` devem ser `Sandboxed` quando o
+        // subsistema exec está disponível. A casca cuida do
+        // bump atômico via `initial_permission_set_for_exec`
+        // (Etapa 5+) ou `initial_permission_set_for_capable_launcher_and_exec`
+        // (quando o document-worker também está disponível).
         allowed.push(frederico_core::ToolId::new("exec.python"));
         allowed.push(frederico_core::ToolId::new("exec.node"));
     }

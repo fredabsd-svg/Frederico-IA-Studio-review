@@ -236,7 +236,6 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 /// escapar). Hoje a Etapa 4 NAO bloqueia — Etapa 5+ vai
 /// adicionar.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Etapa 5+ pendente: RestrictedToken com SID restritivo proprio (path safety enforcement no SecurityJailResolver). Reativar quando a Etapa 5+ fechar; o test jah foi visto FALHANDO em 2026-08-10 (TDD Etapa 5+) - python escapou via open('..\\evil.txt', 'w') e criou arquivo no parent do workdir, provando a ausencia de path safety no sandbox."]
 async fn child_cannot_write_outside_workspace() {
     // **Etapa 5+ da Fase 7 (2026-08-10):** este test foi
     // **visto falhando** em 2026-08-10 (TDD Etapa 5+ — python
@@ -322,7 +321,6 @@ except (FileNotFoundError, PermissionError, OSError) as e:
 /// wall-clock ANTES de escapar, mas o caminho de execucao
 /// em si (process spawn + cwd) nao tem path safety.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Phase 7 v1 nao enforce path safety no sandbox; reabilitar em Etapa 5+"]
 async fn wall_clock_kills_long_running_process() {
     let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
@@ -389,7 +387,6 @@ print("slept 10s", flush=True)
 /// SandboxedProcess spawna e a stdout do filho e
 /// coletada com sucesso.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Phase 7 v1 nao enforce path safety no sandbox; reabilitar em Etapa 5+"]
 async fn exec_python_simple_hello_world() {
     let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);

@@ -236,18 +236,31 @@ print(g.pid, flush=True)
 g.wait()
 "#
     );
+    // **Etapa 5+ da Fase 7 (path safety):** o `set_low_integrity_label`
+    // rotula o workdir via `SetFileSecurityW` — exige que o workdir
+    // seja **owned pelo user** (a Etapa 4 v1 usava `current_dir()` que
+    // apontava pra `C:\src\Frederico-IA\crates\security` — não é
+    // owned pelo user de CI, dava `ERROR_ACCESS_DENIED` 5). Solução:
+    // tempdir (que o `tempfile` cria em `%TEMP%` owned pelo user).
+    // O `tempdir` precisa viver até o final do test — não usar
+    // `let _ =` que droparia no fim do statement.
+    let workdir = tempfile::tempdir().expect("tempdir workdir");
     let config = SandboxConfig::new(
         python,
         vec!["-c".to_string(), parent_script],
-        std::env::current_dir().unwrap(),
+        workdir.path().to_path_buf(),
     );
     let mut child = resolver.spawn(config).expect("spawn");
     let parent_pid = child.pid();
 
     // Toma stdout SEM consumir o SandboxedProcess (a v1 da Etapa 2
     // usava `into_child` que fechava o Job prematuramente — bug
-    // consertado na Etapa 4 com `stdout()`/`stderr()`).
-    let stdout = child.stdout().expect("stdout piped");
+    // consertado na Etapa 4 com `stdout()`/`stderr()`, e a Etapa 5+
+    // da Fase 7 troca por `take_stdout_handle()` que devolve
+    // o HANDLE raw wrappado em `tokio::fs::File`).
+    use frederico_security::raw_child::wrap_pipe_handle_as_async_file;
+    let stdout_handle = child.take_stdout_handle().expect("stdout piped");
+    let stdout = wrap_pipe_handle_as_async_file(stdout_handle).expect("wrap stdout");
     use tokio::io::AsyncBufReadExt;
     let mut reader = tokio::io::BufReader::new(stdout);
     let mut line = String::new();

@@ -62,8 +62,9 @@ use thiserror::Error;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 use windows::Win32::Security::{
-    CreateRestrictedToken, LookupPrivilegeValueW, CREATE_RESTRICTED_TOKEN_FLAGS,
-    LUID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES_ATTRIBUTES,
+    CreateRestrictedToken, DuplicateTokenEx, LookupPrivilegeValueW, SecurityAnonymous,
+    SetTokenInformation, TokenPrimary, CREATE_RESTRICTED_TOKEN_FLAGS, LUID_AND_ATTRIBUTES,
+    SID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES_ATTRIBUTES,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -98,6 +99,15 @@ pub enum RestrictedTokenError {
     /// recusou a combinação).
     #[error("CreateRestrictedToken falhou: {message}")]
     CreateRestrictedFailed { message: String },
+    /// `SetTokenInformation(TokenRestrictedSids)` falhou (token
+    /// não permite adicionar restricted SIDs — raro).
+    #[error("SetTokenInformation(TokenRestrictedSids) falhou: {0}")]
+    SetRestrictedSidsFailed(windows::core::Error),
+    /// `DuplicateTokenEx` falhou (não foi possível duplicar o
+    /// token como primary — raro, geralmente indica corrupção
+    /// de handle ou OS sem recursos).
+    #[error("DuplicateTokenEx falhou: {0}")]
+    DuplicateTokenFailed(windows::core::Error),
 }
 
 /// Handle para um Windows Restricted Token. Quando o
@@ -225,6 +235,107 @@ impl RestrictedToken {
     #[must_use]
     pub fn dropped_privileges(&self) -> &[LUID] {
         &self.dropped_privileges
+    }
+
+    /// Duplica o token como **primary token** (necessário pra
+    /// `CreateProcessAsUserW`). O `CreateRestrictedToken` retorna
+    /// um token que pode ser usado tanto como primary quanto
+    /// impersonation, mas `DuplicateTokenEx` com `TokenPrimary`
+    /// é a forma explícita e robusta de garantir o tipo correto.
+    ///
+    /// **Caller é dono do handle retornado** — deve chamar
+    /// `CloseHandle` (ou usar um wrapper RAII).
+    pub fn duplicate_as_primary(&self) -> Result<HANDLE, RestrictedTokenError> {
+        let mut new_handle: HANDLE = HANDLE(std::ptr::null_mut());
+        // SAFETY: `DuplicateTokenEx` toma o token existente +
+        // máscara de acesso + security attributes (None) +
+        // ImpersonationLevel (SecurityAnonymous é suficiente
+        // porque queremos criar um primary token) + TokenType
+        // (TokenPrimary) + handle de saída.
+        unsafe {
+            DuplicateTokenEx(
+                self.handle,
+                TOKEN_ALL_ACCESS,
+                None,
+                SecurityAnonymous,
+                TokenPrimary,
+                &mut new_handle,
+            )
+        }
+        .map_err(RestrictedTokenError::DuplicateTokenFailed)?;
+        Ok(new_handle)
+    }
+
+    /// Setar `TokenIntegrityLevel` no token. O `Level` é o
+    /// RID do SID de integrity (`SECURITY_MANDATORY_RID`
+    /// + offset). Níveis padrão:
+    /// - Low:    0x1000 (S-1-16-4096)
+    /// - Medium: 0x2000 (S-1-16-8192)
+    /// - High:   0x3000 (S-1-16-12288)
+    /// - System: 0x4000 (S-1-16-16384)
+    ///
+    /// **Etapa 5+ (path safety):** a Etapa 5+ seta **Low**
+    /// (0x1000) e adiciona `Mandatory Label\Low` no workdir.
+    /// O processo Low não consegue acessar objetos Medium
+    /// (parent do workdir, system files, etc) — DACL não
+    /// importa, é a **integrity** que bloqueia.
+    ///
+    /// **Por que low e não medium:** com medium, o processo
+    /// pode acessar QUALQUER arquivo do user (incluindo
+    /// o parent do workdir). Com low, só consegue acessar
+    /// objetos explicitamente marcados como low (ou sem
+    /// label, que default = medium → bloqueia low).
+    pub fn set_integrity_level(&self, level: u32) -> Result<(), RestrictedTokenError> {
+        // Cria o SID S-1-16-<level> (SECURITY_MANDATORY_LABEL_AUTHORITY
+        // = 0x10, 1 sub-authority = level).
+        let mut sid_handle = windows::Win32::Security::PSID(std::ptr::null_mut());
+        // SAFETY: aloca um SID novo do tipo mandatory label.
+        unsafe {
+            windows::Win32::Security::AllocateAndInitializeSid(
+                &windows::Win32::Security::SID_IDENTIFIER_AUTHORITY {
+                    Value: windows::Win32::Security::SECURITY_MANDATORY_LABEL_AUTHORITY.Value,
+                },
+                1,
+                level,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &mut sid_handle,
+            )
+        }
+        .map_err(RestrictedTokenError::SetRestrictedSidsFailed)?;
+        // Constrói o TOKEN_MANDATORY_LABEL com o SID.
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Sid: sid_handle,
+                Attributes: 0x00000000, // SE_GROUP_INTEGRITY (não enforced
+                                        // nem enabled-by-default)
+            },
+        };
+        // SAFETY: `SetTokenInformation` toma o handle do token +
+        // TokenInformationClass + buffer + tamanho. `label`
+        // vive até o fim desta função; Win32 copia o SID
+        // internamente.
+        let result = unsafe {
+            SetTokenInformation(
+                self.handle,
+                windows::Win32::Security::TokenIntegrityLevel,
+                &label as *const _ as *const _,
+                std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32,
+            )
+        };
+        // Libera o SID local — o token fez cópia.
+        // SAFETY: `sid_handle` foi alocado por AllocateAndInitializeSid;
+        // FreeSid é a API correta.
+        unsafe {
+            let _ = windows::Win32::Security::FreeSid(sid_handle);
+        }
+        result.map_err(RestrictedTokenError::SetRestrictedSidsFailed)?;
+        Ok(())
     }
 }
 
