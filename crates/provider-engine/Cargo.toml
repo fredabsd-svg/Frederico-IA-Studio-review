@@ -39,3 +39,8 @@ frederico-security = { workspace = true }
 frederico-execution-engine = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
+# `run_event_channel_format_is_stable` precisa de `uuid` pra
+# asserir a string exata (`run://<uuid>/event`); entra como
+# dev-dep explícito pra que o teste não dependa do caminho
+# transitivo via `frederico-core`.
+uuid = { workspace = true }

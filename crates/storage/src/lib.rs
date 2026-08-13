@@ -800,6 +800,39 @@ impl<'a> MessageRepo<'a> {
         Ok(())
     }
 
+    /// Liga uma mensagem ao `RunId` que a produziu.
+    ///
+    /// **Por que existe:** a mensagem assistant nasce com `run_id = None`
+    /// (regra do orchestrator: "user msg primeiro" + `RunRepo::create`
+    /// precisa do `message_id` da assistant, que ainda não existe
+    /// quando a user msg é criada). O orchestrator chama `set_run_id`
+    /// **imediatamente após** criar o `Run` e **antes** do
+    /// `tokio::spawn` do executor — assim, quando o `send_message`
+    /// retorna pro IPC e a UI faz `getConversation`, a assistant
+    /// msg já tem `run_id` populado e a UI consegue assinar o canal
+    /// `run://<run_id>/event`.
+    ///
+    /// Sem essa chamada, a UI nunca assina o canal (vê `run_id = None`
+    /// em todas as assistant msgs), os eventos Tauri caem no
+    /// `let _ = window.emit(...)` e a resposta fica invisível mesmo
+    /// com o provedor retornando os tokens. Coberto por
+    /// `crates/e2e/tests/e2e_chat_subscribe_picks_up_delta.rs`.
+    ///
+    /// Idempotente: re-chamar com o mesmo `run_id` é no-op (o `UPDATE`
+    /// resulta em 0 linhas alteradas mas não falha). Chamar com um
+    /// `run_id` diferente sobrescreve — bug, mas não falha (não
+    /// temos como detectar a sobrescrita sem `SELECT` antes, e o
+    /// overhead não vale a pena; o `LogWarning` do orchestrator
+    /// é a salvaguarda).
+    pub async fn set_run_id(&self, id: &MessageId, run_id: RunId) -> StorageResult<()> {
+        sqlx::query("UPDATE messages SET run_id = ?1 WHERE id = ?2")
+            .bind(run_id.0.to_string())
+            .bind(id.0.to_string())
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Substitui o conteúdo da mensagem (para Assistant: o texto
     /// montado a partir dos deltas; em geral, atualizado pelo
     /// orquestrador conforme os eventos chegam).
@@ -2797,6 +2830,59 @@ mod tests {
         let openai = after.iter().find(|c| c.provider_id == p).unwrap();
         assert!(openai.last_error.is_none());
         assert!(openai.last_ok_at.is_some());
+    }
+
+    /// Cobertura do `MessageRepo::set_run_id` (PR do bug do stream):
+    /// a primitiva precisa (1) popular `run_id` numa mensagem que
+    /// nasceu com `None` (a assistant msg, antes do `RunRepo::create`
+    /// ficar sabendo dela), (2) ser idempotente (re-chamar com o
+    /// mesmo `run_id` é no-op) e (3) sobreviver a um `get` via
+    /// `MessageRepo::get` (que é o que a UI consome via
+    /// `getConversation` → `list_for_conversation`).
+    #[tokio::test]
+    async fn message_repo_set_run_id_populates_and_is_idempotent() {
+        let db = Database::open(&tempdir().join("setrunid.db"))
+            .await
+            .unwrap();
+        let conv_repo = ConversationRepo::new(&db);
+        let msg_repo = MessageRepo::new(&db);
+        let run_repo = RunRepo::new(&db);
+
+        let conv = conv_repo
+            .create(&ProviderId::new("openai"), &ModelId::new("gpt-4o"), None)
+            .await
+            .unwrap();
+        // Mesma sequência do orchestrator: msg nasce com run_id = None,
+        // run é criado em separado, e o set_run_id liga os dois.
+        let asst = msg_repo
+            .create(&conv.id, "assistant", "", None)
+            .await
+            .unwrap();
+        let run = run_repo.create(&conv.id, &asst.id).await.unwrap();
+
+        // Antes do set_run_id: None (é o bug original).
+        let before = msg_repo.get(&asst.id).await.unwrap();
+        assert!(
+            before.run_id.is_none(),
+            "assistant msg nasce com run_id None (estado pré-fix)"
+        );
+
+        // set_run_id: popula.
+        msg_repo.set_run_id(&asst.id, run.id).await.unwrap();
+        let after = msg_repo.get(&asst.id).await.unwrap();
+        assert_eq!(
+            after.run_id,
+            Some(run.id),
+            "set_run_id tem que popular run_id no assistant msg"
+        );
+
+        // Idempotente: re-chamar com o mesmo run_id não falha nem
+        // corrompe (é o caminho do orchestrator: pode ser chamado
+        // duas vezes em paths diferentes — Etapa 2 da Fase 6
+        // transitions; o `UPDATE` é no-op quando o valor é igual).
+        msg_repo.set_run_id(&asst.id, run.id).await.unwrap();
+        let after_again = msg_repo.get(&asst.id).await.unwrap();
+        assert_eq!(after_again.run_id, Some(run.id));
     }
 
     /// Contador atômico: o relógio sozinho não garante unicidade (no Windows

@@ -162,6 +162,24 @@ export type StreamEvent =
   | { kind: "error"; message: ProviderErrorView }
   | { kind: "cancelled" };
 
+/**
+ * Envelope de um `StreamEvent` carregando o `seq` do journal
+ * (`message_events.seq`). Adicionado no PR do bug do stream
+ * (Etapa 5.X): a UI usa o `seq` pra reconectar via `RunGetEvents
+ * { since_seq }` sem perder nem duplicar quando a janela cai
+ * no meio do stream (§12.6).
+ *
+ * Schema JSON (do Rust):
+ * ```json
+ * { "seq": 7, "event": { "kind": "delta", "content": "olá" } }
+ * ```
+ */
+export interface StreamEventEnvelope {
+  /** `seq` do `MessageEvent` no journal — monotônico por `message_id`. */
+  seq: number;
+  event: StreamEvent;
+}
+
 export interface ProviderErrorView {
   code: string;
   title: string;

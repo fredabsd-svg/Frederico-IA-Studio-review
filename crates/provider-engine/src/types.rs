@@ -204,6 +204,36 @@ pub enum StreamEvent {
     Cancelled,
 }
 
+/// Envelope de um `StreamEvent` carregando o `seq` do journal.
+///
+/// **Por que existe (PR do bug do stream — Etapa 5.X):** o spec
+/// `chat-and-providers.md` §"Journal de eventos" exige que cada
+/// `StreamEvent` seja **persistido antes** de ser emitido pra UI,
+/// e que o `seq` seja monotônico por `message_id` (vem do
+/// `message_events.seq`). O frontend reconecta por `fromSeq` no
+/// reload de janela (Etapa 5 + §12.6) — pra reconexão ser exata
+/// (sem perder nem duplicar), o `seq` do evento **emitido** tem
+/// que ser o mesmo do `seq` que o journal gravou.
+///
+/// O `EventSink::emit_run_event` recebe `payload: serde_json::Value`
+/// opaco — o `RunExecutor` monta o envelope e passa a JSON
+/// serializado. O `TauriEventSink` (e qualquer outra impl) não
+/// precisa conhecer o envelope; ele só emite o JSON.
+///
+/// **Schema JSON:**
+/// ```json
+/// { "seq": 7, "event": { "kind": "delta", "content": "olá" } }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEventEnvelope {
+    /// `seq` do `MessageEvent` no journal (`message_events.seq`).
+    /// Monotônico por `message_id` — o frontend usa pra reconectar
+    /// via `RunGetEvents { message_id, since_seq: <último seq recebido> }`.
+    pub seq: u32,
+    /// O evento do adapter.
+    pub event: StreamEvent,
+}
+
 /// Erro estruturado de provedor. Cada adapter traduz o vocabulário
 /// HTTP do provedor para esta enumeração. O `apps/desktop` traduz
 /// depois para PT-BR com ação sugerida.

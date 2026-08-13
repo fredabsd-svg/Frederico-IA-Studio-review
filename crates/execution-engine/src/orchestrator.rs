@@ -265,6 +265,29 @@ impl ChatOrchestrator {
         let run = RunRepo::new(&self.db)
             .create(&conversation_id, &asst_msg.id)
             .await?;
+        // Liga a assistant message ao Run (PR do bug do stream):
+        // a mensagem nasce com `run_id = None` (precisamos do
+        // `asst_msg.id` ANTES do `RunRepo::create`, então a ordem
+        // é `asst_msg → run` e não `run → asst_msg`). Sem este
+        // `set_run_id`, o `MessageView.run_id` fica `None` na
+        // resposta do `getConversation` que a UI faz logo após o
+        // `sendMessage`, o `if (asst.run_id)` no `Chat.tsx` cai
+        // sempre, o `subscribeRun` nunca é chamado, e os eventos
+        // Tauri emitidos pelo `RunExecutor` caem no
+        // `let _ = window.emit(...)` do `TauriEventSink`.
+        //
+        // **Ordem importa:** este `set_run_id` precisa estar
+        // commitado **antes** do `send_message` retornar, pra que
+        // a UI (que faz `getConversation` no IPC seguinte) já
+        // veja o `run_id` populado. Posicionado entre o
+        // `RunRepo::create` e o `set_status(Streaming)` (que é
+        // o ponto de não-retorno: depois dele, a UI já pode ter
+        // visto a mensagem como `streaming` em algum refresh
+        // concorrente). O `tokio::spawn` do executor vem depois
+        // — `set_run_id` está no caminho síncrono.
+        MessageRepo::new(&self.db)
+            .set_run_id(&asst_msg.id, run.id)
+            .await?;
 
         let adapter = self
             .providers
@@ -325,7 +348,20 @@ impl ChatOrchestrator {
                 Budget::default(),
                 cancel.clone(),
             )
-            .with_audit_sink(audit_sink);
+            .with_audit_sink(audit_sink)
+            // **PR do bug do stream (Etapa 5.X):** injeta o
+            // `EventSink` que veio no `ChatOrchestratorParts.sink`
+            // (mesma instância que emite o `RunStatus` final).
+            // Sem isso o `RunExecutor` cai no default
+            // `NoopEventSink` e os `StreamEvent` ficam só no journal
+            // — a UI nunca vê o delta em tempo real (a janela
+            // continuaria vazia mesmo com o `run_id` correto na
+            // assistant message, porque o `subscribeRun` da UI
+            // nunca receberia evento nenhum). A spec
+            // `chat-and-providers.md` §"Journal de eventos" exige
+            // "persistir E emitir" — `persist_journal` já cobre
+            // a primeira metade; esta linha cobre a segunda.
+            .with_event_sink(this.sink.clone());
             // **Fase 6, Etapa 2:** o portão único de mudança de
             // estado (`apply_transition`) exige que o run esteja em
             // `CallingModel` antes do `Delta` que o provider emite.
