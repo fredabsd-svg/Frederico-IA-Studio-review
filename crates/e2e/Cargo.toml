@@ -39,6 +39,10 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+# HTTP client (Etapa 6 da Fase 7 — `e2e_network_proxy.rs`).
+# Já é dep transitivo via `frederico-provider-engine` (que usa),
+# mas listar explícito torna auditável.
+reqwest = { workspace = true }
 
 # Utilitários
 tempfile = "3"

@@ -74,9 +74,12 @@ pub trait Platform: Send + Sync {
     fn credentials(&self) -> &dyn CredentialStore;
 }
 
+pub mod dns_intercept;
 pub mod env_filter;
 pub mod fake;
 pub mod jail;
+pub mod network;
+pub mod network_audit_sink;
 pub mod raw_child;
 
 #[cfg(target_os = "windows")]
