@@ -39,6 +39,19 @@ use crate::network::{NetworkAccessEntry, NetworkAuditSink};
 /// (SQLite). Append-only. Falha de I/O é logada via
 /// `tracing::warn!` mas **não** é propagada — o proxy não aborta
 /// por causa de erro de auditoria.
+///
+/// **`network_audit.run_id` tem FK CASCADE pra `runs.id`.** Se o
+/// `run_id` da entrada não corresponde a uma linha existente em
+/// `runs`, o `INSERT` falha (`FOREIGN KEY constraint failed`) —
+/// e, por causa do "não propaga" do parágrafo acima, isso vira
+/// só um `tracing::warn!`, silenciosamente, sem quebrar o
+/// request HTTP/CONNECT que estava sendo auditado. Em produção
+/// isso não deveria acontecer (o `RunExecutor` cria a linha em
+/// `runs` antes de despachar qualquer `tool_call`), mas testes
+/// que constroem um `ToolContext` direto (sem passar pelo
+/// `RunExecutor`) precisam de uma linha real em `runs` pro
+/// `run_id` usado — ver
+/// `e2e_network_proxy_wired_into_exec_python.rs::exec_python_network_deny_is_persisted_via_db_network_audit_sink`.
 pub struct DbNetworkAuditSink {
     db: Database,
     /// `RunId` da execução atual. O sink é construído por `Run` e
@@ -71,9 +84,29 @@ impl DbNetworkAuditSink {
     /// Helper que abre o `NetworkAuditRepo` e chama `append`. O
     /// `block_in_place` é usado porque o `NetworkAuditSink::record`
     /// é síncrono (trait object) e o `sqlx` exige contexto async.
+    ///
+    /// **`run_id` vem da `entry`, não do `self.run_id`.** O
+    /// `start_proxy` já recebe um `run_id` por chamada (Etapa 6
+    /// da Fase 7) e estampa cada `NetworkAccessEntry` com ele —
+    /// é essa identidade, não a do momento em que o sink foi
+    /// construído, que corresponde à invocação real. Um sink
+    /// construído uma única vez com `new_unbound` (compartilhado
+    /// entre todas as invocações de `exec.python`/`exec.node`,
+    /// mesmo padrão do `AuditSink` de arquivo) e usado com
+    /// `self.run_id` fixo gravaria **o mesmo `run_id` errado (ou
+    /// `None`) pra toda invocação depois da primeira** — silencioso,
+    /// sem panic, sem teste pegando, exatamente a categoria de bug
+    /// desta sessão inteira. `self.run_id` só entra como fallback
+    /// pra quando a `entry` não carrega run_id (proxies fora de
+    /// contexto de run, ex.: health check).
     fn append_sync(&self, entry: &NetworkAccessEntry) -> StorageResult<String> {
         let db = self.db.clone();
-        let run_id = self.run_id;
+        let run_id = entry
+            .run_id
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .map(RunId)
+            .or(self.run_id);
         let entry = entry.clone();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {

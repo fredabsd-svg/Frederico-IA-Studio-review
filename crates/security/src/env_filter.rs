@@ -96,6 +96,27 @@ impl EnvAllowlist {
                 // encontrados. NÃO-editável.
                 EnvEntry::Required("PATH"),
                 EnvEntry::Required("PATHEXT"), // Windows: sufixos de executáveis
+                // **`SystemRoot`/`windir` — achado da Etapa 6+1.**
+                // Sem `SystemRoot`, `WSAStartup` não consegue
+                // expandir `%SystemRoot%\system32\mswsock.dll`
+                // (o path que o catálogo Winsock guarda pros
+                // providers base). Resultado: **qualquer**
+                // `socket.socket(...)` no filho falha com
+                // `WSAEPROVIDERFAILEDINIT` (WinError 10106) —
+                // não é específico de HTTP, proxy, ou allowlist;
+                // é qualquer uso de rede, e o efeito era
+                // indistinguível de "proxy bloqueando" até o
+                // teste `e2e_network_proxy_wired_into_exec_python.rs`
+                // isolar `socket.socket()` puro. Confirmado
+                // empiricamente: sem essas duas vars, todo
+                // `exec.python`/`exec.node` que toca rede quebra
+                // silenciosamente (o Python reporta um erro de
+                // rede genérico, fácil de confundir com o proxy
+                // funcionando). `windir` é o mesmo path por um
+                // nome alternativo que ferramentas mais antigas
+                // ainda consultam.
+                EnvEntry::Required("SystemRoot"),
+                EnvEntry::Required("windir"),
                 // Scratch dir. NÃO-editável.
                 EnvEntry::Required("TEMP"),
                 EnvEntry::Required("TMP"),

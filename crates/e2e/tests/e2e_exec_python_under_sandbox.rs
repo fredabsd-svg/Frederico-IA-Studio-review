@@ -158,7 +158,14 @@ async fn build_exec_tools() -> Vec<Arc<dyn Tool>> {
     // `new()` já retorna `Arc<SecurityJailResolver>` — não
     // envolver em outro `Arc::new`.
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    build_default_exec_tools(resolver, runtimes, audit)
+    // `network_allowlist` vazia = deny-by-default (a Etapa 6
+    // da Fase 7 fecha o proxy de rede, ADR-0033). O teste
+    // existente não exercita rede, então o proxy estar
+    // ativo ou desativado é irrelevante — só precisa compilar.
+    let network_allowlist = frederico_security::network::NetworkAllowlist::new();
+    let network_audit: Arc<dyn frederico_security::network::NetworkAuditSink> =
+        Arc::new(frederico_security::network::NoopNetworkAuditSink);
+    build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit)
 }
 
 /// Helper: pega o `FilesExecPythonTool` do `Vec` retornado

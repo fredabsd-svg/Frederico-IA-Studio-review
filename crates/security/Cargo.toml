@@ -45,6 +45,12 @@ tracing = { workspace = true }
 # Etapa 6: a `start_proxy` precisa também de `net` (TcpListener
 # + TcpStream) e `io-util` (copy_bidirectional do CONNECT tunnel).
 tokio = { workspace = true, features = ["net", "io-util", "process"] }
+# Etapa 6+1 da Fase 7: `network_audit_sink::DbNetworkAuditSink`
+# reconstrói o `RunId` a partir da `String` que `NetworkAccessEntry`
+# carrega (`Uuid::parse_str`) — `RunId` é `frederico_core::RunId(pub
+# uuid::Uuid)`, então falar com o `Uuid` interno exige `uuid` como
+# dependência direta (não só transitiva via `frederico-core`).
+uuid = { workspace = true }
 
 # Implementação Windows do CredentialStore (DPAPI / Windows Credential
 # Manager) — gateada por target. É a **única** parte do núcleo que

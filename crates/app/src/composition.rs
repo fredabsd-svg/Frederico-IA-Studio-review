@@ -607,6 +607,20 @@ pub struct ExecDeps {
     /// do `validate_tool_call`, que é o lugar natural pra gravar
     /// — o `Tool::execute` em si não tem `run_id`).
     pub audit: Arc<dyn frederico_tool_registry::AuditSink>,
+    /// `NetworkAllowlist` (Etapa 6 da Fase 7, ADR-0033). Define
+    /// que hosts o filho do sandbox (`exec.python`/`exec.node`)
+    /// pode alcançar via o proxy de rede. **Deny-by-default**:
+    /// vazio = tudo bloqueado. Carregado da config do user
+    /// (migration `0037_network_allowlist.sql` quando entrar).
+    pub network_allowlist: frederico_security::network::NetworkAllowlist,
+    /// Sink de audit do proxy de rede (Etapa 6+1 da Fase 7). A
+    /// casca (que tem o `Database`) constrói o
+    /// `DbNetworkAuditSink` real; testes passam `NoopNetworkAuditSink`.
+    /// `tool-registry` não depende de `frederico-storage`
+    /// (limite arquitetural deliberado — mesma razão do
+    /// `DbAuditSink` viver em `execution-engine`), então o sink
+    /// concreto tem que vir de fora, já construído.
+    pub network_audit: Arc<dyn frederico_security::network::NetworkAuditSink>,
 }
 
 /// Constrói o catálogo default de tools concretas. Retorna o
@@ -748,6 +762,8 @@ pub fn build_default_tools(
             exec.resolver,
             exec.runtimes,
             exec.audit,
+            exec.network_allowlist,
+            exec.network_audit,
         );
         tools.extend(exec_tools);
     }
@@ -889,6 +905,14 @@ pub struct ChatOrchestratorParts {
     pub multimodel_orchestrator: Option<
         std::sync::Arc<frederico_execution_engine::pipeline_orchestrator::MultimodelOrchestrator>,
     >,
+    /// `NetworkAllowlist` (Etapa 6 da Fase 7, ADR-0033).
+    /// `NetworkAllowlist::new()` (vazio) = deny-by-default
+    /// total. Default do `Default::default()` da struct.
+    /// Mesmo valor usado por `ExecDeps` quando o caller
+    /// constrói o `ChatOrchestrator` via `build_chat_orchestrator`
+    /// (a casca Tauri tem que passar o **mesmo** valor pros 2
+    /// — `exec_tools` carrega esse valor no `FilesExecToolBase`).
+    pub network_allowlist: frederico_security::network::NetworkAllowlist,
 }
 
 /// Constrói o `ChatOrchestrator` a partir de `parts`.
@@ -1156,10 +1180,16 @@ mod tests {
         // ownership do `ExecDeps`).
         let audit: Arc<dyn frederico_tool_registry::AuditSink> =
             Arc::new(frederico_tool_registry::NoopAuditSink);
+        let network_audit: Arc<dyn frederico_security::network::NetworkAuditSink> =
+            Arc::new(frederico_security::network::NoopNetworkAuditSink);
         let exec_deps = ExecDeps {
             resolver,
             runtimes,
             audit,
+            // Test helper: allowlist vazia (deny-by-default).
+            network_allowlist:
+                frederico_security::network::NetworkAllowlist::new(),
+            network_audit,
         };
 
         let tools = build_default_tools(None, Some(exec_deps));

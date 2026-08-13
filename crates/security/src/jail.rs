@@ -97,9 +97,9 @@ use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetProcessId,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STARTUPINFOW,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use crate::env_filter::{EnvAllowlist, EnvFilter};
@@ -655,19 +655,54 @@ fn spawn_windows(
             parent_env.push((k.clone(), v.clone()));
         }
     }
-    let _env_block = build_env_block(&parent_env);
-    // **Por que o env block é construído mas não passado:**
-    // a Etapa 4 v1 do Phase 7 não re-injetava o env porque
-    // `tokio::process::Command::envs()` falha com
-    // `ERROR_INVALID_PARAMETER` (87) em env block grande.
-    // A Etapa 5+ usa raw `CreateProcessAsUserW(..., lpenvironment, ...)`
-    // que aceita o env block construído. Mas o test 5+ atual não
-    // re-injeta (passa `None`, herda do parent) — o
-    // `EnvFilter::apply` já sobrescreveu DENIED in-place no
-    // parent_env, então o child herda o parent env com DENIED
-    // já bloqueado. Re-injeção completa (com REQUIRED + extra_env)
-    // é roadmap da Fase 7+. Por ora, o `_env_block` é construído
-    // pra evidenciar que a infra existe.
+    // **Etapa 6 da Fase 7 (ADR-0033) — env block MÍNIMO.**
+    // A Etapa 4 v1 / Etapa 5+ passavam `None` (herdava do
+    // parent) — isso **quebrava** o wiring do proxy Etapa 6
+    // (HTTP_PROXY injetado via `extra_env` nunca chegava ao
+    // filho). Esta Etapa 6 passa o env block construído.
+    //
+    // O risco de `ERROR_INVALID_PARAMETER` (87) por env block
+    // grande motivou a estratégia MÍNIMA: o env block final
+    // tem **apenas** as vars em `EnvAllowlist::REQUIRED`
+    // (hardcoded, ~17 vars) + `extra_env` (HTTP_PROXY etc.).
+    // O `ALLOWED` do parent (que pode ser 50+ vars) é
+    // **descartado** intencionalmente — se o caller precisar
+    // de ALLOWED, é trabalho dele adicionar via
+    // `PermissionSet::extra_env` na chain (Etapa 6+1).
+    //
+    // Trade-off: o filho perde acesso a vars ALLOWED (ex.:
+    // `MY_PROJECT_TOKEN` que o user setou). Por enquanto
+    // isso é aceitável porque (a) o spec Etapa 4 não documenta
+    // ALLOWED como caminho de produção (é "user opt-in"), e
+    // (b) a Etapa 6+1 reabre o design. Por enquanto,
+    // **REQUIRED-only é o conjunto mínimo que o sandbox
+    // precisa pra rodar** (PATH pro runtime, TEMP pro
+    // scratch, LANG pra locale, PYTHONHOME/PYTHONPATH/NODE_PATH
+    // pros runtimes portáteis).
+    let extra_env_keys: Vec<String> =
+        config.extra_env.iter().map(|(k, _)| k.clone()).collect();
+    parent_env.retain(|(k, _)| {
+        // Mantém só REQUIRED (verifica via is_required) + o
+        // que está em `extra_env` (HTTP_PROXY etc.).
+        resolver.env_filter.allowlist().is_required(k)
+            || extra_env_keys.iter().any(|ek| ek == k)
+    });
+    let env_block = build_env_block(&parent_env);
+    // **Etapa 6 da Fase 7 (ADR-0033) — re-injeção do env block.**
+    // A Etapa 4 v1 e a Etapa 5+ passavam `None` como
+    // `lpEnvironment` em `CreateProcessAsUserW` (herdava do
+    // parent). Isso **quebrava** o wiring do proxy de rede
+    // Etapa 6 — o `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+    // injetados via `extra_env` (no `FilesExecToolBase`) nunca
+    // chegavam ao filho, e o filho tentava `urllib.urlopen`
+    // direto (sem proxy). Esta Etapa 6 re-injeta o env block
+    // construído. O risco de `ERROR_INVALID_PARAMETER` (87)
+    // por env block grande continua valendo — se a Etapa 7+
+    // bater nele, fallback é `None` (regressão silenciosa:
+    // o filho herda do parent, `EnvFilter::apply` ainda
+    // bloqueou DENIED in-place, mas `HTTP_PROXY` sumiu).
+    // Por enquanto, env block típico do sandbox tem <50 vars
+    // (REQUIRED + extra_env), bem abaixo do limite.
 
     // ---------- Step 3: Create pipes (CreatePipe, inheritable) ----------
     //
@@ -753,8 +788,18 @@ fn spawn_windows(
     let cmdline_wide = to_wide_null(&cmdline_str);
     let workdir_wide = to_wide_null(&config.workdir.to_string_lossy());
 
-    let creation_flags =
-        PROCESS_CREATION_FLAGS(CREATE_SUSPENDED.0 | EXTENDED_STARTUPINFO_PRESENT.0);
+    // `CREATE_UNICODE_ENVIRONMENT` é obrigatório sempre que se
+    // passa um `lpEnvironment` construído por nós (UTF-16, par
+    // a par terminado em `\0\0` — ver `build_env_block`). Sem
+    // essa flag, `CreateProcessAsUserW` interpreta o bloco como
+    // ANSI (8-bit) e falha com `ERROR_INVALID_PARAMETER` (87)
+    // pra qualquer env block não-trivial — foi o que quebrava o
+    // wiring do proxy da Etapa 6 (o env block era construído
+    // certo, mas a flag pra dizer "isso é UTF-16" nunca foi
+    // setada).
+    let creation_flags = PROCESS_CREATION_FLAGS(
+        CREATE_SUSPENDED.0 | EXTENDED_STARTUPINFO_PRESENT.0 | CREATE_UNICODE_ENVIRONMENT.0,
+    );
 
     let mut proc_info = PROCESS_INFORMATION {
         hProcess: HANDLE(ptr::null_mut()),
@@ -772,12 +817,30 @@ fn spawn_windows(
     //
     // **env block:** a Etapa 4 v1 não re-injetava o env (o
     // `tokio::process::Command::envs()` falhava com
-    // ERROR_INVALID_PARAMETER em env block grande). A Etapa 5+
-    // constrói o env block via raw API. Testando: passando o
-    // env block construído — se falhar com ERROR_INVALID_PARAMETER
-    // (87), o problema é o env block; sem env block, herda
-    // parent (inclui vars que o `EnvFilter::apply` sobrescreveu
-    // in-place no parent — não é o ideal mas funciona).
+    // ERROR_INVALID_PARAMETER — faltava `CREATE_UNICODE_ENVIRONMENT`,
+    // não era o tamanho do bloco). A Etapa 5+ construía o env
+    // block via raw API mas ainda passava `None` (herda do
+    // parent). A Etapa 6 da Fase 7 (ADR-0033) passa o env block
+    // construído (REQUIRED + `extra_env`, com `HTTP_PROXY`/
+    // `HTTPS_PROXY`/`NO_PROXY`).
+    //
+    // **Sem fallback pra `None` em caso de erro.** Um fallback
+    // que reexecuta com env herdado do parent anula o
+    // `EnvFilter` (Etapa 2, ameaça I1 do threat model) — o
+    // filho passaria a ver o ambiente inteiro do processo pai,
+    // incluindo credenciais de provider que só deveriam existir
+    // fora do sandbox. Falha na construção do env block
+    // controlado é erro duro: propaga e `spawn` falha. (Foi
+    // exatamente esse fallback, presente até a Etapa 6+1, que
+    // mascarava a ausência de `CREATE_UNICODE_ENVIRONMENT` —
+    // o processo nascia com env herdado, sem proxy, e nenhum
+    // teste percebia porque o fallback nunca aparecia como
+    // erro pro caller.)
+    let env_ptr: *const core::ffi::c_void = if env_block.is_empty() {
+        std::ptr::null()
+    } else {
+        env_block.as_ptr() as *const _
+    };
     let create_result = unsafe {
         CreateProcessAsUserW(
             primary_token,
@@ -787,7 +850,7 @@ fn spawn_windows(
             None, // thread attributes
             true, // bInheritHandles
             creation_flags,
-            None, // env: herda do parent (Etapa 4 v1 workaround)
+            Some(env_ptr), // env: REQUIRED + extra_env (UTF-16, CREATE_UNICODE_ENVIRONMENT)
             PCWSTR(workdir_wide.as_ptr()),
             &startup_info_ex.inner.StartupInfo,
             &mut proc_info,

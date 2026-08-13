@@ -76,7 +76,13 @@ fn setup_validation_context() -> (ToolRegistry, ValidationContext) {
     // `new()` já retorna `Arc<SecurityJailResolver>` — não
     // envolver em outro `Arc::new`.
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let exec_tools = build_default_exec_tools(resolver, runtimes, audit);
+    // `network_allowlist` vazia = deny-by-default (Etapa 6,
+    // ADR-0033). Teste não exercita rede, só precisa compilar.
+    let network_allowlist = frederico_security::network::NetworkAllowlist::new();
+    let network_audit: Arc<dyn frederico_security::network::NetworkAuditSink> =
+        Arc::new(frederico_security::network::NoopNetworkAuditSink);
+    let exec_tools =
+        build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit);
 
     let mut registry = ToolRegistry::new();
     for tool in &exec_tools {
