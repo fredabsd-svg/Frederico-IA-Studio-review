@@ -679,13 +679,11 @@ fn spawn_windows(
     // precisa pra rodar** (PATH pro runtime, TEMP pro
     // scratch, LANG pra locale, PYTHONHOME/PYTHONPATH/NODE_PATH
     // pros runtimes portáteis).
-    let extra_env_keys: Vec<String> =
-        config.extra_env.iter().map(|(k, _)| k.clone()).collect();
+    let extra_env_keys: Vec<String> = config.extra_env.iter().map(|(k, _)| k.clone()).collect();
     parent_env.retain(|(k, _)| {
         // Mantém só REQUIRED (verifica via is_required) + o
         // que está em `extra_env` (HTTP_PROXY etc.).
-        resolver.env_filter.allowlist().is_required(k)
-            || extra_env_keys.iter().any(|ek| ek == k)
+        resolver.env_filter.allowlist().is_required(k) || extra_env_keys.iter().any(|ek| ek == k)
     });
     let env_block = build_env_block(&parent_env);
     // **Etapa 6 da Fase 7 (ADR-0033) — re-injeção do env block.**

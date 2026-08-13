@@ -204,10 +204,7 @@ impl Tool for FilesExecPythonTool {
         // o guard até depois de `collect_output` é obrigatório**
         // — drop prematuro = o filho perde a saída de rede
         // (a request TCP falha com "connection reset" mid-exec).
-        let proxy_guard = match self
-            .base
-            .start_network_proxy(ctx.jail.root(), ctx.run_id)
-        {
+        let proxy_guard = match self.base.start_network_proxy(ctx.jail.root(), ctx.run_id) {
             Ok(g) => g,
             Err(e) => {
                 return ToolResult::err(tool_id, format!("start_network_proxy falhou: {e}"));

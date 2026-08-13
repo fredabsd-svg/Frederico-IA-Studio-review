@@ -183,10 +183,7 @@ impl Tool for FilesExecNodeTool {
         // Sobe o proxy de rede (Etapa 6 da Fase 7, ADR-0033).
         // Ver `python.rs::execute` para a justificativa completa
         // do RAII guard + ordem do drop.
-        let proxy_guard = match self
-            .base
-            .start_network_proxy(ctx.jail.root(), ctx.run_id)
-        {
+        let proxy_guard = match self.base.start_network_proxy(ctx.jail.root(), ctx.run_id) {
             Ok(g) => g,
             Err(e) => {
                 return ToolResult::err(tool_id, format!("start_network_proxy falhou: {e}"));

@@ -1187,8 +1187,7 @@ mod tests {
             runtimes,
             audit,
             // Test helper: allowlist vazia (deny-by-default).
-            network_allowlist:
-                frederico_security::network::NetworkAllowlist::new(),
+            network_allowlist: frederico_security::network::NetworkAllowlist::new(),
             network_audit,
         };
 

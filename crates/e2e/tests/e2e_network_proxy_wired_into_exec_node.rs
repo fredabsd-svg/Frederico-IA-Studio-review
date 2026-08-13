@@ -54,7 +54,10 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
 
     if !report.failed.is_empty() {
         for (id, err) in &report.failed {
-            eprintln!("[e2e_network_proxy_wired_node/setup] {} bootstrap falhou: {:?}", id, err);
+            eprintln!(
+                "[e2e_network_proxy_wired_node/setup] {} bootstrap falhou: {:?}",
+                id, err
+            );
         }
         panic!(
             "runtime node-20.16.0 indisponível: bootstrap falhou. \
@@ -88,7 +91,8 @@ async fn setup() -> (Arc<dyn Tool>, ToolContext, TempDir) {
     // Allowlist vazia = deny-by-default (ADR-0033 D3).
     let network_allowlist = NetworkAllowlist::new();
     let network_audit = Arc::new(NoopNetworkAuditSink);
-    let tools = build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit);
+    let tools =
+        build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit);
     let node_tool = tools
         .iter()
         .find(|t| t.manifest().id == frederico_core::ToolId::new("exec.node"))

@@ -356,10 +356,7 @@ impl FilesExecToolBase {
         let extra_env = vec![
             ("HTTP_PROXY".to_string(), proxy_url.clone()),
             ("HTTPS_PROXY".to_string(), proxy_url),
-            (
-                "NO_PROXY".to_string(),
-                "127.0.0.1,localhost".to_string(),
-            ),
+            ("NO_PROXY".to_string(), "127.0.0.1,localhost".to_string()),
         ];
 
         tracing::info!(

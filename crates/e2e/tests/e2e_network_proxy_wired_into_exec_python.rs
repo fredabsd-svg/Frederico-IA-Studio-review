@@ -96,7 +96,10 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
 
     if !report.failed.is_empty() {
         for (id, err) in &report.failed {
-            eprintln!("[e2e_network_proxy_wired/setup] {} bootstrap falhou: {:?}", id, err);
+            eprintln!(
+                "[e2e_network_proxy_wired/setup] {} bootstrap falhou: {:?}",
+                id, err
+            );
         }
         panic!(
             "runtime python-3.12.4 indisponível: bootstrap falhou. \
@@ -121,7 +124,7 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
 }
 
 /// Setup compartilhado: constrói as tools (com `NetworkAllowlist`
-/// + `NetworkAuditSink` injetados), o `Jail` (apontando pro
+/// e `NetworkAuditSink` injetados), o `Jail` (apontando pro
 /// workdir tempdir), e o `ToolContext`. Caller usa isso pra
 /// chamar `tool.execute(ctx, &args)`.
 ///
@@ -163,7 +166,8 @@ async fn setup(
         .expect("SecurityJailResolver::new");
 
     let audit: Arc<dyn AuditSink> = Arc::new(NoopAuditSink);
-    let tools = build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit);
+    let tools =
+        build_default_exec_tools(resolver, runtimes, audit, network_allowlist, network_audit);
     let python_tool = tools
         .iter()
         .find(|t| t.manifest().id == frederico_core::ToolId::new("exec.python"))
@@ -218,7 +222,8 @@ async fn setup(
 async fn exec_python_blocked_by_network_proxy_deny_by_default() {
     // Allowlist vazia = deny-by-default (ADR-0033 D3).
     let allowlist = NetworkAllowlist::new();
-    let (tool, ctx, _workdir) = setup(allowlist, Arc::new(NoopNetworkAuditSink), RunId::new()).await;
+    let (tool, ctx, _workdir) =
+        setup(allowlist, Arc::new(NoopNetworkAuditSink), RunId::new()).await;
 
     // Python que tenta acessar `example.com` (resolve e
     // responde de verdade). Vai passar pelo HTTP_PROXY
@@ -313,7 +318,8 @@ except Exception as e:
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_python_allowed_by_network_proxy_when_host_in_allowlist() {
     let allowlist = NetworkAllowlist::new().with_allowed(["allowed.example.com"]);
-    let (tool, ctx, _workdir) = setup(allowlist, Arc::new(NoopNetworkAuditSink), RunId::new()).await;
+    let (tool, ctx, _workdir) =
+        setup(allowlist, Arc::new(NoopNetworkAuditSink), RunId::new()).await;
 
     let code = r#"
 import os
@@ -476,10 +482,7 @@ except Exception:
     let _ = tool.execute(&ctx, &args).await;
 
     let repo = frederico_storage::NetworkAuditRepo::new(&db);
-    let entries = repo
-        .list_for_run(&ctx.run_id)
-        .await
-        .expect("list_for_run");
+    let entries = repo.list_for_run(&ctx.run_id).await.expect("list_for_run");
 
     assert!(
         !entries.is_empty(),
