@@ -986,17 +986,50 @@ fn main() {
                 (*db).clone(),
             ));
 
+            // `PermissionLoader` (Etapa 3 PR 2 da Fase 6) —
+            // construído aqui (antes do `ExecDeps`) porque a
+            // Etapa 7 da Fase 7 precisa dele pra carregar a
+            // `network_allowlist` do proxy de rede antes do
+            // `exec_deps` existir. Mesma instância é reusada
+            // mais abaixo no `ChatOrchestratorParts.permission_loader`
+            // (sem re-parse redundante — o cache é em memória,
+            // chaveado por `(path, content_hash)`).
+            let permission_loader =
+                std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
+
+            // Etapa 7 da Fase 7 (ADR-0033): allowlist do proxy
+            // de rede carregada do perfil TOML do usuário ∩
+            // projeto (`~/.config/frederico/profiles/default.toml`
+            // + `./.frederico/project.toml`). **Só user+project**
+            // — o layer de assistant exige um `assistant_id` que
+            // não existe neste ponto do boot (o `ExecDeps` é
+            // process-wide, construído uma vez, não por
+            // conversa/assistant escolhido). Refinar por
+            // assistant é Fase 8, quando o proxy virar per-run.
+            // Path ausente (primeiro launch, sem profile
+            // configurado) → `PermissionSet::default()` via
+            // `load_profile` → `network_allowlist` vazio →
+            // deny-by-default (mesmo comportamento pré-Etapa-7,
+            // não uma regressão).
+            let network_allowlist_hosts: Vec<String> =
+                match frederico_tool_registry::PermissionLoader::default_user_profile_path() {
+                    Some(user_path) => {
+                        let project_path =
+                            frederico_tool_registry::PermissionLoader::default_project_profile_path();
+                        let user_ps = permission_loader.load_profile(&user_path);
+                        let project_ps = permission_loader.load_profile(&project_path);
+                        user_ps.merge(&project_ps).network_allowlist
+                    }
+                    None => Vec::new(),
+                };
+            let network_allowlist = frederico_security::network::NetworkAllowlist::new()
+                .with_allowed(network_allowlist_hosts);
+
             let exec_deps = frederico_app::composition::ExecDeps {
                 resolver: security_jail_resolver.clone(),
                 runtimes: runtime_registry.clone(),
                 audit: audit_sink,
-                // Etapa 6 da Fase 7 (ADR-0033): allowlist do
-                // proxy de rede do sandbox. Vazio =
-                // deny-by-default na casca — a Etapa 6+1
-                // (próximo PR) carrega do settings (migration
-                // `0037_network_allowlist`).
-                network_allowlist:
-                    frederico_security::network::NetworkAllowlist::new(),
+                network_allowlist,
                 network_audit: network_audit_sink,
             };
 
@@ -1104,15 +1137,9 @@ fn main() {
             // (criado na Etapa 3 — mesma `Arc<Catalog>` que o
             // orchestrator).
             let specialist_registry = specialist_bundle.registry.clone();
-            // `PermissionLoader::new()` é stateless do ponto
-            // de vista do caller — o cache é em memória,
-            // chaveado por `(path, content_hash)`. A casca
-            // guarda a mesma instância no `AppState` e o
-            // `ChatOrchestrator` (e o `SubagentRunner`)
-            // consomem o mesmo loader (sem re-parse
-            // redundante).
-            let permission_loader =
-                std::sync::Arc::new(frederico_tool_registry::PermissionLoader::new());
+            // `permission_loader` já foi construído acima (antes
+            // do `exec_deps`, pra carregar a `network_allowlist`)
+            // — reusado aqui, sem re-parse.
 
             // `MultimodelOrchestrator` (Etapa 5 PR 2 da Fase 6,
             // ADR-0028). Mesmo factory que os E2E da raiz
@@ -1158,13 +1185,6 @@ fn main() {
                 specialist_registry,
                 permission_loader,
                 multimodel_orchestrator: Some(multimodel_orchestrator),
-                // Etapa 6 da Fase 7 (ADR-0033): allowlist do
-                // proxy de rede do sandbox. Vazio =
-                // deny-by-default na casca — a Etapa 6+1
-                // (próximo PR) carrega do settings (migration
-                // `0037_network_allowlist`).
-                network_allowlist:
-                    frederico_security::network::NetworkAllowlist::new(),
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 

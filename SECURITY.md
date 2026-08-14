@@ -1,11 +1,11 @@
 # Security Policy
 
 > Frederico IA Studio — modelo de segurança do sandbox Windows
-> (Fase 7, Etapa 6+1).
+> (Fase 7, Etapa 7 — fecha a Fase 7).
 >
-> **Última atualização:** 2026-08-13 (Etapa 6+1 fechada — proxy de
-> rede wireado de verdade em `exec.python`/`exec.node`, não mais
-> só um mecanismo isolado e testado à parte).
+> **Última atualização:** 2026-08-14 (Etapa 7 fechada — `exec.shell`
+> com denylist/allowlist de comandos + allowlist de rede carregada
+> de perfil TOML, em vez de hardcoded vazia).
 
 ## Resumo
 
@@ -133,15 +133,21 @@ do que entrega). Toda decisão (allow/deny) é persistida em
    Em **Linux/macOS**, `set_dns_intercept` retorna
    `Err(NotSupported)` (degradação declarada) — o proxy
    funciona, mas DNS bypassa completamente nessas plataformas.
-4. **Allowlist ainda hardcoded vazia na casca.** Não existe
-   hoje um caminho pra usuário configurar hosts permitidos —
-   `ChatOrchestratorParts.network_allowlist` é campo vestigial
-   (não lido em lugar nenhum); a allowlist real vem só via
-   `ExecDeps`, e a casca a constrói vazia. Na prática isso é
-   **deny total** por default (mais restritivo, não menos —
-   citado aqui por transparência de escopo, não como risco). A
-   migration que carregaria a allowlist de settings
-   (`0037_network_allowlist.sql`) ainda não existe.
+4. **Allowlist configurável via perfil, mas só 2 dos 3 layers
+   (Etapa 7, 2026-08-14).** `PermissionSet.network_allowlist:
+   Vec<String>` (campo novo) é carregado do perfil TOML do
+   usuário (`~/.config/frederico/profiles/default.toml`) ∩
+   projeto (`./.frederico/project.toml`) antes da casca montar
+   o `ExecDeps` — a interseção fail-closed dos 2 layers vira o
+   `NetworkAllowlist` do proxy. **O layer de assistant não
+   entra**: ele precisa de um `assistant_id` que não existe no
+   momento do boot do processo (`ExecDeps` é construído uma
+   única vez, process-wide — não por conversa/assistant
+   escolhido). Sem nenhum perfil configurado, o comportamento
+   é o mesmo de antes (deny total). O campo `ChatOrchestratorParts.network_allowlist`
+   vestigial citado numa versão anterior deste documento foi
+   **removido** (nunca era lido por `build_chat_orchestrator`;
+   a allowlist real sempre viajou só via `ExecDeps`).
 
 **Risco concreto hoje:** um script que evita `urllib`/`requests`
 e abre socket raw ainda alcança qualquer host — combinado com
@@ -194,6 +200,31 @@ sem UAC. Roadmap: em algum momento futuro, o instalador pode
 criar um service Windows que aplica os labels (roda como
 SYSTEM com SeSecurityPrivilege); o app user-mode chama o
 service via RPC. Complexo, Fases 8+.
+
+### 4. **`exec.shell` — denylist/allowlist são defesa em
+   profundidade, não a barreira primária**
+
+`exec.shell` (Etapa 7) roda sob as mesmas 4 camadas acima, mais
+uma checagem de comando em `frederico_security::exec_patterns`
+**antes** do spawn: uma denylist de comandos destrutivos (`rm
+-rf`, `format`, `diskpart`, etc.) e uma allowlist de binários
+read-only (`ls`, `cat`, `grep`, ...). As duas são aplicadas
+**incondicionalmente** — não existe hoje um caminho pra ler
+`PermissionSet.terminal` dentro do `Tool::execute` (o
+`ToolContext` não carrega `PermissionSet`), então não há um modo
+"sem allowlist" para usuário avançado ainda.
+
+**Limitação honesta:** o match é substring case-insensitive
+contra o command string inteiro, não um parser de shell. `rm -r
+-f` (flags separadas) **não** casa `rm -rf` — bypass conhecido,
+fixado em teste
+(`crates/security/src/exec_patterns.rs::shell_denylist_hit_documents_split_flag_bypass`),
+não escondido. Um comando que passa pela denylist/allowlist
+ainda roda sob as 4 camadas de processo — path safety continua
+bloqueando write-up, e a rede continua deny-by-default pelo
+proxy. A denylist/allowlist reduz a superfície óbvia (o modelo
+tentando `rm -rf` diretamente); não é uma prova formal de que
+nenhum comando destrutivo passa.
 
 ## Como reportar vulnerabilidades
 

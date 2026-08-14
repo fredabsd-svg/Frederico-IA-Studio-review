@@ -240,6 +240,17 @@ pub struct PermissionSet {
     pub web_download: bool,
     /// Rede genérica (proxy local do app, allowlist de domínios).
     pub network: bool,
+    /// Hosts liberados no proxy de rede do sandbox (Etapa 7 da Fase
+    /// 7, ADR-0033). **Não confundir com `network`** (o gate grosso
+    /// liga/desliga o subsistema inteiro; esta lista é o filtro
+    /// fino que o `NetworkAllowlist` do proxy consome). Vazio =
+    /// deny-by-default (mesma regra do `NetworkAllowlist::new()`).
+    /// Carregado do TOML de perfil (`permission_loader.rs`); sem
+    /// wildcard — `allow_all()` **não** abre a rede inteira via
+    /// esta lista (não há convenção de "*" no `NetworkAllowlist`
+    /// hoje; abrir tudo silenciosamente aqui seria inventar um
+    /// comportamento que o proxy não sabe interpretar).
+    pub network_allowlist: Vec<String>,
     /// Captura de tela.
     pub screen_capture: bool,
     /// Controle de mouse/teclado.
@@ -272,6 +283,7 @@ impl Default for PermissionSet {
             web_browse: false,
             web_download: false,
             network: false,
+            network_allowlist: Vec::new(),
             screen_capture: false,
             input_control: false,
             memory: MemoryPermission::None,
@@ -302,6 +314,11 @@ impl PermissionSet {
             web_browse: true,
             web_download: true,
             network: true,
+            // Sem wildcard no `NetworkAllowlist` — `allow_all()`
+            // continua deny-by-default nesta lista fina (ver doc
+            // do campo). O usuário configura hosts explícitos no
+            // TOML de perfil mesmo em modo "permitir tudo".
+            network_allowlist: Vec::new(),
             screen_capture: false,
             input_control: false,
             memory: MemoryPermission::ReadWrite,
@@ -366,6 +383,17 @@ impl PermissionSet {
             if axis {
                 return false;
             }
+        }
+
+        // network_allowlist: subagente não pode alcançar host que
+        // o pai não alcança (mesma regra "self ⊆ parent" aplicada
+        // a conjunto, não a bool/enum).
+        if !self
+            .network_allowlist
+            .iter()
+            .all(|h| parent.network_allowlist.contains(h))
+        {
+            return false;
         }
 
         // enums com ordem (PartialOrd)
@@ -471,6 +499,18 @@ impl PermissionSet {
         let web_browse = self.web_browse && other.web_browse;
         let web_download = self.web_download && other.web_download;
         let network = self.network && other.network;
+        // network_allowlist: interseção (mesma regra fail-closed
+        // dos demais eixos — um host só sobrevive ao merge se
+        // **todos** os layers o citam explicitamente; comparação
+        // por string exata, não pelo match por sufixo do
+        // `NetworkAllowlist::contains` do proxy — essa nuance fica
+        // pro ponto de decisão do proxy, não pro merge de layers).
+        let network_allowlist: Vec<String> = self
+            .network_allowlist
+            .iter()
+            .filter(|h| other.network_allowlist.contains(h))
+            .cloned()
+            .collect();
         let screen_capture = self.screen_capture && other.screen_capture;
         let input_control = self.input_control && other.input_control;
         let credentials = self.credentials && other.credentials;
@@ -520,6 +560,7 @@ impl PermissionSet {
             web_browse,
             web_download,
             network,
+            network_allowlist,
             screen_capture,
             input_control,
             memory,
@@ -579,6 +620,59 @@ mod tests {
         assert!(p.is_subset_of(&p));
         let d = PermissionSet::default();
         assert!(d.is_subset_of(&d));
+    }
+
+    #[test]
+    fn subagent_network_allowlist_superset_of_parent_is_rejected() {
+        let sub = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string(), "evil.example".to_string()],
+            ..Default::default()
+        };
+        let parent = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string()],
+            ..Default::default()
+        };
+        assert!(!sub.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn subagent_network_allowlist_subset_of_parent_is_accepted() {
+        let sub = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string()],
+            ..Default::default()
+        };
+        let parent = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()],
+            ..Default::default()
+        };
+        assert!(sub.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn merge_network_allowlist_intersects() {
+        let lhs = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()],
+            ..Default::default()
+        };
+        let rhs = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string(), "github.com".to_string()],
+            ..Default::default()
+        };
+        let merged = lhs.merge(&rhs);
+        assert_eq!(merged.network_allowlist, vec!["pypi.org".to_string()]);
+    }
+
+    #[test]
+    fn merge_network_allowlist_layer_absent_yields_empty() {
+        // Layer ausente (default = Vec::new()) → interseção vazia,
+        // mesma regra fail-closed dos demais eixos.
+        let lhs = PermissionSet {
+            network_allowlist: vec!["pypi.org".to_string()],
+            ..Default::default()
+        };
+        let rhs = PermissionSet::default();
+        let merged = lhs.merge(&rhs);
+        assert!(merged.network_allowlist.is_empty());
     }
 
     #[test]

@@ -1,30 +1,30 @@
 <!--
-Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-08
+Estado: implementado
+Verificado contra o código em: 2026-08-14
 Fase correspondente: 7
 -->
 
-> Spec criado na Etapa 1 da Fase 7 (PR de planejamento, 2026-08-08) e atualizado na **Etapa 4** (PR `fase-7-etapa-4-exec-python-node`, 2026-08-08). Especificação das Etapas 4 e 6 da Fase 7 — `exec.python`, `exec.node` (Etapa 4 ✅ implementadas) e `exec.shell` (Etapa 6, não iniciada). **Etapa 4 fechou**: `FilesExecPythonTool` + `FilesExecNodeTool` in-process em `crates/tool-registry/src/exec/` (Python: ~240L, Node: ~220L, output: ~120L, mod: ~220L); integração com `SecurityJailResolver` (Etapa 2) + `RuntimeRegistry` (Etapa 3) via `Arc<...>` na `FilesExecToolBase`; **per-invocation Job Object** (cada `spawn` cria Job novo); `wait_with_timeout` chamado **dentro** do `collect_output` (wall-clock real, não mais "apenas informativo"); aprovação obrigatória via `validate_tool_call` Passo 9. 7 E2E tests em `crates/e2e/tests/` (6 verde, 1 `#[ignore]`). Pendência Etapa 4: `BREAKAWAY_OK` doc do ADR-0036 §D2 precisa ser corrigido (a flag é INVERTIDA — permite netos escaparem via `CREATE_BREAKAWAY_FROM_JOB`, não que herdem; o doc do ADR está errado, a Etapa 4 mantém o flag ausente que é o correto). **Etapa 6 (exec.shell) ainda não iniciada**.
+> Spec criado na Etapa 1 da Fase 7 (PR de planejamento, 2026-08-08), atualizado na **Etapa 4** (2026-08-08) e na **Etapa 7** (2026-08-14, PR `fase-7-etapa-7-exec-shell`). Especificação das 3 ferramentas `exec.*` — todas ✅ implementadas: `exec.python`, `exec.node` (Etapa 4) e `exec.shell` (Etapa 7 — a numeração real das etapas divergiu do planejamento original da Etapa 1; a rede do sandbox fechou primeiro como Etapa 6/6+1, `exec.shell` fechou depois como Etapa 7; ver nota em `windows-sandbox-design.md`). **Etapa 4 fechou**: `FilesExecPythonTool` + `FilesExecNodeTool` in-process em `crates/tool-registry/src/exec/`; integração com `SecurityJailResolver` (Etapa 2) + `RuntimeRegistry` (Etapa 3) via `Arc<...>` na `FilesExecToolBase`; **per-invocation Job Object**; `wait_with_timeout` dentro do `collect_output`; aprovação obrigatória via `validate_tool_call` Passo 9. **Etapa 7 fechou**: `FilesExecShellTool` (`shell.rs`, ~250L) + `frederico_security::exec_patterns` (denylist + allowlist, `~180L`). Diferenças do plano original documentadas na seção "`FilesExecShellTool`" abaixo — a mais relevante é que a denylist/allowlist são aplicadas **incondicionalmente** (não gateadas por `PermissionSet::terminal`), porque o `ToolContext` que chega no `Tool::execute` não carrega o `PermissionSet` da run (isso é responsabilidade do `validate_tool_call` no `RunExecutor`, que hoje só implementa o Passo 5 para `file_read` — os demais eixos, incluindo `terminal`/`python`/`node`, são bumpados no `PermissionSet` mas ainda não lidos por nenhum gate em runtime; ver `crates/tool-registry/src/validate.rs`).
 
 # Especificação das Ferramentas `exec.*`
 
-> **Contexto:** a Fase 7 introduz 3 ferramentas de execução no `ToolRegistry`: `exec.python` (Etapa 4), `exec.node` (Etapa 4), e `exec.shell` (Etapa 6). Cada uma invoca um binário (Python, Node, ou shell do Windows) sob o `SecurityJailResolver` (ADR-0031 + ADR-0036), com aprovação por escopo (ADR-0034), e audit (R1 do threat model). A especificação segue o contrato do `ToolManifest` (Fase 3 Etapa 2) e o modelo de `PermissionSet` (Fase 3 Etapa 3).
+> **Contexto:** a Fase 7 introduz 3 ferramentas de execução no `ToolRegistry`: `exec.python` (Etapa 4), `exec.node` (Etapa 4), e `exec.shell` (Etapa 7). Cada uma invoca um binário (Python, Node, ou shell do Windows) sob o `SecurityJailResolver` (ADR-0031 + ADR-0036), com aprovação por escopo (ADR-0034), e audit (R1 do threat model). A especificação segue o contrato do `ToolManifest` (Fase 3 Etapa 2) e o modelo de `PermissionSet` (Fase 3 Etapa 3).
 
 ## Visão geral
 
-As 3 ferramentas compartilham uma **infraestrutura comum** (`FilesExecTool` trait privado) e divergem na **política de aprovação** (D2-D3 do ADR-0034: `exec.shell` é sempre `OneExecution`; `exec.python` e `exec.node` aceitam escopo `OneTurn`+ por default).
+As 3 ferramentas compartilham uma **infraestrutura comum** (`FilesExecTool` trait privado) e divergem na **política de aprovação**: `exec.shell` é sempre `OneExecution` (`risk_level: Critical`, que força `ApprovalRequest.mandatory = true` — ver `validate.rs::with_mandatory_for_risk`); `exec.python`/`exec.node` também exigem aprovação a cada invocação hoje (`risk_level: High`), porque o mecanismo de **cache de aprovação por escopo** (`OneTurn`+) descrito no ADR-0034 D2 **ainda não existe em código** — `RunExecutor::handle_tool_call` sempre chama `validate_tool_call` com `approval: None` (nenhuma decisão anterior é reusada, pra nenhuma tool). O campo `ApprovalScope` no `tool-registry` (`Once`/`Run`/`Project`, em `approval.rs`) é o modelo de dados pro futuro cache; o cache em si é trabalho de Fase 8.
 
-| Ferramenta | Runtime | Etapa | Approval default | Sandbox | Network default |
+| Ferramenta | Runtime | Etapa | Approval (hoje) | Sandbox | Network default |
 |---|---|---|---|---|---|
-| `exec.python` | Python portátil (Etapa 3) | 4 | `OneTurn` (configurável) | Job Object + Restricted Token + env zeroed | deny-by-default (ADR-0033) |
-| `exec.node` | Node portátil (Etapa 3) | 4 | `OneTurn` (configurável) | Job Object + Restricted Token + env zeroed | deny-by-default (ADR-0033) |
-| `exec.shell` | `cmd.exe` (built-in Windows) | 6 | `OneExecution` (sempre) | Job Object + Restricted Token + env zeroed + Denylist de comandos destrutivos | deny-by-default (ADR-0033) |
+| `exec.python` | Python portátil (Etapa 3) | 4 | Toda invocação (cache de escopo é roadmap) | Job Object + Restricted Token + env zeroed | deny-by-default (ADR-0033), allowlist via perfil TOML (Etapa 7) |
+| `exec.node` | Node portátil (Etapa 3) | 4 | Toda invocação (cache de escopo é roadmap) | Job Object + Restricted Token + env zeroed | deny-by-default (ADR-0033), allowlist via perfil TOML (Etapa 7) |
+| `exec.shell` | `cmd.exe` (built-in Windows) | 7 | Toda invocação, sem exceção (`risk_level: Critical`, ADR-0034 D3) | Job Object + Restricted Token + env zeroed + Denylist/Allowlist de comandos (sempre ativas) | deny-by-default (ADR-0033), allowlist via perfil TOML (Etapa 7) |
 
 As 3 vivem em `crates/tool-registry/src/exec/`:
 - `mod.rs` — `FilesExecTool` trait + `FilesExecToolBase` (camada comum de audit, cancelamento, output collection).
 - `python.rs` — `FilesExecPythonTool` (Etapa 4).
 - `node.rs` — `FilesExecNodeTool` (Etapa 4).
-- `shell.rs` — `FilesExecShellTool` (Etapa 6).
+- `shell.rs` — `FilesExecShellTool` (Etapa 7).
 
 Tamanho estimado: ~400 linhas cada.
 
@@ -191,14 +191,17 @@ Diferenças:
 - `category` = `ToolCategory::CodeExecution`.
 - `description` menciona "Node.js" explicitamente.
 
-### `FilesExecShellTool` (Etapa 6 — diferença chave na política)
+### `FilesExecShellTool` (Etapa 7 — fechada, diferenças do plano original nomeadas abaixo)
 
-Diferenças:
-- **Sempre `OneExecution`**: o `default_approval_scope()` retorna `ApprovalScope::OneExecution` e o `permission_checker.check_approval` **rejeita** qualquer tentativa de aumentar o escopo.
-- **Denylist de comandos destrutivos**: antes de invocar, o `build_args` parsea o command string e checa contra `TerminalPermission::Denylist`. Comandos como `rm -rf`, `del /f /s /q`, `Remove-Item -Recurse -Force`, `format`, `diskpart`, `bcdedit`, `reg delete` → `Err(CommandDenied("rm -rf"))` antes do spawn. A Denylist é hardcoded + editável pelo usuário (UI de settings).
-- **Allowlist opcional** (`TerminalPermission::Allowlist(Vec<String>)`): se configurada, o command string é parseado e o **primeiro token** (o programa) tem que estar na lista. `["ls", "cat", "grep", "find", "pwd", "echo", "git"]` é o default. Se o primeiro token não está na lista, `Err(CommandNotInAllowlist("rm"))`.
+Implementado em `crates/tool-registry/src/exec/shell.rs` + `frederico_security::exec_patterns`:
+
+- **Sempre `OneExecution`**: `default_approval_scope()` retorna `ApprovalScope::OneExecution`. **Diferença do plano:** não existe hoje um `permission_checker.check_approval` que "rejeita tentativa de aumentar o escopo" — porque não existe *nenhum* mecanismo de escopo de aprovação persistente ainda (ver "Visão geral" acima). Na prática, `exec.shell` já se comporta como `OneExecution` simplesmente porque **toda** tool que exige aprovação hoje pede aprovação nova a cada chamada — a garantia "nunca reusa aprovação anterior" é automática, não uma checagem ativa.
+- **Denylist de comandos destrutivos**: `build_args` chama `frederico_security::exec_patterns::denylist_hit` (substring case-insensitive contra o command string inteiro) **antes** do spawn. Lista real (`SHELL_DENYLIST`): `rm -rf`, `del /f /s /q`, `remove-item -recurse -force`, `format`, `diskpart`, `bcdedit`, `reg delete`, `net user`, `net localgroup`, `cipher /w`, `sfc /scannow`. Match → `Err(ExecError::CommandDenied(pattern))` antes de qualquer `SecurityJailResolver::spawn`. **Limitação documentada** (não escondida — fixada em teste `shell_denylist_hit_documents_split_flag_bypass`): o match é substring literal, não um parser de shell; `rm -r -f` (flags separadas) não casa `rm -rf`. A barreira real contra dano ao host continua sendo o Jail (Mandatory Label\Low) + Restricted Token.
+- **Allowlist sempre ativa** (não opcional, e não é `TerminalMode::Allowlist(Vec<String>)` — esse enum é **flat**, sem payload, no código real; `permission.rs:82-90`): `frederico_security::exec_patterns::is_allowed` checa o **primeiro token** contra `SHELL_ALLOWLIST_DEFAULT` (`ls`, `cat`, `head`, `tail`, `grep`, `find`, `wc`, `pwd`, `echo`). Sem match → `Err(ExecError::CommandNotInAllowlist(token))`. **`git status`/`git log`/`git diff`/`git show`** (2 tokens) continuam pendência nomeada do ADR-0034 §"Pendências" — a allowlist v1 só reconhece o primeiro token, não pares.
+- **Por que a allowlist é incondicional, não gateada por `PermissionSet::terminal`:** o `ToolContext` (`crates/tool-registry/src/tools/mod.rs`) não carrega `PermissionSet` — só `conversation_id`/`run_id`/`message_id`/`jail`. Ler `permissions.terminal` exigiria estender o `ToolContext` ou o `RunExecutor` (fora do escopo da Etapa 7). Aplicar a allowlist sempre é consistente com o teto do projeto: `PermissionSet::allow_all()` já fixa `terminal: TerminalMode::Allowlist` — não existe variante "sem restrição" no enum.
 - **Comando passado como string única**: `cmd.exe /c "<command>"` (sem shell intermediário, o que evita `cmd injection` via `&&`).
-- **`risk_level` = `Critical`**: shell é a ferramenta mais permissiva do registry, e o `critical` é o que dispara **sempre** confirmação por modal (mesmo se o `PermissionSet` diz `Allowlist`).
+- **`risk_level` = `Critical`**: shell é a ferramenta mais permissiva do registry.
+- **Sem `RuntimeRegistry`**: `cmd.exe` é resolvido via `%SystemRoot%\System32\cmd.exe` (não um runtime portátil pinned — `resolve_runtime_id` retorna um valor informativo `"system-cmd"`, não consultado).
 
 ## `ToolManifest` (registro no `ToolRegistry`)
 
@@ -264,11 +267,15 @@ O `CancellationToken` do `Run` é passado pro `SandboxedProcess::cancel_token` (
 
 **Teste de regressão** (regra do user): `crates/e2e/tests/e2e_exec_cancellation.rs::cancel_kills_grandchildren` — spawna `python -m pip install numpy` (que cria netos: pip → python → compilador C), cancela no meio, afirma que **todos** os processos estão mortos em < 2s. Sem `KILL_ON_JOB_CLOSE`, o neto (compilador) sobrevive.
 
-## Network deny-by-default (ADR-0033)
+## Network deny-by-default (ADR-0033) — fechado
 
-A Etapa 4 não implementa o proxy local (Etapa 7 da Fase 7 implementa). A Etapa 4 entra com **degradação declarada**: `exec.python`/`exec.node` rodam sob sandbox, mas **rede do sandbox é bloqueada por firewall de processo Windows** durante a Etapa 4-6. Quando o filho tenta `socket.connect()`, recebe `WSAEACCES` (permission denied).
+**Histórico real (diferente do plano original desta seção):** a Etapa 4 não tinha proxy nem firewall de processo — a rede do child era simplesmente a do host, sem filtro nenhum (lacuna nomeada em `SECURITY.md`). O que fechou essa lacuna foi um **proxy HTTP/CONNECT local** (`127.0.0.1:<porta efêmera>`), não um firewall no nível de processo Windows (WFP) — implementado na Etapa 6 (mecanismo, `frederico_security::network`) e ligado no caminho real de `exec.python`/`exec.node`/`exec.shell` na Etapa 6+1/7 (`FilesExecToolBase::start_network_proxy`).
 
-A Etapa 7 da Fase 7 liga o proxy local (ADR-0033), que substitui o firewall pela allowlist. **Até lá, `pip install` falha** com mensagem clara ("rede bloqueada por padrão; Etapa 7 da Fase 7 habilita o proxy com allowlist"). A UI mostra banner persistente durante a Etapa 4-6: "rede do sandbox bloqueada por padrão — apenas operações locais disponíveis".
+**Como funciona hoje:** cada invocação de `exec.python`/`exec.node`/`exec.shell` sobe o proxy, injeta `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` no env filtrado do child. Sem host na allowlist, toda request recebe `502 Bad Gateway` — `pip install` falha com esse erro (não `WSAEACCES`), o que é honesto sobre o mecanismo real (proxy, não firewall).
+
+**Allowlist carregada do perfil TOML** (Etapa 7, `PermissionSet.network_allowlist: Vec<String>`, campo novo em `permission.rs` + `permission_loader.rs`): a casca resolve o perfil do usuário ∩ projeto (`~/.config/frederico/profiles/default.toml` + `./.frederico/project.toml`) antes de construir o `ExecDeps`, e usa o `network_allowlist` efetivo (interseção fail-closed dos dois layers) pra montar o `NetworkAllowlist` do proxy. **Limitação nomeada:** só user+project — o layer de assistant não é aplicado aqui porque exige um `assistant_id` que não existe no momento do boot do processo (o `ExecDeps` é construído uma vez, process-wide, não por conversa). Refinar por assistant é Fase 8, quando o proxy virar per-run.
+
+Ver `SECURITY.md` §"Rede" para as lacunas conhecidas do mecanismo (bypass por socket raw, HTTP/3, janela de DNS leakage).
 
 ## Output collection e limites
 
@@ -347,27 +354,27 @@ A Etapa 4 da Fase 7 entrega:
 | `crates/e2e/tests/e2e_exec_python_under_sandbox.rs::grandchild_survives_parent_kill9` | Mesmo teste do ADR-0036 D6, mas via `exec.python` (que cria netos via `subprocess`). |
 | `crates/e2e/tests/e2e_approval_display.rs::approved_command_matches_actual_invocation` | Fecha D5 do ADR-0034 — UI mostra `python -c "print(2+2)"`, executor roda `python -c "print(2+2)"`, byte-a-byte. |
 | `crates/e2e/tests/e2e_exec_cancellation.rs::cancel_kills_grandchildren` | Cancelar no meio de `pip install` mata o compilador C que o `pip` invocou. |
-| `crates/e2e/tests/e2e_exec_shell_denylist.rs::rm_rf_is_rejected_by_denylist` (Etapa 6) | `exec.shell` com `rm -rf /` é rejeitado pela Denylist antes do spawn. |
-| `crates/e2e/tests/e2e_exec_shell_allowlist.rs::ls_works_but_curl_blocked` (Etapa 6) | `exec.shell` com `["ls", "cat", "curl"]` na Allowlist aceita `ls`, recusa `curl`. |
+| `crates/e2e/tests/e2e_exec_shell_denylist.rs::rm_rf_is_rejected_by_denylist` (Etapa 7 ✅) | `exec.shell` com `rm -rf /` é rejeitado pela Denylist antes do spawn (+ `del_f_s_q_is_rejected_by_denylist`). |
+| `crates/e2e/tests/e2e_exec_shell_allowlist.rs::echo_allowlisted_command_executes` + `curl_not_in_allowlist_is_blocked` (Etapa 7 ✅) | `echo` (allowlist) executa de ponta a ponta; `curl` (fora da allowlist) é recusado antes do spawn. **Trocado `ls` por `echo`** no teste real — `ls` não é builtin do `cmd.exe` (só existe via Git for Windows/WSL, não garantido no CI); `echo` prova o mesmo gate sem depender de PATH externo. |
 
 ## Trade-offs explícitos
 
 | Decisão | Custo | Ganho | Por quê |
 |---|---|---|---|
-| Default `OneExecution` para shell | UX: usuário aprova toda invocação | Segurança: a fronteira entre `ls` e `rm -rf` é invisível | Allowlist vem na Etapa 6 com refinamento |
-| Network deny-by-default | `pip install`/`npm install` falham até Etapa 7 | Sem rede, sem exfiltração | Mesma regra do sandbox: deny-by-default, opt-in explícito |
+| Default `OneExecution` para shell | UX: usuário aprova toda invocação | Segurança: a fronteira entre `ls` e `rm -rf` é invisível | Denylist+Allowlist (Etapa 7) reduzem o risco por trás da aprovação, mas não eliminam a aprovação em si — nenhum mecanismo de cache de escopo existe ainda (roadmap Fase 8) |
+| Network deny-by-default | `pip install`/`npm install` falham sem allowlist configurada | Sem rede, sem exfiltração | Proxy local (Etapa 6/6+1) + allowlist via perfil TOML (Etapa 7): usuário configura hosts explícitos, resto continua bloqueado |
 | Output 10 MB | Memória do app | Sem DoS por output gigante | Teto negociável por tool_call |
 | Wall-clock 60s default | Scripts longos quebram | Sem DoS por loop infinito | Configurável por `max_wall_clock_ms` |
 | Cancelamento cascateia | Overhead de Job Object | Tree-kill garantido (mesmo em `kill -9`) | Mesma decisão do ADR-0036 |
 | Sem streaming de output | Modelo não vê progresso | Simplicidade, audit confiável | Streaming é roadmap |
 | `cmd.exe` em vez de PowerShell | Superfície de command string | PowerShell tem injection maior | PowerShell é roadmap |
 
-## Decisões (a aprofundar antes da Etapa 4)
+## Decisões (fechadas na Etapa 4/7 — mantidas aqui como histórico)
 
-- **Versão inicial do Python e Node** pinada em `runtimes-architecture.md` (Python 3.12.4, Node 20.16.0). Sujeito a bump antes da Etapa 3.
-- **Padrões "perigoso"** (regex) versão inicial em `crates/security/src/exec_patterns.rs`. Lista conservadora; refina com uso real.
-- **Allowlist inicial de shell** (Etapa 6): `ls`, `cat`, `head`, `tail`, `grep`, `find`, `wc`, `pwd`, `echo`. Read-only. Editável pelo usuário.
-- **Denylist inicial de shell** (Etapa 6): `rm -rf`, `del /f /s /q`, `Remove-Item -Recurse -Force`, `format`, `diskpart`, `bcdedit`, `reg delete`, `net user`, `net localgroup`, `cipher /w`, `sfc /scannow`. Hardcoded; editável pelo usuário avançado (com warning).
+- **Versão inicial do Python e Node** pinada em `runtimes-architecture.md` (Python 3.12.4, Node 20.16.0).
+- **Padrões "perigoso"** (substring case-insensitive, não regex) implementados em `crates/security/src/exec_patterns.rs` (Etapa 7). Lista conservadora; refino com uso real e edição pelo usuário são roadmap (Fase 8).
+- **Allowlist de shell** (Etapa 7, `SHELL_ALLOWLIST_DEFAULT`): `ls`, `cat`, `head`, `tail`, `grep`, `find`, `wc`, `pwd`, `echo`. Read-only, primeiro token apenas — `git status`/`git log`/etc. (2 tokens) continuam pendência do ADR-0034. **Aplicada incondicionalmente** (ver seção `FilesExecShellTool` acima).
+- **Denylist de shell** (Etapa 7, `SHELL_DENYLIST`): `rm -rf`, `del /f /s /q`, `remove-item -recurse -force`, `format`, `diskpart`, `bcdedit`, `reg delete`, `net user`, `net localgroup`, `cipher /w`, `sfc /scannow`. Hardcoded; edição pelo usuário é roadmap.
 
 ## Referências
 

@@ -360,10 +360,6 @@ pub async fn build_orchestrator(
         // `ChatOrchestrator::start_pipeline` / `cancel_pipeline`
         // delegam pra ele.
         multimodel_orchestrator: Some(multimodel_orchestrator),
-        // Etapa 6 da Fase 7 (ADR-0033): allowlist do proxy
-        // de rede do sandbox. Vazio = deny-by-default nos
-        // E2E (os tests existentes não exercitam rede).
-        network_allowlist: frederico_security::network::NetworkAllowlist::new(),
     };
 
     let orchestrator = Arc::new(build_chat_orchestrator(parts));

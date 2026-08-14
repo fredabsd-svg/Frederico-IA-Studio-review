@@ -1,5 +1,6 @@
 //! Ferramentas `exec.*` — `exec.python` e `exec.node` (Etapa 4 da
-//! Fase 7), `exec.shell` (Etapa 6, ainda não implementada).
+//! Fase 7), `exec.shell` (Etapa 7, denylist/allowlist sempre
+//! ativas, ADR-0034 D3).
 //!
 //! Cada ferramenta spawna um binário (Python, Node, ou shell)
 //! sob o `SecurityJailResolver` (Etapa 2 da Fase 7), consumindo
@@ -33,10 +34,12 @@
 mod node;
 mod output;
 mod python;
+mod shell;
 
 pub use node::FilesExecNodeTool;
 pub use output::{MAX_OUTPUT_BYTES, OUTPUT_CHUNK_SIZE};
 pub use python::FilesExecPythonTool;
+pub use shell::FilesExecShellTool;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +97,8 @@ pub fn build_default_exec_tools(
     let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
-        Arc::new(FilesExecNodeTool::new(base)),
+        Arc::new(FilesExecNodeTool::new(base.clone())),
+        Arc::new(FilesExecShellTool::new(base)),
     ]
 }
 
@@ -467,4 +471,13 @@ pub enum ExecError {
     /// Cancelamento (Etapa 4+).
     #[error("cancelado pelo user")]
     Cancelled,
+    /// `exec.shell`: comando bate um padrão da
+    /// `frederico_security::exec_patterns::SHELL_DENYLIST` (Etapa 7,
+    /// ADR-0034 D3). Recusado antes do spawn.
+    #[error("comando recusado pela denylist (padrao: {0})")]
+    CommandDenied(String),
+    /// `exec.shell`: primeiro token do comando não está na
+    /// `SHELL_ALLOWLIST_DEFAULT` (Etapa 7). Recusado antes do spawn.
+    #[error("comando '{0}' nao esta na allowlist")]
+    CommandNotInAllowlist(String),
 }
