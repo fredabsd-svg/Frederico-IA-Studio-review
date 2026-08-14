@@ -272,13 +272,12 @@ impl FilesExecToolBase {
     /// TCP falha com "connection reset"). Caller **deve** segurar
     /// o guard até depois de `collect_output`.
     ///
-    /// **Degradação declarada:** se o `start_proxy` falhar
-    /// (loopback indisponível — improvável), o guard retornado
-    /// tem `enabled = false` e o caller **deve** checar antes
-    /// de usar. Sem o proxy, o filho roda com rede aberta (o
-    /// comportamento pré-Etapa-6). O log do `tracing::warn!`
-    /// explica o motivo; o caller pode decidir abortar ou
-    /// seguir.
+    /// **Sem degradação:** o proxy HTTP/HTTPS é obrigatório desde
+    /// a Etapa 7 (feature flag removida, ADR-0033 §D7). Se
+    /// `start_proxy` falhar (loopback indisponível — improvável),
+    /// este método retorna `Err(ExecError::SpawnFailed(...))` e o
+    /// caller (`execute()` de cada tool) aborta a chamada — não
+    /// existe mais um caminho de "rede aberta sem proxy".
     ///
     /// **Audit sink:** `self.network_audit` (Etapa 6+1) —
     /// injetado de fora (ver doc de `build_default_exec_tools`),
