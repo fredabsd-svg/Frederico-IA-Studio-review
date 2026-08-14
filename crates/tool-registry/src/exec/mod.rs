@@ -1,5 +1,6 @@
 //! Ferramentas `exec.*` — `exec.python` e `exec.node` (Etapa 4 da
-//! Fase 7), `exec.shell` (Etapa 6, ainda não implementada).
+//! Fase 7), `exec.shell` (Etapa 7, denylist/allowlist sempre
+//! ativas, ADR-0034 D3).
 //!
 //! Cada ferramenta spawna um binário (Python, Node, ou shell)
 //! sob o `SecurityJailResolver` (Etapa 2 da Fase 7), consumindo
@@ -33,10 +34,12 @@
 mod node;
 mod output;
 mod python;
+mod shell;
 
 pub use node::FilesExecNodeTool;
 pub use output::{MAX_OUTPUT_BYTES, OUTPUT_CHUNK_SIZE};
 pub use python::FilesExecPythonTool;
+pub use shell::FilesExecShellTool;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +97,8 @@ pub fn build_default_exec_tools(
     let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
-        Arc::new(FilesExecNodeTool::new(base)),
+        Arc::new(FilesExecNodeTool::new(base.clone())),
+        Arc::new(FilesExecShellTool::new(base)),
     ]
 }
 
@@ -268,13 +272,12 @@ impl FilesExecToolBase {
     /// TCP falha com "connection reset"). Caller **deve** segurar
     /// o guard até depois de `collect_output`.
     ///
-    /// **Degradação declarada:** se o `start_proxy` falhar
-    /// (loopback indisponível — improvável), o guard retornado
-    /// tem `enabled = false` e o caller **deve** checar antes
-    /// de usar. Sem o proxy, o filho roda com rede aberta (o
-    /// comportamento pré-Etapa-6). O log do `tracing::warn!`
-    /// explica o motivo; o caller pode decidir abortar ou
-    /// seguir.
+    /// **Sem degradação:** o proxy HTTP/HTTPS é obrigatório desde
+    /// a Etapa 7 (feature flag removida, ADR-0033 §D7). Se
+    /// `start_proxy` falhar (loopback indisponível — improvável),
+    /// este método retorna `Err(ExecError::SpawnFailed(...))` e o
+    /// caller (`execute()` de cada tool) aborta a chamada — não
+    /// existe mais um caminho de "rede aberta sem proxy".
     ///
     /// **Audit sink:** `self.network_audit` (Etapa 6+1) —
     /// injetado de fora (ver doc de `build_default_exec_tools`),
@@ -296,18 +299,6 @@ impl FilesExecToolBase {
         workdir: &std::path::Path,
         run_id: RunId,
     ) -> Result<NetworkProxyGuard, ExecError> {
-        // Verifica a feature flag (D7 do ADR-0033). Default ON
-        // (fail-secure: deny-by-default, mas caller pode
-        // desligar pra debug).
-        if !frederico_security::env_filter::is_network_proxy_v1_enabled() {
-            tracing::warn!(
-                %run_id,
-                "FREDERICO_NETWORK_PROXY_V1=0 — proxy de rede desativado. \
-                 Filho do sandbox roda com rede aberta (D7 do ADR-0033)."
-            );
-            return Ok(NetworkProxyGuard::disabled());
-        }
-
         // Cria o `<workdir>/.frederico/` se não existe. O workdir
         // tem low integrity (Etapa 5+), mas o parent (este processo)
         // tem user integrity, então pode escrever.
@@ -382,44 +373,43 @@ impl FilesExecToolBase {
 /// pode falhar; nesse caso, o `recover_stale_runs` da Etapa 5.x
 /// é o caminho secundário).
 ///
-/// **Construtor `disabled()`:** quando o caller desligou a
-/// feature flag (D7) ou a inicialização falhou, o guard
-/// retornado tem `enabled = false` e o caller usa o
-/// `extra_env()` (que é vazio) sem subir proxy.
+/// O proxy HTTP/HTTPS é sempre obrigatório desde a Etapa 7 (a
+/// feature flag `FREDERICO_NETWORK_PROXY_V1` que permitia
+/// desligá-lo foi removida — ADR-0033 §D7).
+///
+/// **Sem DNS intercept.** A Etapa 7 tentou wirear um responder DNS
+/// (`dns_proxy` + `dns_intercept::set_dns_intercept` via `netsh` na
+/// interface Loopback) e reverteu — verificação manual end-to-end
+/// (2026-08-14, `nslookup` sem servidor explícito, comparando
+/// antes/durante/depois do `netsh`) provou que o Windows **não**
+/// consulta a interface Loopback pra resolver DNS de verdade; ele
+/// usa os adaptadores de rede reais. O mecanismo não entregava
+/// nenhuma proteção, exigia Admin, e mexia na config de DNS da
+/// máquina do usuário à toa — removido por inteiro (regra "capacidade
+/// incompleta é capacidade indisponível", mesma regra aplicada à
+/// Etapa 5+ quando `exec.python`/`exec.node` saíram do catálogo).
+/// Ver `SECURITY.md` §"Rede" e ADR-0033 §D1/§Pendências.
 pub(crate) struct NetworkProxyGuard {
-    /// `Some` quando o proxy está ativo. `None` quando o
-    /// guard é "disabled" (D7 desligado ou init falhou —
-    /// `extra_env` fica vazio nesse caso).
+    /// Sempre `Some` quando `start_network_proxy` retorna `Ok`
+    /// (o proxy HTTP/HTTPS é obrigatório).
     handle: Option<frederico_security::network::ProxyHandle>,
     /// Path do `proxy.port` escrito no workdir. `Drop` tenta
     /// remover (best-effort).
     port_path: std::path::PathBuf,
-    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
-    /// `disabled`.
+    /// Env vars pro `SandboxConfig::extra_env`.
     extra_env: Vec<(String, String)>,
 }
 
 impl NetworkProxyGuard {
-    /// Constrói um guard desabilitado (D7 off, ou `start_network_proxy`
-    /// falhou e o caller quer seguir sem proxy).
-    #[must_use]
-    pub(crate) fn disabled() -> Self {
-        Self {
-            handle: None,
-            port_path: std::path::PathBuf::new(),
-            extra_env: Vec::new(),
-        }
-    }
-
-    /// `true` se o proxy está ativo. Caller usa isso pra
-    /// decidir se deve ou não loggar warning no audit do tool.
+    /// `true` se o proxy HTTP/HTTPS está ativo. Caller usa isso
+    /// pra decidir se deve ou não loggar warning no audit do
+    /// tool.
     #[must_use]
     pub(crate) fn is_enabled(&self) -> bool {
         self.handle.is_some()
     }
 
-    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
-    /// `disabled`.
+    /// Env vars pro `SandboxConfig::extra_env`.
     #[must_use]
     pub(crate) fn extra_env(&self) -> Vec<(String, String)> {
         self.extra_env.clone()
@@ -467,4 +457,13 @@ pub enum ExecError {
     /// Cancelamento (Etapa 4+).
     #[error("cancelado pelo user")]
     Cancelled,
+    /// `exec.shell`: comando bate um padrão da
+    /// `frederico_security::exec_patterns::SHELL_DENYLIST` (Etapa 7,
+    /// ADR-0034 D3). Recusado antes do spawn.
+    #[error("comando recusado pela denylist (padrao: {0})")]
+    CommandDenied(String),
+    /// `exec.shell`: primeiro token do comando não está na
+    /// `SHELL_ALLOWLIST_DEFAULT` (Etapa 7). Recusado antes do spawn.
+    #[error("comando '{0}' nao esta na allowlist")]
+    CommandNotInAllowlist(String),
 }

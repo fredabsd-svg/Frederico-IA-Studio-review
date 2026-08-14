@@ -30,7 +30,8 @@ use frederico_model_catalog::{
     SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
 };
 use frederico_tool_registry::{
-    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, Tool, ToolRegistry,
+    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, TerminalMode, Tool,
+    ToolRegistry,
 };
 
 // ============================================================================
@@ -505,6 +506,16 @@ pub fn initial_permission_set_for_exec() -> PermissionSet {
         // restricted token).
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
+        // Etapa 7 da Fase 7: exec.shell entra no catálogo junto
+        // com python/node (mesmo `if let Some(exec) = exec_deps`
+        // em `build_default_tools`). `TerminalMode::Allowlist` é
+        // o teto do projeto pra terminal (não existe variante
+        // "sem restrição" — ver doc do enum); shell aplica
+        // denylist+allowlist incondicionalmente por enquanto
+        // (`crates/tool-registry/src/exec/shell.rs`), então o
+        // bump aqui é sobre consistência do `PermissionSet`
+        // relatado, não um gate que o `Tool::execute` hoje lê.
+        terminal: TerminalMode::Allowlist,
         ..PermissionSet::default()
     }
 }
@@ -534,6 +545,9 @@ pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
         // `initial_permission_set_for_exec` acima.
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
+        // Etapa 7 da Fase 7: exec.shell — ver comentário em
+        // `initial_permission_set_for_exec`.
+        terminal: TerminalMode::Allowlist,
         ..PermissionSet::default()
     }
 }
@@ -581,6 +595,29 @@ pub fn build_default_permission_set(
     loader.load_effective_permission_set(user, project, assistant)
 }
 
+/// Resolve os hosts efetivos do proxy de rede a partir de um
+/// `PermissionSet` já mergeado (Etapa 7 da Fase 7, ADR-0033).
+///
+/// **Bug fechado nesta etapa:** antes, a casca Tauri extraía só
+/// `.network_allowlist` do `PermissionSet` mergeado e descartava
+/// `.network` — um perfil com `network: false` (gate mestre
+/// desligado) mas `network_allowlist` não-vazia liberava acesso
+/// aos hosts da allowlist mesmo assim, contradizendo o próprio
+/// doc-comment do campo (`PermissionSet::network`: "não confundir
+/// com `network_allowlist`"). Esta função é o único lugar onde a
+/// relação entre os dois campos é decidida — `network: false`
+/// zera a allowlist incondicionalmente, `network: true` repassa a
+/// allowlist como veio do merge (fail-closed já resolvido por
+/// `PermissionSet::merge`).
+#[must_use]
+pub fn effective_network_allowlist_hosts(merged: &PermissionSet) -> Vec<String> {
+    if merged.network {
+        merged.network_allowlist.clone()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Dependências do subsistema `exec.*` (Etapa 4 da Fase 7).
 /// Passadas pra [`build_default_tools`] quando os runtimes
 /// portáteis (Python + Node) e o sandbox estão disponíveis.
@@ -608,10 +645,20 @@ pub struct ExecDeps {
     /// — o `Tool::execute` em si não tem `run_id`).
     pub audit: Arc<dyn frederico_tool_registry::AuditSink>,
     /// `NetworkAllowlist` (Etapa 6 da Fase 7, ADR-0033). Define
-    /// que hosts o filho do sandbox (`exec.python`/`exec.node`)
-    /// pode alcançar via o proxy de rede. **Deny-by-default**:
-    /// vazio = tudo bloqueado. Carregado da config do user
-    /// (migration `0037_network_allowlist.sql` quando entrar).
+    /// que hosts o filho do sandbox (`exec.python`/`exec.node`/
+    /// `exec.shell`) pode alcançar via o proxy de rede.
+    /// **Deny-by-default**: vazio = tudo bloqueado. Carregado
+    /// (Etapa 7 da Fase 7) do `PermissionSet.network_allowlist`
+    /// efetivo (perfil TOML do usuário ∩ projeto — ver
+    /// `permission_loader.rs`), **não** de uma migration SQL: o
+    /// projeto não tem uma tabela de "settings" genérica, e o
+    /// mecanismo de config existente (`permission_profiles`,
+    /// migration `0028_profiles.sql`) já cacheia TOML bruto. A
+    /// casca resolve os paths default de usuário/projeto (não o
+    /// de assistant — esse layer exige um `assistant_id` que não
+    /// existe ainda no momento do boot da `ExecDeps`, que é
+    /// process-wide, não per-conversa; refinar por assistant é
+    /// Fase 8, quando o proxy de rede virar per-run).
     pub network_allowlist: frederico_security::network::NetworkAllowlist,
     /// Sink de audit do proxy de rede (Etapa 6+1 da Fase 7). A
     /// casca (que tem o `Database`) constrói o
@@ -830,6 +877,10 @@ pub fn build_default_allowed_for_run(
         // (quando o document-worker também está disponível).
         allowed.push(frederico_core::ToolId::new("exec.python"));
         allowed.push(frederico_core::ToolId::new("exec.node"));
+        // Etapa 7 da Fase 7: exec.shell entra junto (denylist +
+        // allowlist sempre ativas no `Tool::execute`, ADR-0034
+        // D3 — sempre `OneExecution`, nunca reusa aprovação).
+        allowed.push(frederico_core::ToolId::new("exec.shell"));
     }
 
     allowed
@@ -905,14 +956,6 @@ pub struct ChatOrchestratorParts {
     pub multimodel_orchestrator: Option<
         std::sync::Arc<frederico_execution_engine::pipeline_orchestrator::MultimodelOrchestrator>,
     >,
-    /// `NetworkAllowlist` (Etapa 6 da Fase 7, ADR-0033).
-    /// `NetworkAllowlist::new()` (vazio) = deny-by-default
-    /// total. Default do `Default::default()` da struct.
-    /// Mesmo valor usado por `ExecDeps` quando o caller
-    /// constrói o `ChatOrchestrator` via `build_chat_orchestrator`
-    /// (a casca Tauri tem que passar o **mesmo** valor pros 2
-    /// — `exec_tools` carrega esse valor no `FilesExecToolBase`).
-    pub network_allowlist: frederico_security::network::NetworkAllowlist,
 }
 
 /// Constrói o `ChatOrchestrator` a partir de `parts`.
@@ -979,6 +1022,32 @@ mod tests {
     /// `build_tool_registry` registra o manifesto correto.
     fn sample_tool() -> Arc<dyn Tool> {
         Arc::new(frederico_tool_registry::FilesReadTool::new())
+    }
+
+    #[test]
+    fn effective_network_allowlist_hosts_empties_when_network_gate_is_false() {
+        // Regressão do bug fechado na Etapa 7 da Fase 7: gate
+        // mestre desligado tem que zerar a allowlist, mesmo que
+        // ela tenha hosts (perfil malformado ou merge inesperado).
+        let merged = PermissionSet {
+            network: false,
+            network_allowlist: vec!["pypi.org".to_string()],
+            ..PermissionSet::default()
+        };
+        assert!(effective_network_allowlist_hosts(&merged).is_empty());
+    }
+
+    #[test]
+    fn effective_network_allowlist_hosts_passes_through_when_network_gate_is_true() {
+        let merged = PermissionSet {
+            network: true,
+            network_allowlist: vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()],
+            ..PermissionSet::default()
+        };
+        assert_eq!(
+            effective_network_allowlist_hosts(&merged),
+            vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()]
+        );
     }
 
     #[test]
@@ -1194,8 +1263,8 @@ mod tests {
         let tools = build_default_tools(None, Some(exec_deps));
         assert_eq!(
             tools.len(),
-            6,
-            "Esperado 6 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node"
+            7,
+            "Esperado 7 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node + exec.shell"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
@@ -1205,6 +1274,7 @@ mod tests {
         assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.python")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.node")));
+        assert!(ids.contains(&frederico_core::ToolId::new("exec.shell")));
         // Sem invoker, docs.generate e docs.inspect NÃO aparecem.
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.inspect")));

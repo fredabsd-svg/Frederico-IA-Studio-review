@@ -1,11 +1,13 @@
 # Security Policy
 
 > Frederico IA Studio — modelo de segurança do sandbox Windows
-> (Fase 7, Etapa 6+1).
+> (Fase 7, Etapa 7 — fecha a Fase 7).
 >
-> **Última atualização:** 2026-08-13 (Etapa 6+1 fechada — proxy de
-> rede wireado de verdade em `exec.python`/`exec.node`, não mais
-> só um mecanismo isolado e testado à parte).
+> **Última atualização:** 2026-08-14 (Etapa 7 fechada — `exec.shell`
+> com denylist/allowlist de comandos + allowlist de rede carregada
+> de perfil TOML, em vez de hardcoded vazia; DNS intercept via
+> `netsh` tentado e removido depois de verificação provar que não
+> protegia nada).
 
 ## Resumo
 
@@ -107,41 +109,63 @@ CONNECT**, nunca vê o path ou o body; o audit trail grava
 do que entrega). Toda decisão (allow/deny) é persistida em
 `network_audit` via `DbNetworkAuditSink`.
 
-**O que isso NÃO fecha — 4 lacunas nomeadas:**
+**O que isso NÃO fecha — 3 lacunas nomeadas:**
 
-1. **Bypass por socket direto.** `HTTP_PROXY`/`HTTPS_PROXY` são
-   **convenção**, não imposição do SO. Um child que chama
-   `socket.socket(AF_INET, SOCK_STREAM)` e conecta direto
-   (ignorando as env vars do proxy) **não passa pelo proxy** —
-   `urllib`/`requests` do Python respeitam `HTTP_PROXY`, mas
-   código que abre socket raw não. Esse comportamento está
-   **fixado em teste**, não escondido:
+1. **Bypass por socket direto (inclui DNS exfiltration).**
+   `HTTP_PROXY`/`HTTPS_PROXY` são **convenção**, não imposição do
+   SO. Um child que chama `socket.socket(AF_INET, SOCK_STREAM)` e
+   conecta direto (ignorando as env vars do proxy) **não passa
+   pelo proxy** — `urllib`/`requests` do Python respeitam
+   `HTTP_PROXY`, mas código que abre socket raw não. Esse
+   comportamento está **fixado em teste**, não escondido:
    `crates/e2e/tests/e2e_network_proxy.rs::e2e_network_raw_socket_bypasses_proxy_documented`
-   prova que a conexão raw funciona sem passar pelo proxy. A
-   defesa real pra isso é filtro de rede no nível de processo
-   (Windows Filtering Platform / WDAC) — exige driver ou
-   service, deployment complexo, roadmap Fase 8+.
+   prova que a conexão raw funciona sem passar pelo proxy.
+   **DNS é a mesma lacuna, não uma camada separada:** a Etapa 7
+   tentou interceptar a resolução de DNS via `netsh interface ip
+   set dns name=Loopback source=static address=127.0.0.1`
+   (Windows) com um responder real do outro lado
+   (`frederico-security::dns_proxy`, removido). Verificação
+   manual fim-a-fim (Admin, `nslookup` sem servidor explícito,
+   comparando resolução antes/durante/depois do `netsh`) provou
+   que o Windows **não** consulta a interface Loopback pra
+   resolver DNS de verdade — ele usa os adaptadores de rede reais
+   (Ethernet, Wi-Fi). O mecanismo não entregava proteção nenhuma,
+   em nenhum cenário (nem como Admin), só exigia privilégio e
+   mexia na config de DNS da máquina do usuário à toa —
+   `dns_intercept.rs` e `dns_proxy.rs` foram **removidos por
+   inteiro** (2026-08-14; regra "capacidade incompleta é
+   capacidade indisponível", `docs/status.md`). Um child que
+   resolve hostname via `socket.getaddrinfo()` (com ou sem
+   conectar via socket raw depois) sempre usa o DNS real do host,
+   sem passar pela allowlist. A defesa real pros dois casos é a
+   mesma: filtro de rede no nível de processo (Windows Filtering
+   Platform / WDAC) — exige driver ou service, deployment
+   complexo, roadmap Fase 8+. Ver ADR-0033 §D1 (correção).
 2. **HTTP/3 (QUIC) bypassa.** O proxy fala TCP + forward
    HTTP/CONNECT; um client que negocia QUIC (UDP) conecta
    direto ao destino, sem passar pelo proxy.
-3. **Janela de DNS leakage.** `dns_intercept` (Windows) troca a
-   resolução DNS pro proxy via `netsh interface ip set dns
-   ... source=static address=127.0.0.1` e reverte no `Drop`
-   (RAII). Se o `netsh` falhar (ou o processo morrer entre o
-   `set` e o `revert` sem passar pelo `recover_stale_runs` da
-   Etapa 5.x), há uma janela onde o DNS não está interceptado.
-   Em **Linux/macOS**, `set_dns_intercept` retorna
-   `Err(NotSupported)` (degradação declarada) — o proxy
-   funciona, mas DNS bypassa completamente nessas plataformas.
-4. **Allowlist ainda hardcoded vazia na casca.** Não existe
-   hoje um caminho pra usuário configurar hosts permitidos —
-   `ChatOrchestratorParts.network_allowlist` é campo vestigial
-   (não lido em lugar nenhum); a allowlist real vem só via
-   `ExecDeps`, e a casca a constrói vazia. Na prática isso é
-   **deny total** por default (mais restritivo, não menos —
-   citado aqui por transparência de escopo, não como risco). A
-   migration que carregaria a allowlist de settings
-   (`0037_network_allowlist.sql`) ainda não existe.
+3. **Allowlist configurável via perfil, mas só 2 dos 3 layers
+   (Etapa 7, 2026-08-14).** `PermissionSet.network_allowlist:
+   Vec<String>` (campo novo) é carregado do perfil TOML do
+   usuário (`~/.config/frederico/profiles/default.toml`) ∩
+   projeto (`./.frederico/project.toml`) antes da casca montar
+   o `ExecDeps` — a interseção fail-closed dos 2 layers vira o
+   `NetworkAllowlist` do proxy. **O layer de assistant não
+   entra**: ele precisa de um `assistant_id` que não existe no
+   momento do boot do processo (`ExecDeps` é construído uma
+   única vez, process-wide — não por conversa/assistant
+   escolhido). Sem nenhum perfil configurado, o comportamento
+   é o mesmo de antes (deny total). O campo `ChatOrchestratorParts.network_allowlist`
+   vestigial citado numa versão anterior deste documento foi
+   **removido** (nunca era lido por `build_chat_orchestrator`;
+   a allowlist real sempre viajou só via `ExecDeps`).
+   `PermissionSet.network: bool` (o gate mestre, separado da
+   allowlist) é lido desde 2026-08-14 via
+   `frederico_app::composition::effective_network_allowlist_hosts`
+   — um perfil com `network: false` zera a allowlist
+   incondicionalmente, mesmo que `network_allowlist` tenha hosts
+   (bug de fail-open corrigido; antes, só `network_allowlist` era
+   consultado e `network: false` era ignorado).
 
 **Risco concreto hoje:** um script que evita `urllib`/`requests`
 e abre socket raw ainda alcança qualquer host — combinado com
@@ -194,6 +218,31 @@ sem UAC. Roadmap: em algum momento futuro, o instalador pode
 criar um service Windows que aplica os labels (roda como
 SYSTEM com SeSecurityPrivilege); o app user-mode chama o
 service via RPC. Complexo, Fases 8+.
+
+### 4. **`exec.shell` — denylist/allowlist são defesa em
+   profundidade, não a barreira primária**
+
+`exec.shell` (Etapa 7) roda sob as mesmas 4 camadas acima, mais
+uma checagem de comando em `frederico_security::exec_patterns`
+**antes** do spawn: uma denylist de comandos destrutivos (`rm
+-rf`, `format`, `diskpart`, etc.) e uma allowlist de binários
+read-only (`ls`, `cat`, `grep`, ...). As duas são aplicadas
+**incondicionalmente** — não existe hoje um caminho pra ler
+`PermissionSet.terminal` dentro do `Tool::execute` (o
+`ToolContext` não carrega `PermissionSet`), então não há um modo
+"sem allowlist" para usuário avançado ainda.
+
+**Limitação honesta:** o match é substring case-insensitive
+contra o command string inteiro, não um parser de shell. `rm -r
+-f` (flags separadas) **não** casa `rm -rf` — bypass conhecido,
+fixado em teste
+(`crates/security/src/exec_patterns.rs::shell_denylist_hit_documents_split_flag_bypass`),
+não escondido. Um comando que passa pela denylist/allowlist
+ainda roda sob as 4 camadas de processo — path safety continua
+bloqueando write-up, e a rede continua deny-by-default pelo
+proxy. A denylist/allowlist reduz a superfície óbvia (o modelo
+tentando `rm -rf` diretamente); não é uma prova formal de que
+nenhum comando destrutivo passa.
 
 ## Como reportar vulnerabilidades
 

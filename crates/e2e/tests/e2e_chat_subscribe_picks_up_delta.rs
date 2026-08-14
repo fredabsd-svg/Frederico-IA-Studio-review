@@ -235,9 +235,6 @@ async fn build_orchestrator_with_channel_sink(
             .registry,
         permission_loader: Arc::new(frederico_tool_registry::PermissionLoader::new()),
         multimodel_orchestrator: Some(multimodel_orchestrator),
-        // Etapa 6 da Fase 7 (ADR-0033): allowlist vazia
-        // (deny-by-default) — esse test não exercita rede.
-        network_allowlist: frederico_security::network::NetworkAllowlist::new(),
     };
     let orchestrator = Arc::new(build_chat_orchestrator(parts));
     (orchestrator, db, sink)

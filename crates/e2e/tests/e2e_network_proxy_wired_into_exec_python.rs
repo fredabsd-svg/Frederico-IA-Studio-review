@@ -50,12 +50,6 @@
 //! - Não testamos bypass via raw socket (coberto pelo
 //!   `e2e_network_raw_socket_bypasses_proxy_documented` em
 //!   `e2e_network_proxy.rs`).
-//! - O test do feature flag `FREDERICO_NETWORK_PROXY_V1=0` (D7)
-//!   **não** está aqui porque `frederico-e2e` tem
-//!   `unsafe_code = "forbid"` e `std::env::set_var` é `unsafe`
-//!   desde Rust 1.86+. A função `is_network_proxy_v1_enabled`
-//!   tem unit test próprio em `crates/security/src/env_filter.rs`
-//!   (que aceita input explícito, sem mexer no env).
 
 #![cfg(windows)]
 

@@ -155,6 +155,17 @@ struct PermissionProfileToml {
     web_download: Option<bool>,
     #[serde(default)]
     network: Option<bool>,
+    /// Hosts liberados no proxy de rede do sandbox (Etapa 7 da
+    /// Fase 7). Campo aditivo — TOMLs antigos (sem esta chave)
+    /// continuam parseando normalmente e caem no
+    /// `unwrap_or_default()` (`Vec::new()`, deny-by-default),
+    /// mesmo comportamento que tinham implicitamente antes deste
+    /// campo existir. Não exige bump de `SCHEMA_VERSION`: o cache
+    /// persistido (`permission_profiles`) guarda o TOML bruto, não
+    /// o `PermissionSet` parseado — re-parse com o schema novo é
+    /// automático.
+    #[serde(default)]
+    network_allowlist: Option<Vec<String>>,
     #[serde(default)]
     screen_capture: Option<bool>,
     #[serde(default)]
@@ -190,6 +201,7 @@ impl PermissionProfileToml {
             web_browse: self.web_browse.unwrap_or(false),
             web_download: self.web_download.unwrap_or(false),
             network: self.network.unwrap_or(false),
+            network_allowlist: self.network_allowlist.unwrap_or_default(),
             screen_capture: self.screen_capture.unwrap_or(false),
             input_control: self.input_control.unwrap_or(false),
             memory: self.memory.unwrap_or_default(),
@@ -412,6 +424,36 @@ mod tests {
         // que é o mais seguro.
         let ps = loader.load_profile(p);
         assert_eq!(ps, PermissionSet::default());
+    }
+
+    #[test]
+    fn load_profile_parses_network_allowlist() {
+        let f = write_profile(
+            r#"
+network = true
+network_allowlist = ["pypi.org", "registry.npmjs.org"]
+"#,
+        );
+        let loader = PermissionLoader::new();
+        let ps = loader.load_profile(f.path());
+        assert_eq!(
+            ps.network_allowlist,
+            vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_profile_missing_network_allowlist_defaults_empty() {
+        // TOML antigo, sem a chave nova — campo aditivo cai no
+        // default (deny-by-default), sem erro de parse.
+        let f = write_profile(
+            r#"
+network = true
+"#,
+        );
+        let loader = PermissionLoader::new();
+        let ps = loader.load_profile(f.path());
+        assert!(ps.network_allowlist.is_empty());
     }
 
     #[test]

@@ -314,36 +314,6 @@ impl EnvFilter {
     }
 }
 
-/// Feature flag do proxy de rede (D7 do ADR-0033). Default é
-/// **ON** (proxy ativo, deny-by-default, allowlist obrigatória).
-/// O caller pode desligar setando a env var
-/// `FREDERICO_NETWORK_PROXY_V1=0` (ou `false`, `off`, `no`,
-/// `disabled`).
-///
-/// **Por que feature flag durante Etapa 2-6:** D7 fecha a
-/// Etapa 7 removendo a flag. Durante a janela, a flag existe
-/// pra debugar falhas do CI sem quebrar a Etapa toda (etapas
-/// intermediárias não cobrem todos os paths, e desligar o
-/// proxy temporariamente com log explícito é permitido).
-///
-/// **Por que default ON:** segurança. Negar tudo é o fail-closed
-/// seguro (Etapa 6 da Fase 7 fecha a porta que o
-/// `SECURITY.md` §"O que essa combinação NÃO protege" nomeou).
-/// Quem desliga tem que ser explícito.
-///
-/// **Aceita:** `0`, `1`, `true`, `false`, `yes`, `no`, `on`,
-/// `off`, `enabled`, `disabled` (case-insensitive).
-#[must_use]
-pub fn is_network_proxy_v1_enabled() -> bool {
-    let Ok(value) = std::env::var("FREDERICO_NETWORK_PROXY_V1") else {
-        return true; // default ON
-    };
-    match value.to_ascii_lowercase().as_str() {
-        "0" | "false" | "no" | "off" | "disabled" => false,
-        _ => true, // qualquer outro valor, incluindo "1"/"true"/"yes"/"on"/vazio, é ON
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
