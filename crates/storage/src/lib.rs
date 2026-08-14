@@ -2174,6 +2174,160 @@ impl<'a> ToolAuditRepo<'a> {
     }
 }
 
+/// Entrada persistida de auditoria de rede (Fase 7, Etapa 6, ADR-0033).
+/// Espelha o [`NetworkAccessEntry`](frederico_security::network::NetworkAccessEntry)
+/// mas com tipos de storage (i64 em vez de u64/u16 pra caber no SQLite
+/// sem warning, e `decision` como `String` em vez do enum — a
+/// coluna `CHECK` valida na inserção). O `DbNetworkAuditSink` no
+/// `frederico-security` faz a conversão de/para.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkAuditEntry {
+    pub id: String,
+    /// `None` se o acesso não está atrelado a um run (ex.: health
+    /// check, testes).
+    pub run_id: Option<RunId>,
+    pub host: String,
+    pub port: i64,
+    pub method: String,
+    pub path_redacted: String,
+    pub status_code: i64,
+    pub bytes_sent: i64,
+    pub bytes_received: i64,
+    /// `allow` ou `deny` (mesma string do `NetworkDecision::as_str()`).
+    pub decision: String,
+    pub deny_reason: Option<String>,
+    pub created_at: String,
+}
+
+/// Repositório de auditoria de acesso de rede (Fase 7, Etapa 6).
+/// Append-only — `append` é o único método de escrita.
+pub struct NetworkAuditRepo<'a> {
+    pool: &'a sqlx::SqlitePool,
+}
+
+impl<'a> NetworkAuditRepo<'a> {
+    #[must_use]
+    pub fn new(db: &'a Database) -> Self {
+        Self { pool: &db.pool }
+    }
+
+    /// Grava uma entrada de auditoria. Devolve o `id` gerado.
+    ///
+    /// **Falha silenciosa no caller**: o `DbNetworkAuditSink`
+    /// converte o `Result` em `tracing::warn!` e **não** aborta o
+    /// request — audit é observabilidade, não controle de acesso
+    /// (mesma regra do `DbAuditSink` da Fase 3 Etapa 5.x).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append(
+        &self,
+        run_id: Option<&RunId>,
+        host: &str,
+        port: u16,
+        method: &str,
+        path_redacted: &str,
+        status_code: u16,
+        bytes_sent: u64,
+        bytes_received: u64,
+        decision: &str, // "allow" | "deny"
+        deny_reason: Option<&str>,
+    ) -> StorageResult<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO network_audit (id, run_id, host, port, method, \
+             path_redacted, status_code, bytes_sent, bytes_received, \
+             decision, deny_reason) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(&id)
+        .bind(run_id.map(|r| r.0.to_string()))
+        .bind(host)
+        .bind(port as i64)
+        .bind(method)
+        .bind(path_redacted)
+        .bind(status_code as i64)
+        .bind(bytes_sent as i64)
+        .bind(bytes_received as i64)
+        .bind(decision)
+        .bind(deny_reason)
+        .execute(self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Lista entradas de auditoria de um `Run` em ordem cronológica.
+    pub async fn list_for_run(&self, run_id: &RunId) -> StorageResult<Vec<NetworkAuditEntry>> {
+        // Tuple crua do `sqlx::query_as` — 12 campos. A lint
+        // `type_complexity` reclamaria; o `allow` abaixo silencia.
+        // A alternativa (criar um type alias) não traz benefício —
+        // é só usado aqui.
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            Option<String>,
+            String,
+            i64,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+            Option<String>,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, run_id, host, port, method, path_redacted, \
+                        status_code, bytes_sent, bytes_received, \
+                        decision, deny_reason, created_at \
+                 FROM network_audit WHERE run_id = ?1 \
+                 ORDER BY created_at ASC",
+        )
+        .bind(run_id.0.to_string())
+        .fetch_all(self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (
+            id,
+            run_id_s,
+            host,
+            port,
+            method,
+            path_redacted,
+            status_code,
+            bytes_sent,
+            bytes_received,
+            decision,
+            deny_reason,
+            created_at,
+        ) in rows
+        {
+            let run_id = match run_id_s {
+                Some(s) => {
+                    let uuid = uuid::Uuid::parse_str(&s).map_err(|e| {
+                        StorageError::Query(sqlx::Error::Decode(format!("bad uuid: {e}").into()))
+                    })?;
+                    Some(RunId(uuid))
+                }
+                None => None,
+            };
+            out.push(NetworkAuditEntry {
+                id,
+                run_id,
+                host,
+                port,
+                method,
+                path_redacted,
+                status_code,
+                bytes_sent,
+                bytes_received,
+                decision,
+                deny_reason,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+}
+
 /// Status de uma entrada da fila de aprovação (Fase 3, Etapa 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

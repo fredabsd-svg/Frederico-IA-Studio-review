@@ -15,16 +15,42 @@ unsafe_code = "deny"
 
 [dependencies]
 async-trait = { workspace = true }
+# `bytes` para o body do response do reqwest (`response.bytes().await`
+# retorna `Bytes`). Já é dep transitivo via `reqwest`, mas usar
+# `bytes::Bytes` direto exige `bytes` como dep direta.
+bytes = { workspace = true }
 frederico-core = { workspace = true }
 frederico-storage = { workspace = true }
+# Etapa 6 da Fase 7 (ADR-0033 §D2): `reqwest` para o forward HTTP
+# do proxy. O `network::dispatch_http` usa `reqwest::Client` pra
+# repassar a request do filho pro upstream (com TLS configurado
+# pelo app, sem sniff). O CONNECT tunnel é raw tokio (sem TLS, sem
+# decode — bytes opacos, §"HTTPS via CONNECT" do ADR-0033).
+reqwest = { workspace = true }
 secrecy = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+# Etapa 6 da Fase 7 (ADR-0033): `tracing` no `network::start_proxy`
+# e no `dns_intercept::imp` (log de warn quando accept falha, info
+# quando o DNS intercept é ativado pela primeira vez, etc.). Mesmo
+# versão do `crates/provider-engine` e `crates/diagnostics` (evita
+# features divergentes — `tracing-subscriber` exige a mesma
+# versão em todo o dep graph).
+tracing = { workspace = true }
 # Etapa 2 da Fase 7 (ADR-0036): `SecurityJailResolver` usa
 # `tokio::process::Command` (peça 4) e `tokio::process::Child` (para
 # I/O async do stdout/stderr). Feature `process` é a única
 # necessária — `rt`/`rt-multi-thread` ficam para o caller do
 # resolver (a casca Tauri já tem tokio runtime configurado).
-tokio = { workspace = true, features = ["process"] }
+# Etapa 6: a `start_proxy` precisa também de `net` (TcpListener
+# + TcpStream) e `io-util` (copy_bidirectional do CONNECT tunnel).
+tokio = { workspace = true, features = ["net", "io-util", "process"] }
+# Etapa 6+1 da Fase 7: `network_audit_sink::DbNetworkAuditSink`
+# reconstrói o `RunId` a partir da `String` que `NetworkAccessEntry`
+# carrega (`Uuid::parse_str`) — `RunId` é `frederico_core::RunId(pub
+# uuid::Uuid)`, então falar com o `Uuid` interno exige `uuid` como
+# dependência direta (não só transitiva via `frederico-core`).
+uuid = { workspace = true }
 
 # Implementação Windows do CredentialStore (DPAPI / Windows Credential
 # Manager) — gateada por target. É a **única** parte do núcleo que

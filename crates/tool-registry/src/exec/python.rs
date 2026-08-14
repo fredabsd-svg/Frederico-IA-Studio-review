@@ -197,11 +197,34 @@ impl Tool for FilesExecPythonTool {
 
         let wall_clock = self.base.wall_clock_for(arguments);
 
-        let mut process = match self.base.resolver.spawn(SandboxConfig::new(
+        // Sobe o proxy de rede (Etapa 6 da Fase 7, ADR-0033).
+        // O guard é RAII — drop no fim do `execute()` chama
+        // `frederico_security::network::shutdown` (fecha o
+        // listener Tokio) e remove o `proxy.port`. **Segurar
+        // o guard até depois de `collect_output` é obrigatório**
+        // — drop prematuro = o filho perde a saída de rede
+        // (a request TCP falha com "connection reset" mid-exec).
+        let proxy_guard = match self.base.start_network_proxy(ctx.jail.root(), ctx.run_id) {
+            Ok(g) => g,
+            Err(e) => {
+                return ToolResult::err(tool_id, format!("start_network_proxy falhou: {e}"));
+            }
+        };
+
+        // Injeta `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` no
+        // `SandboxConfig::extra_env` (Etapa 4 v1 já tem o
+        // campo, o `EnvFilter` da Etapa 2/Etapa 6 valida que
+        // `HTTP_PROXY` está em REQUIRED antes de deixar passar).
+        let mut config = SandboxConfig::new(
             runtime.executable().to_path_buf(),
             tool_args,
             ctx.jail.root().to_path_buf(),
-        )) {
+        );
+        if proxy_guard.is_enabled() {
+            config.extra_env = proxy_guard.extra_env();
+        }
+
+        let mut process = match self.base.resolver.spawn(config) {
             Ok(p) => p,
             Err(e) => {
                 return ToolResult::err(tool_id, format!("spawn falhou: {e}"));
@@ -216,12 +239,23 @@ impl Tool for FilesExecPythonTool {
         // o handle do Job (mata a árvore se sobrar neto).
         let raw = match collect_output(&mut process, wall_clock).await {
             Ok(r) => r,
-            Err(e) => return ToolResult::err(tool_id, e),
+            Err(e) => {
+                tracing::error!(
+                    tool_id = %tool_id,
+                    error = %e,
+                    "exec.python: collect_output falhou (spawn ou wait falhou)"
+                );
+                return ToolResult::err(tool_id, e);
+            }
         };
         // `process` dropa aqui. Como `wait_with_timeout` já
         // coletou o exit status, o `Drop` do child é no-op
         // (processo já morto). O Drop do Job é no-op também
         // (handle fechado sem ninguém atribuído vivo).
+
+        // `proxy_guard` dropa aqui — encerra o listener Tokio
+        // e remove o `proxy.port`. **Não dropar antes** (drop
+        // prematuro = filho perde a saída de rede mid-exec).
 
         // Audit mínimo: serializa o output como `result_json`.
         let result_json =

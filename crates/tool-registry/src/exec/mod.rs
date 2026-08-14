@@ -41,9 +41,10 @@ pub use python::FilesExecPythonTool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use frederico_core::ToolId;
+use frederico_core::{RunId, ToolId};
 use frederico_runtimes::RuntimeRegistry;
 use frederico_security::jail::SecurityJailResolver;
+use frederico_security::network::{NetworkAllowlist, NetworkAuditSink};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -68,13 +69,29 @@ use crate::tools::{Tool, ToolContext};
 /// detecta a indisponibilidade do runtime e o `RunExecutor`
 /// recusa a chamada (degradação declarada, mesma regra do
 /// `document-worker` da Etapa 2.A).
+///
+/// **Network proxy (Etapa 6 da Fase 7, ADR-0033):** o penúltimo
+/// arg é o `NetworkAllowlist` (default deny). O último é o
+/// `NetworkAuditSink` — injetado de fora (mesmo padrão do
+/// `AuditSink` de arquivo), **não** construído aqui. `tool-registry`
+/// não depende de `frederico-storage` (limite arquitetural
+/// deliberado — ver doc de `DbNetworkAuditSink`); o caller (a
+/// casca, que já tem o `Database`) constrói o
+/// `DbNetworkAuditSink` real e passa como trait object. Um único
+/// sink é compartilhado entre todas as invocações — cada
+/// `NetworkAccessEntry` carrega o `run_id` da invocação que a
+/// gerou (estampado por `start_network_proxy` a cada chamada),
+/// então o sink não precisa (e não deve) guardar um `run_id`
+/// fixo — ver `network_audit_sink.rs::append_sync`.
 #[must_use]
 pub fn build_default_exec_tools(
     resolver: Arc<SecurityJailResolver>,
     runtimes: Arc<RuntimeRegistry>,
     audit: Arc<dyn AuditSink>,
+    network_allowlist: NetworkAllowlist,
+    network_audit: Arc<dyn NetworkAuditSink>,
 ) -> Vec<Arc<dyn Tool>> {
-    let base = FilesExecToolBase::new(resolver, runtimes, audit);
+    let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
         Arc::new(FilesExecNodeTool::new(base)),
@@ -122,7 +139,7 @@ pub enum ApprovalScope {
 
 /// Camada comum entre `FilesExecPythonTool` e `FilesExecNodeTool`.
 /// Carrega as dependências compartilhadas (resolver + registry +
-/// audit + wall-clock + output cap).
+/// audit + wall-clock + output cap + network proxy).
 #[derive(Clone)]
 pub(crate) struct FilesExecToolBase {
     /// Resolver de sandbox (Etapa 2). Compartilhado entre tools
@@ -136,22 +153,44 @@ pub(crate) struct FilesExecToolBase {
     /// Wall-clock default (60s). Caller pode override via
     /// `max_wall_clock_ms` no `tool_call.args`.
     pub default_wall_clock: Duration,
+    /// Allowlist de hostnames pro proxy de rede (Etapa 6 da
+    /// Fase 7, ADR-0033). **Deny-by-default**: vazio = tudo
+    /// bloqueado. O `execute()` de cada tool inicia o proxy
+    /// por invocação, com essa allowlist.
+    pub network_allowlist: NetworkAllowlist,
+    /// Timeout por request no proxy (HTTP ou CONNECT). Default
+    /// 5s (mesmo do `ProxyConfig::default()`). Curto porque
+    /// o Job Object do sandbox é o watchdog real.
+    pub network_request_timeout: Duration,
+    /// Sink de audit do proxy de rede (Etapa 6+1 da Fase 7).
+    /// Injetado de fora — `NoopNetworkAuditSink` em testes,
+    /// `DbNetworkAuditSink` na casca real. Um único sink
+    /// compartilhado entre todas as invocações; cada
+    /// `NetworkAccessEntry` carrega o `run_id` da chamada que a
+    /// gerou (não o sink).
+    pub network_audit: Arc<dyn NetworkAuditSink>,
 }
 
 impl FilesExecToolBase {
     /// Construtor padrão. Wall-clock default = 60s, output cap
-    /// = 10 MB (const em `output.rs`).
+    /// = 10 MB (const em `output.rs`), network proxy deny-by-default
+    /// (allowlist vazia = tudo bloqueado).
     #[must_use]
     pub(crate) fn new(
         resolver: Arc<SecurityJailResolver>,
         runtimes: Arc<RuntimeRegistry>,
         audit: Arc<dyn AuditSink>,
+        network_allowlist: NetworkAllowlist,
+        network_audit: Arc<dyn NetworkAuditSink>,
     ) -> Self {
         Self {
             resolver,
             runtimes,
             audit,
             default_wall_clock: Duration::from_secs(60),
+            network_allowlist,
+            network_request_timeout: Duration::from_secs(5),
+            network_audit,
         }
     }
 
@@ -206,6 +245,199 @@ impl FilesExecToolBase {
         // Fase 3), que olha o `PermissionSet` e a allowlist
         // por exec tool.
         Ok(())
+    }
+
+    /// Sobe o proxy de rede pro filho do sandbox (Etapa 6 da
+    /// Fase 7, ADR-0033), escreve `<workdir>/.frederico/proxy.port`
+    /// com a porta atribuída pelo OS, e monta as env vars
+    /// `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` que entram no
+    /// `SandboxConfig::extra_env` do `spawn`.
+    ///
+    /// **Por que helper único:** o `execute()` do Python e o
+    /// do Node são idênticos nesse pedaço. Centralizar evita
+    /// divergência (ex.: esquecer de escrever o `proxy.port`,
+    /// ou usar `127.0.0.1` no `NO_PROXY` mas esquecer o
+    /// `localhost` — o filho que faz `urllib.urlopen("http://
+    /// localhost:8000/")` precisa do `localhost` na
+    /// `NO_PROXY` pra não loopar pelo proxy).
+    ///
+    /// **Lifecycle:** o retorno [`NetworkProxyGuard`] dropa o
+    /// proxy no fim do escopo (chama `frederico_security::network::shutdown`).
+    /// Caller segura a variável até o `collect_output` retornar.
+    /// Drop prematuro = o filho perde a saída de rede (a request
+    /// TCP falha com "connection reset"). Caller **deve** segurar
+    /// o guard até depois de `collect_output`.
+    ///
+    /// **Degradação declarada:** se o `start_proxy` falhar
+    /// (loopback indisponível — improvável), o guard retornado
+    /// tem `enabled = false` e o caller **deve** checar antes
+    /// de usar. Sem o proxy, o filho roda com rede aberta (o
+    /// comportamento pré-Etapa-6). O log do `tracing::warn!`
+    /// explica o motivo; o caller pode decidir abortar ou
+    /// seguir.
+    ///
+    /// **Audit sink:** `self.network_audit` (Etapa 6+1) —
+    /// injetado de fora (ver doc de `build_default_exec_tools`),
+    /// `Noop` em testes, `DbNetworkAuditSink` na casca real. O
+    /// proxy funciona deny-by-default mesmo com sink `Noop` — só
+    /// não fica registrado.
+    ///
+    /// **`run_id` tipado, não `&str`:** a `RunId` tem `Display`
+    /// customizado (`"RunId(<uuid>)"`, não o uuid puro — pensado
+    /// pra debug/log, não pra round-trip). Passar `RunId` aqui
+    /// (em vez de `caller.to_string()`) e formatar o uuid puro
+    /// só neste um lugar evita que essa string com o wrapper
+    /// `RunId(...)` vá parar no `network_audit.run_id` e quebre
+    /// o `Uuid::parse_str` do lado do `DbNetworkAuditSink`
+    /// (silenciosamente — o parse falha, o `run_id` gravado vira
+    /// `NULL`, e nada avisa).
+    pub fn start_network_proxy(
+        &self,
+        workdir: &std::path::Path,
+        run_id: RunId,
+    ) -> Result<NetworkProxyGuard, ExecError> {
+        // Verifica a feature flag (D7 do ADR-0033). Default ON
+        // (fail-secure: deny-by-default, mas caller pode
+        // desligar pra debug).
+        if !frederico_security::env_filter::is_network_proxy_v1_enabled() {
+            tracing::warn!(
+                %run_id,
+                "FREDERICO_NETWORK_PROXY_V1=0 — proxy de rede desativado. \
+                 Filho do sandbox roda com rede aberta (D7 do ADR-0033)."
+            );
+            return Ok(NetworkProxyGuard::disabled());
+        }
+
+        // Cria o `<workdir>/.frederico/` se não existe. O workdir
+        // tem low integrity (Etapa 5+), mas o parent (este processo)
+        // tem user integrity, então pode escrever.
+        let proxy_dir = workdir.join(".frederico");
+        std::fs::create_dir_all(&proxy_dir).map_err(|e| {
+            ExecError::SpawnFailed(format!(
+                "não conseguiu criar {}: {e} (workdir não é writable?)",
+                proxy_dir.display()
+            ))
+        })?;
+
+        // Inicia o proxy com o sink real (injetado). O uuid puro
+        // (não o `Display` de `RunId`) é o que vai pro
+        // `NetworkAccessEntry.run_id` — ver doc acima.
+        let config = frederico_security::network::ProxyConfig {
+            allowlist: self.network_allowlist.clone(),
+            request_timeout: self.network_request_timeout,
+        };
+        let handle = frederico_security::network::start_proxy(
+            config,
+            self.network_audit.clone(),
+            Some(run_id.0.to_string()),
+        )
+        .map_err(|e| ExecError::SpawnFailed(format!("start_proxy falhou: {e}")))?;
+
+        // Escreve `<workdir>/.frederico/proxy.port` com a porta.
+        let port_path = proxy_dir.join("proxy.port");
+        let port = handle.port; // extrai a porta antes de mover handle no error path
+        if let Err(e) = std::fs::write(&port_path, port.to_string()) {
+            // Rollback: derruba o proxy que acabamos de subir.
+            frederico_security::network::shutdown(handle);
+            return Err(ExecError::SpawnFailed(format!(
+                "não conseguiu escrever {}: {e}",
+                port_path.display()
+            )));
+        }
+
+        // Monta as env vars que entram no SandboxConfig::extra_env.
+        // `NO_PROXY=127.0.0.1,localhost` é obrigatório (D6 do
+        // ADR-0033) — sem isso, o filho que faz
+        // `requests.get("http://127.0.0.1:8000/")` (auto-loop
+        // comum em testes) passa pelo proxy, que faz CONNECT
+        // pra 127.0.0.1:8000, que é o próprio listener, que…
+        // loop infinito.
+        let proxy_url = format!("http://127.0.0.1:{port}");
+        let extra_env = vec![
+            ("HTTP_PROXY".to_string(), proxy_url.clone()),
+            ("HTTPS_PROXY".to_string(), proxy_url),
+            ("NO_PROXY".to_string(), "127.0.0.1,localhost".to_string()),
+        ];
+
+        tracing::info!(
+            %run_id,
+            port = port,
+            allowlist = ?self.network_allowlist.allowed,
+            "proxy de rede iniciado (Etapa 6 / ADR-0033)"
+        );
+
+        Ok(NetworkProxyGuard {
+            handle: Some(handle),
+            port_path,
+            extra_env,
+        })
+    }
+}
+
+/// RAII guard do proxy de rede. Drop chama
+/// `frederico_security::network::shutdown` (que fecha o
+/// listener via `oneshot::Sender`). O `proxy.port` é removido
+/// do workdir no Drop (cleanup best-effort — se o filho
+/// crashou, o workdir também pode estar gone, e o `remove_file`
+/// pode falhar; nesse caso, o `recover_stale_runs` da Etapa 5.x
+/// é o caminho secundário).
+///
+/// **Construtor `disabled()`:** quando o caller desligou a
+/// feature flag (D7) ou a inicialização falhou, o guard
+/// retornado tem `enabled = false` e o caller usa o
+/// `extra_env()` (que é vazio) sem subir proxy.
+pub(crate) struct NetworkProxyGuard {
+    /// `Some` quando o proxy está ativo. `None` quando o
+    /// guard é "disabled" (D7 desligado ou init falhou —
+    /// `extra_env` fica vazio nesse caso).
+    handle: Option<frederico_security::network::ProxyHandle>,
+    /// Path do `proxy.port` escrito no workdir. `Drop` tenta
+    /// remover (best-effort).
+    port_path: std::path::PathBuf,
+    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
+    /// `disabled`.
+    extra_env: Vec<(String, String)>,
+}
+
+impl NetworkProxyGuard {
+    /// Constrói um guard desabilitado (D7 off, ou `start_network_proxy`
+    /// falhou e o caller quer seguir sem proxy).
+    #[must_use]
+    pub(crate) fn disabled() -> Self {
+        Self {
+            handle: None,
+            port_path: std::path::PathBuf::new(),
+            extra_env: Vec::new(),
+        }
+    }
+
+    /// `true` se o proxy está ativo. Caller usa isso pra
+    /// decidir se deve ou não loggar warning no audit do tool.
+    #[must_use]
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.handle.is_some()
+    }
+
+    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
+    /// `disabled`.
+    #[must_use]
+    pub(crate) fn extra_env(&self) -> Vec<(String, String)> {
+        self.extra_env.clone()
+    }
+}
+
+impl Drop for NetworkProxyGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            frederico_security::network::shutdown(handle);
+        }
+        // Best-effort: remove o `proxy.port`. Se o workdir já
+        // não existe (filho crashou e cleanup removeu), o erro
+        // é silencioso — o `recover_stale_runs` da Etapa 5.x
+        // é o caminho secundário.
+        if !self.port_path.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.port_path);
+        }
     }
 }
 

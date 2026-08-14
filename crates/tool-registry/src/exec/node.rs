@@ -180,11 +180,26 @@ impl Tool for FilesExecNodeTool {
 
         let wall_clock = self.base.wall_clock_for(arguments);
 
-        let mut process = match self.base.resolver.spawn(SandboxConfig::new(
+        // Sobe o proxy de rede (Etapa 6 da Fase 7, ADR-0033).
+        // Ver `python.rs::execute` para a justificativa completa
+        // do RAII guard + ordem do drop.
+        let proxy_guard = match self.base.start_network_proxy(ctx.jail.root(), ctx.run_id) {
+            Ok(g) => g,
+            Err(e) => {
+                return ToolResult::err(tool_id, format!("start_network_proxy falhou: {e}"));
+            }
+        };
+
+        let mut config = SandboxConfig::new(
             runtime.executable().to_path_buf(),
             tool_args,
             ctx.jail.root().to_path_buf(),
-        )) {
+        );
+        if proxy_guard.is_enabled() {
+            config.extra_env = proxy_guard.extra_env();
+        }
+
+        let mut process = match self.base.resolver.spawn(config) {
             Ok(p) => p,
             Err(e) => return ToolResult::err(tool_id, format!("spawn falhou: {e}")),
         };

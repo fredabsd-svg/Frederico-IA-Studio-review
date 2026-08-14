@@ -971,10 +971,33 @@ fn main() {
             // (`child_cannot_write_outside_workspace`,
             // `exec_python_simple_hello_world`,
             // `wall_clock_kills_long_running_process`).
+            // Etapa 6+1 da Fase 7: `DbNetworkAuditSink` real,
+            // não `Noop`. `new_unbound` porque o sink é
+            // compartilhado entre **todas** as invocações de
+            // `exec.python`/`exec.node` do processo — cada
+            // `NetworkAccessEntry` já carrega o `run_id` da
+            // chamada específica (estampado por
+            // `start_network_proxy` a cada `execute()`), então o
+            // sink não precisa (e não deve) ficar vinculado a um
+            // único run. Ver `network_audit_sink.rs::append_sync`.
+            let network_audit_sink: Arc<
+                dyn frederico_security::network::NetworkAuditSink,
+            > = Arc::new(frederico_security::network_audit_sink::DbNetworkAuditSink::new_unbound(
+                (*db).clone(),
+            ));
+
             let exec_deps = frederico_app::composition::ExecDeps {
                 resolver: security_jail_resolver.clone(),
                 runtimes: runtime_registry.clone(),
                 audit: audit_sink,
+                // Etapa 6 da Fase 7 (ADR-0033): allowlist do
+                // proxy de rede do sandbox. Vazio =
+                // deny-by-default na casca — a Etapa 6+1
+                // (próximo PR) carrega do settings (migration
+                // `0037_network_allowlist`).
+                network_allowlist:
+                    frederico_security::network::NetworkAllowlist::new(),
+                network_audit: network_audit_sink,
             };
 
             // Tools concretas. A Etapa 6 (UI de configuração)
@@ -1135,6 +1158,13 @@ fn main() {
                 specialist_registry,
                 permission_loader,
                 multimodel_orchestrator: Some(multimodel_orchestrator),
+                // Etapa 6 da Fase 7 (ADR-0033): allowlist do
+                // proxy de rede do sandbox. Vazio =
+                // deny-by-default na casca — a Etapa 6+1
+                // (próximo PR) carrega do settings (migration
+                // `0037_network_allowlist`).
+                network_allowlist:
+                    frederico_security::network::NetworkAllowlist::new(),
             };
             let orch = Arc::new(frederico_app::composition::build_chat_orchestrator(parts));
 
