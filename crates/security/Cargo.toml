@@ -31,11 +31,10 @@ secrecy = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 # Etapa 6 da Fase 7 (ADR-0033): `tracing` no `network::start_proxy`
-# e no `dns_intercept::imp` (log de warn quando accept falha, info
-# quando o DNS intercept é ativado pela primeira vez, etc.). Mesmo
-# versão do `crates/provider-engine` e `crates/diagnostics` (evita
-# features divergentes — `tracing-subscriber` exige a mesma
-# versão em todo o dep graph).
+# (log de warn quando accept falha, etc.). Mesma versão do
+# `crates/provider-engine` e `crates/diagnostics` (evita features
+# divergentes — `tracing-subscriber` exige a mesma versão em todo
+# o dep graph).
 tracing = { workspace = true }
 # Etapa 2 da Fase 7 (ADR-0036): `SecurityJailResolver` usa
 # `tokio::process::Command` (peça 4) e `tokio::process::Child` (para

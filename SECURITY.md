@@ -5,7 +5,9 @@
 >
 > **Última atualização:** 2026-08-14 (Etapa 7 fechada — `exec.shell`
 > com denylist/allowlist de comandos + allowlist de rede carregada
-> de perfil TOML, em vez de hardcoded vazia).
+> de perfil TOML, em vez de hardcoded vazia; DNS intercept via
+> `netsh` tentado e removido depois de verificação provar que não
+> protegia nada).
 
 ## Resumo
 
@@ -107,47 +109,42 @@ CONNECT**, nunca vê o path ou o body; o audit trail grava
 do que entrega). Toda decisão (allow/deny) é persistida em
 `network_audit` via `DbNetworkAuditSink`.
 
-**O que isso NÃO fecha — 4 lacunas nomeadas:**
+**O que isso NÃO fecha — 3 lacunas nomeadas:**
 
-1. **Bypass por socket direto.** `HTTP_PROXY`/`HTTPS_PROXY` são
-   **convenção**, não imposição do SO. Um child que chama
-   `socket.socket(AF_INET, SOCK_STREAM)` e conecta direto
-   (ignorando as env vars do proxy) **não passa pelo proxy** —
-   `urllib`/`requests` do Python respeitam `HTTP_PROXY`, mas
-   código que abre socket raw não. Esse comportamento está
-   **fixado em teste**, não escondido:
+1. **Bypass por socket direto (inclui DNS exfiltration).**
+   `HTTP_PROXY`/`HTTPS_PROXY` são **convenção**, não imposição do
+   SO. Um child que chama `socket.socket(AF_INET, SOCK_STREAM)` e
+   conecta direto (ignorando as env vars do proxy) **não passa
+   pelo proxy** — `urllib`/`requests` do Python respeitam
+   `HTTP_PROXY`, mas código que abre socket raw não. Esse
+   comportamento está **fixado em teste**, não escondido:
    `crates/e2e/tests/e2e_network_proxy.rs::e2e_network_raw_socket_bypasses_proxy_documented`
-   prova que a conexão raw funciona sem passar pelo proxy. A
-   defesa real pra isso é filtro de rede no nível de processo
-   (Windows Filtering Platform / WDAC) — exige driver ou
-   service, deployment complexo, roadmap Fase 8+.
+   prova que a conexão raw funciona sem passar pelo proxy.
+   **DNS é a mesma lacuna, não uma camada separada:** a Etapa 7
+   tentou interceptar a resolução de DNS via `netsh interface ip
+   set dns name=Loopback source=static address=127.0.0.1`
+   (Windows) com um responder real do outro lado
+   (`frederico-security::dns_proxy`, removido). Verificação
+   manual fim-a-fim (Admin, `nslookup` sem servidor explícito,
+   comparando resolução antes/durante/depois do `netsh`) provou
+   que o Windows **não** consulta a interface Loopback pra
+   resolver DNS de verdade — ele usa os adaptadores de rede reais
+   (Ethernet, Wi-Fi). O mecanismo não entregava proteção nenhuma,
+   em nenhum cenário (nem como Admin), só exigia privilégio e
+   mexia na config de DNS da máquina do usuário à toa —
+   `dns_intercept.rs` e `dns_proxy.rs` foram **removidos por
+   inteiro** (2026-08-14; regra "capacidade incompleta é
+   capacidade indisponível", `docs/status.md`). Um child que
+   resolve hostname via `socket.getaddrinfo()` (com ou sem
+   conectar via socket raw depois) sempre usa o DNS real do host,
+   sem passar pela allowlist. A defesa real pros dois casos é a
+   mesma: filtro de rede no nível de processo (Windows Filtering
+   Platform / WDAC) — exige driver ou service, deployment
+   complexo, roadmap Fase 8+. Ver ADR-0033 §D1 (correção).
 2. **HTTP/3 (QUIC) bypassa.** O proxy fala TCP + forward
    HTTP/CONNECT; um client que negocia QUIC (UDP) conecta
    direto ao destino, sem passar pelo proxy.
-3. **DNS leakage sem privilégio Admin (e janela de crash mesmo
-   com Admin).** Desde a Etapa 7 (2026-08-14), `dns_intercept`
-   (Windows) troca a resolução DNS pro proxy via `netsh
-   interface ip set dns ... source=static address=127.0.0.1` —
-   e agora existe de fato um responder DNS real do outro lado
-   (`frederico-security::dns_proxy`, `UdpSocket` em
-   `127.0.0.1:53`, valida hostname contra a allowlist **antes**
-   de resolver, RFC 1035 mínimo, só `QTYPE=A`/IPv4) — e reverte
-   no `Drop` (RAII). **Mas `netsh` exige privilégio de Admin na
-   prática**: o processo desktop normal roda sem elevação, então
-   pra maioria dos usuários o `netsh` falha, a ativação é tratada
-   como degradação graciosa (loga warning, segue só com o proxy
-   HTTP/HTTPS), e **o DNS nunca chega a ser interceptado** — não
-   é uma janela pequena, é o caso comum. Pra quem roda elevado
-   (CI, dev local como Admin), ainda há uma janela residual se o
-   `netsh` falhar no meio (porta 53 ocupada) ou o processo morrer
-   entre o `set` e o `revert` sem passar pelo `recover_stale_runs`
-   da Etapa 5.x. Em **Linux/macOS**, `set_dns_intercept` retorna
-   `Err(NotSupported)` (degradação declarada) — o proxy
-   funciona, mas DNS bypassa completamente nessas plataformas.
-   Só `QTYPE=A` (IPv4) é respondido com dados — `AAAA` e outros
-   tipos voltam `NXDOMAIN` sem tentar resolver (lacuna IPv4-only
-   da v1, mesmo espírito da lacuna HTTP/3-QUIC acima).
-4. **Allowlist configurável via perfil, mas só 2 dos 3 layers
+3. **Allowlist configurável via perfil, mas só 2 dos 3 layers
    (Etapa 7, 2026-08-14).** `PermissionSet.network_allowlist:
    Vec<String>` (campo novo) é carregado do perfil TOML do
    usuário (`~/.config/frederico/profiles/default.toml`) ∩

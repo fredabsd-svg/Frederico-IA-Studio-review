@@ -358,64 +358,10 @@ impl FilesExecToolBase {
             "proxy de rede iniciado (Etapa 6 / ADR-0033)"
         );
 
-        // DNS intercept (Etapa 7 da Fase 7, ADR-0033 §D5) — opcional,
-        // degradação graciosa. Sem isso, `socket.getaddrinfo()` no
-        // filho ignora a allowlist e resolve direto pelo DNS do
-        // host; com isso, a resolução também passa pelo hostname
-        // matching. Ordem: primeiro sobe o responder UDP:53
-        // (`start_dns_proxy`), **depois** aponta o resolver do
-        // Windows pra ele (`set_dns_intercept`) — na ordem inversa,
-        // haveria uma janela em que o `netsh` já rotea pro loopback
-        // mas nada responde ainda.
-        let dns_config = frederico_security::dns_proxy::DnsProxyConfig {
-            allowlist: self.network_allowlist.clone(),
-        };
-        let dns_bind_addr: std::net::SocketAddr = ([127, 0, 0, 1], 53).into();
-        let (dns_proxy_handle, dns_intercept_guard) =
-            match frederico_security::dns_proxy::start_dns_proxy(
-                dns_bind_addr,
-                dns_config,
-                self.network_audit.clone(),
-                Some(run_id.0.to_string()),
-            ) {
-                Ok(dns_handle) => match frederico_security::dns_intercept::set_dns_intercept(53) {
-                    Ok(guard) => {
-                        tracing::info!(%run_id, "DNS intercept ativado (Etapa 7 / ADR-0033 §D5)");
-                        (Some(dns_handle), Some(guard))
-                    }
-                    Err(e) => {
-                        // `netsh` falhou (comum: processo não é Admin) —
-                        // derruba o listener UDP órfão (sem o `netsh`
-                        // apontando pra ele, ninguém manda queries) e
-                        // segue sem DNS intercept. O proxy HTTP/HTTPS
-                        // continua ativo e obrigatório.
-                        tracing::warn!(
-                            %run_id,
-                            error = %e,
-                            "DNS intercept não ativou (sem Admin ou fora do Windows) — \
-                             seguindo sem interceptar DNS; proxy HTTP/HTTPS continua ativo"
-                        );
-                        frederico_security::dns_proxy::shutdown(dns_handle);
-                        (None, None)
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        %run_id,
-                        error = %e,
-                        "responder DNS não conseguiu subir em 127.0.0.1:53 (porta ocupada?) — \
-                         seguindo sem interceptar DNS; proxy HTTP/HTTPS continua ativo"
-                    );
-                    (None, None)
-                }
-            };
-
         Ok(NetworkProxyGuard {
             handle: Some(handle),
             port_path,
             extra_env,
-            dns_intercept_guard,
-            dns_proxy_handle,
         })
     }
 }
@@ -430,11 +376,20 @@ impl FilesExecToolBase {
 ///
 /// O proxy HTTP/HTTPS é sempre obrigatório desde a Etapa 7 (a
 /// feature flag `FREDERICO_NETWORK_PROXY_V1` que permitia
-/// desligá-lo foi removida — ADR-0033 §D7). O DNS intercept
-/// (Etapa 7) é a única parte opcional: falha em ativar (sem
-/// Admin, ou fora do Windows) vira degradação parcial — o guard
-/// segue com `handle: Some(...)` (proxy HTTP/HTTPS ativo) e
-/// `dns_guard: None`.
+/// desligá-lo foi removida — ADR-0033 §D7).
+///
+/// **Sem DNS intercept.** A Etapa 7 tentou wirear um responder DNS
+/// (`dns_proxy` + `dns_intercept::set_dns_intercept` via `netsh` na
+/// interface Loopback) e reverteu — verificação manual end-to-end
+/// (2026-08-14, `nslookup` sem servidor explícito, comparando
+/// antes/durante/depois do `netsh`) provou que o Windows **não**
+/// consulta a interface Loopback pra resolver DNS de verdade; ele
+/// usa os adaptadores de rede reais. O mecanismo não entregava
+/// nenhuma proteção, exigia Admin, e mexia na config de DNS da
+/// máquina do usuário à toa — removido por inteiro (regra "capacidade
+/// incompleta é capacidade indisponível", mesma regra aplicada à
+/// Etapa 5+ quando `exec.python`/`exec.node` saíram do catálogo).
+/// Ver `SECURITY.md` §"Rede" e ADR-0033 §D1/§Pendências.
 pub(crate) struct NetworkProxyGuard {
     /// Sempre `Some` quando `start_network_proxy` retorna `Ok`
     /// (o proxy HTTP/HTTPS é obrigatório).
@@ -444,19 +399,6 @@ pub(crate) struct NetworkProxyGuard {
     port_path: std::path::PathBuf,
     /// Env vars pro `SandboxConfig::extra_env`.
     extra_env: Vec<(String, String)>,
-    /// `Some` quando o DNS intercept (Etapa 7) ativou com
-    /// sucesso — responder UDP:53 + `netsh dns set`. `None` em
-    /// degradação parcial (sem Admin, fora do Windows, ou porta
-    /// 53 ocupada). O `Drop` reverte o `netsh` (via
-    /// `DnsInterceptGuard`) **antes** de derrubar o listener UDP
-    /// (`dns_proxy_handle`) — ver `Drop` abaixo.
-    dns_intercept_guard: Option<frederico_security::dns_intercept::DnsInterceptGuard>,
-    /// `Some` junto com `dns_intercept_guard` — o listener UDP:53
-    /// que responde as queries. Guardado num `Option` separado (e
-    /// não dentro do mesmo tipo) porque `start_dns_proxy` e
-    /// `set_dns_intercept` são chamadas independentes com falhas
-    /// independentes (ver `start_network_proxy`).
-    dns_proxy_handle: Option<frederico_security::dns_proxy::DnsProxyHandle>,
 }
 
 impl NetworkProxyGuard {
@@ -477,17 +419,6 @@ impl NetworkProxyGuard {
 
 impl Drop for NetworkProxyGuard {
     fn drop(&mut self) {
-        // Ordem importa: primeiro reverte o `netsh` (o Windows
-        // volta a resolver DNS normalmente), **depois** derruba o
-        // listener UDP:53. Na ordem inversa haveria uma janela em
-        // que o Windows ainda aponta pro loopback mas nada
-        // responde (queries do resto do sistema falhando à toa).
-        if let Some(dns_intercept_guard) = self.dns_intercept_guard.take() {
-            drop(dns_intercept_guard); // reverte netsh no Drop do guard
-        }
-        if let Some(dns_proxy_handle) = self.dns_proxy_handle.take() {
-            frederico_security::dns_proxy::shutdown(dns_proxy_handle);
-        }
         if let Some(handle) = self.handle.take() {
             frederico_security::network::shutdown(handle);
         }

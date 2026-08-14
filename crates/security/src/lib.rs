@@ -74,8 +74,6 @@ pub trait Platform: Send + Sync {
     fn credentials(&self) -> &dyn CredentialStore;
 }
 
-pub mod dns_intercept;
-pub mod dns_proxy;
 pub mod env_filter;
 pub mod exec_patterns;
 pub mod fake;

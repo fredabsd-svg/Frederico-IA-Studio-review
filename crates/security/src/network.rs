@@ -951,9 +951,7 @@ fn audit_record(audit: &Arc<dyn NetworkAuditSink>, entry: NetworkAccessEntry) {
 
 /// Timestamp ISO 8601 atual (UTC). Helper simples — não usa
 /// `chrono` pra não adicionar dep. Formato: `YYYY-MM-DDTHH:MM:SSZ`.
-/// `pub(crate)` porque o `dns_proxy` (Etapa 7) reusa pro mesmo
-/// formato de timestamp no `NetworkAccessEntry` de queries DNS.
-pub(crate) fn iso8601_now() -> String {
+fn iso8601_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
