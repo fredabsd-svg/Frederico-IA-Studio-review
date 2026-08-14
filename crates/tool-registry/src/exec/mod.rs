@@ -300,18 +300,6 @@ impl FilesExecToolBase {
         workdir: &std::path::Path,
         run_id: RunId,
     ) -> Result<NetworkProxyGuard, ExecError> {
-        // Verifica a feature flag (D7 do ADR-0033). Default ON
-        // (fail-secure: deny-by-default, mas caller pode
-        // desligar pra debug).
-        if !frederico_security::env_filter::is_network_proxy_v1_enabled() {
-            tracing::warn!(
-                %run_id,
-                "FREDERICO_NETWORK_PROXY_V1=0 — proxy de rede desativado. \
-                 Filho do sandbox roda com rede aberta (D7 do ADR-0033)."
-            );
-            return Ok(NetworkProxyGuard::disabled());
-        }
-
         // Cria o `<workdir>/.frederico/` se não existe. O workdir
         // tem low integrity (Etapa 5+), mas o parent (este processo)
         // tem user integrity, então pode escrever.
@@ -370,10 +358,64 @@ impl FilesExecToolBase {
             "proxy de rede iniciado (Etapa 6 / ADR-0033)"
         );
 
+        // DNS intercept (Etapa 7 da Fase 7, ADR-0033 §D5) — opcional,
+        // degradação graciosa. Sem isso, `socket.getaddrinfo()` no
+        // filho ignora a allowlist e resolve direto pelo DNS do
+        // host; com isso, a resolução também passa pelo hostname
+        // matching. Ordem: primeiro sobe o responder UDP:53
+        // (`start_dns_proxy`), **depois** aponta o resolver do
+        // Windows pra ele (`set_dns_intercept`) — na ordem inversa,
+        // haveria uma janela em que o `netsh` já rotea pro loopback
+        // mas nada responde ainda.
+        let dns_config = frederico_security::dns_proxy::DnsProxyConfig {
+            allowlist: self.network_allowlist.clone(),
+        };
+        let dns_bind_addr: std::net::SocketAddr = ([127, 0, 0, 1], 53).into();
+        let (dns_proxy_handle, dns_intercept_guard) =
+            match frederico_security::dns_proxy::start_dns_proxy(
+                dns_bind_addr,
+                dns_config,
+                self.network_audit.clone(),
+                Some(run_id.0.to_string()),
+            ) {
+                Ok(dns_handle) => match frederico_security::dns_intercept::set_dns_intercept(53) {
+                    Ok(guard) => {
+                        tracing::info!(%run_id, "DNS intercept ativado (Etapa 7 / ADR-0033 §D5)");
+                        (Some(dns_handle), Some(guard))
+                    }
+                    Err(e) => {
+                        // `netsh` falhou (comum: processo não é Admin) —
+                        // derruba o listener UDP órfão (sem o `netsh`
+                        // apontando pra ele, ninguém manda queries) e
+                        // segue sem DNS intercept. O proxy HTTP/HTTPS
+                        // continua ativo e obrigatório.
+                        tracing::warn!(
+                            %run_id,
+                            error = %e,
+                            "DNS intercept não ativou (sem Admin ou fora do Windows) — \
+                             seguindo sem interceptar DNS; proxy HTTP/HTTPS continua ativo"
+                        );
+                        frederico_security::dns_proxy::shutdown(dns_handle);
+                        (None, None)
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        %run_id,
+                        error = %e,
+                        "responder DNS não conseguiu subir em 127.0.0.1:53 (porta ocupada?) — \
+                         seguindo sem interceptar DNS; proxy HTTP/HTTPS continua ativo"
+                    );
+                    (None, None)
+                }
+            };
+
         Ok(NetworkProxyGuard {
             handle: Some(handle),
             port_path,
             extra_env,
+            dns_intercept_guard,
+            dns_proxy_handle,
         })
     }
 }
@@ -386,44 +428,47 @@ impl FilesExecToolBase {
 /// pode falhar; nesse caso, o `recover_stale_runs` da Etapa 5.x
 /// é o caminho secundário).
 ///
-/// **Construtor `disabled()`:** quando o caller desligou a
-/// feature flag (D7) ou a inicialização falhou, o guard
-/// retornado tem `enabled = false` e o caller usa o
-/// `extra_env()` (que é vazio) sem subir proxy.
+/// O proxy HTTP/HTTPS é sempre obrigatório desde a Etapa 7 (a
+/// feature flag `FREDERICO_NETWORK_PROXY_V1` que permitia
+/// desligá-lo foi removida — ADR-0033 §D7). O DNS intercept
+/// (Etapa 7) é a única parte opcional: falha em ativar (sem
+/// Admin, ou fora do Windows) vira degradação parcial — o guard
+/// segue com `handle: Some(...)` (proxy HTTP/HTTPS ativo) e
+/// `dns_guard: None`.
 pub(crate) struct NetworkProxyGuard {
-    /// `Some` quando o proxy está ativo. `None` quando o
-    /// guard é "disabled" (D7 desligado ou init falhou —
-    /// `extra_env` fica vazio nesse caso).
+    /// Sempre `Some` quando `start_network_proxy` retorna `Ok`
+    /// (o proxy HTTP/HTTPS é obrigatório).
     handle: Option<frederico_security::network::ProxyHandle>,
     /// Path do `proxy.port` escrito no workdir. `Drop` tenta
     /// remover (best-effort).
     port_path: std::path::PathBuf,
-    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
-    /// `disabled`.
+    /// Env vars pro `SandboxConfig::extra_env`.
     extra_env: Vec<(String, String)>,
+    /// `Some` quando o DNS intercept (Etapa 7) ativou com
+    /// sucesso — responder UDP:53 + `netsh dns set`. `None` em
+    /// degradação parcial (sem Admin, fora do Windows, ou porta
+    /// 53 ocupada). O `Drop` reverte o `netsh` (via
+    /// `DnsInterceptGuard`) **antes** de derrubar o listener UDP
+    /// (`dns_proxy_handle`) — ver `Drop` abaixo.
+    dns_intercept_guard: Option<frederico_security::dns_intercept::DnsInterceptGuard>,
+    /// `Some` junto com `dns_intercept_guard` — o listener UDP:53
+    /// que responde as queries. Guardado num `Option` separado (e
+    /// não dentro do mesmo tipo) porque `start_dns_proxy` e
+    /// `set_dns_intercept` são chamadas independentes com falhas
+    /// independentes (ver `start_network_proxy`).
+    dns_proxy_handle: Option<frederico_security::dns_proxy::DnsProxyHandle>,
 }
 
 impl NetworkProxyGuard {
-    /// Constrói um guard desabilitado (D7 off, ou `start_network_proxy`
-    /// falhou e o caller quer seguir sem proxy).
-    #[must_use]
-    pub(crate) fn disabled() -> Self {
-        Self {
-            handle: None,
-            port_path: std::path::PathBuf::new(),
-            extra_env: Vec::new(),
-        }
-    }
-
-    /// `true` se o proxy está ativo. Caller usa isso pra
-    /// decidir se deve ou não loggar warning no audit do tool.
+    /// `true` se o proxy HTTP/HTTPS está ativo. Caller usa isso
+    /// pra decidir se deve ou não loggar warning no audit do
+    /// tool.
     #[must_use]
     pub(crate) fn is_enabled(&self) -> bool {
         self.handle.is_some()
     }
 
-    /// Env vars pro `SandboxConfig::extra_env`. Vazio quando
-    /// `disabled`.
+    /// Env vars pro `SandboxConfig::extra_env`.
     #[must_use]
     pub(crate) fn extra_env(&self) -> Vec<(String, String)> {
         self.extra_env.clone()
@@ -432,6 +477,17 @@ impl NetworkProxyGuard {
 
 impl Drop for NetworkProxyGuard {
     fn drop(&mut self) {
+        // Ordem importa: primeiro reverte o `netsh` (o Windows
+        // volta a resolver DNS normalmente), **depois** derruba o
+        // listener UDP:53. Na ordem inversa haveria uma janela em
+        // que o Windows ainda aponta pro loopback mas nada
+        // responde (queries do resto do sistema falhando à toa).
+        if let Some(dns_intercept_guard) = self.dns_intercept_guard.take() {
+            drop(dns_intercept_guard); // reverte netsh no Drop do guard
+        }
+        if let Some(dns_proxy_handle) = self.dns_proxy_handle.take() {
+            frederico_security::dns_proxy::shutdown(dns_proxy_handle);
+        }
         if let Some(handle) = self.handle.take() {
             frederico_security::network::shutdown(handle);
         }

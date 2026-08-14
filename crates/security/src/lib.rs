@@ -75,6 +75,7 @@ pub trait Platform: Send + Sync {
 }
 
 pub mod dns_intercept;
+pub mod dns_proxy;
 pub mod env_filter;
 pub mod exec_patterns;
 pub mod fake;

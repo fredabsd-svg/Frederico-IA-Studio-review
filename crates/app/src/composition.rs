@@ -595,6 +595,29 @@ pub fn build_default_permission_set(
     loader.load_effective_permission_set(user, project, assistant)
 }
 
+/// Resolve os hosts efetivos do proxy de rede a partir de um
+/// `PermissionSet` já mergeado (Etapa 7 da Fase 7, ADR-0033).
+///
+/// **Bug fechado nesta etapa:** antes, a casca Tauri extraía só
+/// `.network_allowlist` do `PermissionSet` mergeado e descartava
+/// `.network` — um perfil com `network: false` (gate mestre
+/// desligado) mas `network_allowlist` não-vazia liberava acesso
+/// aos hosts da allowlist mesmo assim, contradizendo o próprio
+/// doc-comment do campo (`PermissionSet::network`: "não confundir
+/// com `network_allowlist`"). Esta função é o único lugar onde a
+/// relação entre os dois campos é decidida — `network: false`
+/// zera a allowlist incondicionalmente, `network: true` repassa a
+/// allowlist como veio do merge (fail-closed já resolvido por
+/// `PermissionSet::merge`).
+#[must_use]
+pub fn effective_network_allowlist_hosts(merged: &PermissionSet) -> Vec<String> {
+    if merged.network {
+        merged.network_allowlist.clone()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Dependências do subsistema `exec.*` (Etapa 4 da Fase 7).
 /// Passadas pra [`build_default_tools`] quando os runtimes
 /// portáteis (Python + Node) e o sandbox estão disponíveis.
@@ -999,6 +1022,32 @@ mod tests {
     /// `build_tool_registry` registra o manifesto correto.
     fn sample_tool() -> Arc<dyn Tool> {
         Arc::new(frederico_tool_registry::FilesReadTool::new())
+    }
+
+    #[test]
+    fn effective_network_allowlist_hosts_empties_when_network_gate_is_false() {
+        // Regressão do bug fechado na Etapa 7 da Fase 7: gate
+        // mestre desligado tem que zerar a allowlist, mesmo que
+        // ela tenha hosts (perfil malformado ou merge inesperado).
+        let merged = PermissionSet {
+            network: false,
+            network_allowlist: vec!["pypi.org".to_string()],
+            ..PermissionSet::default()
+        };
+        assert!(effective_network_allowlist_hosts(&merged).is_empty());
+    }
+
+    #[test]
+    fn effective_network_allowlist_hosts_passes_through_when_network_gate_is_true() {
+        let merged = PermissionSet {
+            network: true,
+            network_allowlist: vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()],
+            ..PermissionSet::default()
+        };
+        assert_eq!(
+            effective_network_allowlist_hosts(&merged),
+            vec!["pypi.org".to_string(), "registry.npmjs.org".to_string()]
+        );
     }
 
     #[test]

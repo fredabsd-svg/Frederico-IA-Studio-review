@@ -1018,7 +1018,8 @@ fn main() {
                             frederico_tool_registry::PermissionLoader::default_project_profile_path();
                         let user_ps = permission_loader.load_profile(&user_path);
                         let project_ps = permission_loader.load_profile(&project_path);
-                        user_ps.merge(&project_ps).network_allowlist
+                        let merged_ps = user_ps.merge(&project_ps);
+                        frederico_app::composition::effective_network_allowlist_hosts(&merged_ps)
                     }
                     None => Vec::new(),
                 };

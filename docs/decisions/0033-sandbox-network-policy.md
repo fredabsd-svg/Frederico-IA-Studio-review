@@ -65,9 +65,11 @@ A interface mostra o log na aba "Sandbox" da execução (`docs/architecture/agen
 
 ### D5 — DNS passa pelo proxy, com resolução lazy
 
-O filho chama `socket.getaddrinfo("pypi.org")`. Sem intercepção (D1), o resolvedor do Windows retorna IP público. Com intercepção via `netsh dns set`, o filho chama `127.0.0.1:PORT` (o próprio proxy) — o proxy resolve via `tokio::net::lookup_host`, valida o hostname contra allowlist **antes** de resolver (para não resolver hosts não permitidos, evitando que o resolvedor local vire vetor de enumeração), e devolve IP se permitido.
+O filho chama `socket.getaddrinfo("pypi.org")`. Sem intercepção (D1), o resolvedor do Windows retorna IP público. Com intercepção via `netsh dns set`, o filho chama `127.0.0.1:53` (o próprio proxy) — o proxy resolve via `tokio::net::lookup_host`, valida o hostname contra allowlist **antes** de resolver (para não resolver hosts não permitidos, evitando que o resolvedor local vire vetor de enumeração), e devolve IP se permitido.
 
 A regra "validar antes de resolver" é o que fecha DNS exfiltration: sem ela, o filho pede `attacker.com`, o resolvedor do host resolve para IP, o proxy permite (porque IP está em alguma allowlist? não, a allowlist é por hostname), e o filho conecta. Validar hostname **antes** de chamar `getaddrinfo` impede o request de chegar à rede.
+
+**Implementação real (fechada na Etapa 7 da Fase 7):** `crates/security/src/dns_proxy.rs` — responder DNS mínimo (RFC 1035, só `QTYPE=A`/IPv4) sobre `UdpSocket`, wireado em `crates/tool-registry/src/exec/mod.rs::start_network_proxy` junto com `crates/security/src/dns_intercept.rs::set_dns_intercept(53)`. `AAAA` e demais `QTYPE` voltam `NXDOMAIN` sem tentar resolver (lacuna IPv4-only documentada, mesmo espírito do HTTP/3-QUIC do §Pendências). Falha ao ativar (porta 53 ocupada, `netsh` sem Admin, ou fora do Windows) é degradação parcial: loga warning, segue **sem** DNS intercept — o proxy HTTP/HTTPS continua ativo e obrigatório (não aborta o sandbox). Na prática, a maioria dos usuários (não-Admin) roda sempre nesse modo degradado; o intercept completo vale pra quem roda elevado (CI, dev local como Admin).
 
 ### D6 — `NO_PROXY` cobre o próprio proxy (evita loop)
 
@@ -75,11 +77,13 @@ A regra "validar antes de resolver" é o que fecha DNS exfiltration: sem ela, o 
 
 A regra está em `EnvAllowlist::REQUIRED` (a Etapa 2 da Fase 7 introduz esse subenum, com itens que **sempre** passam pelo filtro, sem chance do usuário desligar).
 
-### D7 — Proxy é **opt-out** por feature flag durante a Etapa 2-6
+### D7 — Proxy foi **opt-out** por feature flag durante a Etapa 2-6 (fechado)
 
-A primeira versão (Etapa 2 da Fase 7) implementa o proxy com **feature flag `FREDERICO_NETWORK_PROXY_V1`** (env var) que **default é ON** mas pode ser desligado para debugging. A Etapa 7 (Fase 7 concluída) remove a flag.
+A primeira versão (Etapa 2 da Fase 7) implementou o proxy com **feature flag `FREDERICO_NETWORK_PROXY_V1`** (env var) que **default era ON** mas podia ser desligada para debugging.
 
-Durante a Etapa 2-6, o proxy é exercitado em todo PR (regressão obrigatória). Investigar uma falha do CI **desligando o proxy temporariamente** é permitido (com log explícito) mas vira pendência na próxima etapa. A Etapa 7 fecha com a flag removida.
+Durante a Etapa 2-6, o proxy foi exercitado em todo PR (regressão obrigatória). Investigar uma falha do CI **desligando o proxy temporariamente** era permitido (com log explícito) mas virava pendência na etapa seguinte.
+
+**Fechado na Etapa 7 da Fase 7:** a flag foi removida (`crates/security/src/env_filter.rs`, `crates/tool-registry/src/exec/mod.rs::start_network_proxy`). O proxy HTTP/HTTPS é incondicional — não há mais kill-switch via env var.
 
 ## Consequências
 

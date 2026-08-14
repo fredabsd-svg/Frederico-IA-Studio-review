@@ -124,15 +124,29 @@ do que entrega). Toda decisão (allow/deny) é persistida em
 2. **HTTP/3 (QUIC) bypassa.** O proxy fala TCP + forward
    HTTP/CONNECT; um client que negocia QUIC (UDP) conecta
    direto ao destino, sem passar pelo proxy.
-3. **Janela de DNS leakage.** `dns_intercept` (Windows) troca a
-   resolução DNS pro proxy via `netsh interface ip set dns
-   ... source=static address=127.0.0.1` e reverte no `Drop`
-   (RAII). Se o `netsh` falhar (ou o processo morrer entre o
-   `set` e o `revert` sem passar pelo `recover_stale_runs` da
-   Etapa 5.x), há uma janela onde o DNS não está interceptado.
-   Em **Linux/macOS**, `set_dns_intercept` retorna
+3. **DNS leakage sem privilégio Admin (e janela de crash mesmo
+   com Admin).** Desde a Etapa 7 (2026-08-14), `dns_intercept`
+   (Windows) troca a resolução DNS pro proxy via `netsh
+   interface ip set dns ... source=static address=127.0.0.1` —
+   e agora existe de fato um responder DNS real do outro lado
+   (`frederico-security::dns_proxy`, `UdpSocket` em
+   `127.0.0.1:53`, valida hostname contra a allowlist **antes**
+   de resolver, RFC 1035 mínimo, só `QTYPE=A`/IPv4) — e reverte
+   no `Drop` (RAII). **Mas `netsh` exige privilégio de Admin na
+   prática**: o processo desktop normal roda sem elevação, então
+   pra maioria dos usuários o `netsh` falha, a ativação é tratada
+   como degradação graciosa (loga warning, segue só com o proxy
+   HTTP/HTTPS), e **o DNS nunca chega a ser interceptado** — não
+   é uma janela pequena, é o caso comum. Pra quem roda elevado
+   (CI, dev local como Admin), ainda há uma janela residual se o
+   `netsh` falhar no meio (porta 53 ocupada) ou o processo morrer
+   entre o `set` e o `revert` sem passar pelo `recover_stale_runs`
+   da Etapa 5.x. Em **Linux/macOS**, `set_dns_intercept` retorna
    `Err(NotSupported)` (degradação declarada) — o proxy
    funciona, mas DNS bypassa completamente nessas plataformas.
+   Só `QTYPE=A` (IPv4) é respondido com dados — `AAAA` e outros
+   tipos voltam `NXDOMAIN` sem tentar resolver (lacuna IPv4-only
+   da v1, mesmo espírito da lacuna HTTP/3-QUIC acima).
 4. **Allowlist configurável via perfil, mas só 2 dos 3 layers
    (Etapa 7, 2026-08-14).** `PermissionSet.network_allowlist:
    Vec<String>` (campo novo) é carregado do perfil TOML do
@@ -148,6 +162,13 @@ do que entrega). Toda decisão (allow/deny) é persistida em
    vestigial citado numa versão anterior deste documento foi
    **removido** (nunca era lido por `build_chat_orchestrator`;
    a allowlist real sempre viajou só via `ExecDeps`).
+   `PermissionSet.network: bool` (o gate mestre, separado da
+   allowlist) é lido desde 2026-08-14 via
+   `frederico_app::composition::effective_network_allowlist_hosts`
+   — um perfil com `network: false` zera a allowlist
+   incondicionalmente, mesmo que `network_allowlist` tenha hosts
+   (bug de fail-open corrigido; antes, só `network_allowlist` era
+   consultado e `network: false` era ignorado).
 
 **Risco concreto hoje:** um script que evita `urllib`/`requests`
 e abre socket raw ainda alcança qualquer host — combinado com
