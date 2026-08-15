@@ -1,11 +1,29 @@
 //! Ferramentas `exec.*` — `exec.python` e `exec.node` (Etapa 4 da
-//! Fase 7), `exec.shell` (Etapa 7, denylist/allowlist sempre
-//! ativas, ADR-0034 D3).
+//! Fase 7).
 //!
-//! Cada ferramenta spawna um binário (Python, Node, ou shell)
-//! sob o `SecurityJailResolver` (Etapa 2 da Fase 7), consumindo
-//! o `RuntimeRegistry` (Etapa 3) para o `executable` e o
-//! `env_vars` que entram no `EnvAllowlist::REQUIRED`.
+//! **`exec.shell` foi tentado (Etapa 7) e descartado em 2026-08-14**
+//! — ver `docs/decisions/0034-fase-7-write-exec-approval-policy.md`
+//! §"Histórico de revisão" pro registro completo. Resumo: a v1
+//! passava o comando como string única pro `cmd.exe /c "<command>"`
+//! (bypass de allowlist via operadores de shell); a tentativa de
+//! correção (programa+args, sem shell) esbarrou em outro problema
+//! estrutural — os binários read-only da allowlist (`ls`, `cat`,
+//! `head`, `tail`, `grep`, `wc`, `pwd`, `echo`, via Git for
+//! Windows) são compilados contra o runtime MSYS2, que **não
+//! roda** sob o token restrito de Low Integrity do sandbox
+//! (`NtCreateDirectoryObject` no namespace global falha com
+//! access denied — o sandbox bloqueando é o comportamento
+//! correto, não um bug). Binários nativos alternativos existem
+//! (`findstr.exe`, `where.exe`, confirmados rodando) mas a
+//! capacidade remanescente é redundante com `exec.python`/
+//! `exec.node` (que já cobrem list/read/grep/count de dentro do
+//! jail). Descartado, não adiado — capacidade incompleta é
+//! capacidade indisponível.
+//!
+//! Cada ferramenta spawna um binário (Python ou Node) sob o
+//! `SecurityJailResolver` (Etapa 2 da Fase 7), consumindo o
+//! `RuntimeRegistry` (Etapa 3) para o `executable` e o `env_vars`
+//! que entram no `EnvAllowlist::REQUIRED`.
 //!
 //! Ver [`docs/architecture/exec-tools-specification.md`](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/architecture/exec-tools-specification.md)
 //! para o spec completo e [ADR-0034](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0034-fase-7-write-exec-approval-policy.md)
@@ -24,8 +42,6 @@
 //!   `ApprovalDecision` aprovada, retorna `ApprovalRequired`.
 //! - **Sem rede** — `pip install` falha (degradação declarada).
 //!   Etapa 7 da Fase 7 implementa o proxy local.
-//! - **Sem `exec_patterns.rs`** — auto-approval por code sem
-//!   padrão perigoso é Etapa 5+ (só pro `exec.shell`).
 //! - **Audit sink via trait `AuditSink`** — `NoopAuditSink` em
 //!   v1; `DbAuditSink` é trabalho da Etapa 5+ da Fase 3.
 
@@ -34,12 +50,10 @@
 mod node;
 mod output;
 mod python;
-mod shell;
 
 pub use node::FilesExecNodeTool;
 pub use output::{MAX_OUTPUT_BYTES, OUTPUT_CHUNK_SIZE};
 pub use python::FilesExecPythonTool;
-pub use shell::FilesExecShellTool;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,8 +111,7 @@ pub fn build_default_exec_tools(
     let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
-        Arc::new(FilesExecNodeTool::new(base.clone())),
-        Arc::new(FilesExecShellTool::new(base)),
+        Arc::new(FilesExecNodeTool::new(base)),
     ]
 }
 
@@ -457,13 +470,4 @@ pub enum ExecError {
     /// Cancelamento (Etapa 4+).
     #[error("cancelado pelo user")]
     Cancelled,
-    /// `exec.shell`: comando bate um padrão da
-    /// `frederico_security::exec_patterns::SHELL_DENYLIST` (Etapa 7,
-    /// ADR-0034 D3). Recusado antes do spawn.
-    #[error("comando recusado pela denylist (padrao: {0})")]
-    CommandDenied(String),
-    /// `exec.shell`: primeiro token do comando não está na
-    /// `SHELL_ALLOWLIST_DEFAULT` (Etapa 7). Recusado antes do spawn.
-    #[error("comando '{0}' nao esta na allowlist")]
-    CommandNotInAllowlist(String),
 }

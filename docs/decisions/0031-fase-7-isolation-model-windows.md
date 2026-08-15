@@ -28,8 +28,9 @@ O sandbox da Fase 7 **não é uma primitiva única**: é uma combinação. Cada 
 | `files.list` | sim | — | — | — | — |
 | `files.write` / `files.edit` | sim | — | — | — | — |
 | `exec.python` / `exec.node` | sim (workspace only) | sim (CPU, mem, processos, wall_clock) | sim (Disallowed) | **não (Fase 8+)** | sim |
-| `exec.shell` | sim (workspace + workdir explícito) | sim | sim | **não (Fase 8+)** | sim |
 | `web.fetch` / `web.search` | — | — | — | — | — (passa pelo proxy local, ADR-0033) |
+
+`exec.shell` foi tentado na Etapa 7 (2026-08-14) e descartado — não está no catálogo, sem linha nesta tabela (ver `docs/decisions/0034-fase-7-write-exec-approval-policy.md` §"Histórico de revisão").
 
 **AppContainer é deliberadamente adiado** (decisão D6 abaixo). Restricted Token é a camada que descarta privilégios no Windows sem a quebra de compatibilidade de AppContainer. Job Object é a única primitiva de tree-kill confiável — sem ela, um processo filho do sandbox sobrevive ao `kill -9` do app.
 

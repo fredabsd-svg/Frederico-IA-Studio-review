@@ -30,8 +30,7 @@ use frederico_model_catalog::{
     SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
 };
 use frederico_tool_registry::{
-    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, TerminalMode, Tool,
-    ToolRegistry,
+    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, Tool, ToolRegistry,
 };
 
 // ============================================================================
@@ -506,16 +505,14 @@ pub fn initial_permission_set_for_exec() -> PermissionSet {
         // restricted token).
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
-        // Etapa 7 da Fase 7: exec.shell entra no catálogo junto
-        // com python/node (mesmo `if let Some(exec) = exec_deps`
-        // em `build_default_tools`). `TerminalMode::Allowlist` é
-        // o teto do projeto pra terminal (não existe variante
-        // "sem restrição" — ver doc do enum); shell aplica
-        // denylist+allowlist incondicionalmente por enquanto
-        // (`crates/tool-registry/src/exec/shell.rs`), então o
-        // bump aqui é sobre consistência do `PermissionSet`
-        // relatado, não um gate que o `Tool::execute` hoje lê.
-        terminal: TerminalMode::Allowlist,
+        // `terminal` fica em `TerminalMode::None` (default) —
+        // `exec.shell` foi tentado na Etapa 7 e descartado em
+        // 2026-08-14 (ver `crates/tool-registry/src/exec/mod.rs`
+        // e ADR-0034 §"Histórico de revisão"). Sem o tool no
+        // `ToolRegistry`, bumpar `terminal` violaria a regra de
+        // bump atômico capability+permission (ADR-0020 §3 D3) —
+        // ou o tool está no registro + allowlist + permissão
+        // bumpada, ou em nenhum dos três.
         ..PermissionSet::default()
     }
 }
@@ -545,9 +542,8 @@ pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
         // `initial_permission_set_for_exec` acima.
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
-        // Etapa 7 da Fase 7: exec.shell — ver comentário em
-        // `initial_permission_set_for_exec`.
-        terminal: TerminalMode::Allowlist,
+        // `terminal` fica em `TerminalMode::None` (default) — ver
+        // comentário em `initial_permission_set_for_exec`.
         ..PermissionSet::default()
     }
 }
@@ -877,10 +873,9 @@ pub fn build_default_allowed_for_run(
         // (quando o document-worker também está disponível).
         allowed.push(frederico_core::ToolId::new("exec.python"));
         allowed.push(frederico_core::ToolId::new("exec.node"));
-        // Etapa 7 da Fase 7: exec.shell entra junto (denylist +
-        // allowlist sempre ativas no `Tool::execute`, ADR-0034
-        // D3 — sempre `OneExecution`, nunca reusa aprovação).
-        allowed.push(frederico_core::ToolId::new("exec.shell"));
+        // `exec.shell` foi tentado na Etapa 7 e descartado em
+        // 2026-08-14 — ver `crates/tool-registry/src/exec/mod.rs`
+        // e ADR-0034 §"Histórico de revisão".
     }
 
     allowed
@@ -1263,8 +1258,8 @@ mod tests {
         let tools = build_default_tools(None, Some(exec_deps));
         assert_eq!(
             tools.len(),
-            7,
-            "Esperado 7 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node + exec.shell"
+            6,
+            "Esperado 6 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node (exec.shell descartado em 2026-08-14)"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
@@ -1274,7 +1269,7 @@ mod tests {
         assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.python")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.node")));
-        assert!(ids.contains(&frederico_core::ToolId::new("exec.shell")));
+        assert!(!ids.contains(&frederico_core::ToolId::new("exec.shell")));
         // Sem invoker, docs.generate e docs.inspect NÃO aparecem.
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.inspect")));

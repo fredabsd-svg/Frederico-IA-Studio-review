@@ -242,7 +242,7 @@ Atualização da tabela do §"Catálogo inicial" para refletir o que a Fase 7 Et
 | `files.list` | `files` | 5 | (sem ADR próprio, herda de ADR-0035 + Jail) | `especificado` (apenas lista diretório, sem ler conteúdo) |
 | `exec.python` | `exec` | 4 | [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) + [ADR-0036](../decisions/0036-security-jail-resolver-windows-job-objects.md) | `especificado` (sob SecurityJailResolver, escopo `OneTurn` default) |
 | `exec.node` | `exec` | 4 | mesmo par de ADRs | `especificado` (mesma forma, runtime Node) |
-| `exec.shell` | `exec` | 6 | [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) D3 | `especificado` (sempre `OneExecution`, Denylist + Allowlist) |
+| `exec.shell` | `exec` | 7 | [ADR-0034](../decisions/0034-fase-7-write-exec-approval-policy.md) D3 | **descartado** (2026-08-14 — tentado, bypass de allowlist via shell + binários MSYS2 incompatíveis com Low Integrity; ver `exec-tools-specification.md` §"`exec.shell` (descartado)") |
 
 **`web.search`, `web.open`, `brasil.cnpj`, `github.*`, `memory.*`** continuam com o status anterior (Fase 2 a Fase 6) e **não** entram na Fase 7. Especificamente, as ferramentas `github.*` são **adiadas para Fase 8** pelo [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) (escopo da Fase 7 vira só execução isolada).
 
@@ -251,7 +251,7 @@ Atualização da tabela do §"Catálogo inicial" para refletir o que a Fase 7 Et
 **Onde os detalhes de cada ferramenta nova vivem:**
 
 - `files.write` / `files.edit` / `files.list` — sem spec próprio; o §"Catálogo inicial" deste documento + o [ADR-0035](../decisions/0035-fase-7-file-ops-overwrite-semantics.md) definem o contrato completo. Decisão consciente: o `tool-registry-specification.md` é o **inventário** (catálogo + validação), e o ADR é a **política** (semântica de sobrescrita). Sem duplicação.
-- `exec.python` / `exec.node` / `exec.shell` — [`exec-tools-specification.md`](./exec-tools-specification.md) é o spec completo. Este spec referencia; não duplica.
+- `exec.python` / `exec.node` (`exec.shell` tentado e descartado) — [`exec-tools-specification.md`](./exec-tools-specification.md) é o spec completo. Este spec referencia; não duplica.
 - Sandbox que envolve as `exec.*` — [`windows-sandbox-design.md`](./windows-sandbox-design.md) (aprimorado na Etapa 1, 2026-08-08).
 - Runtimes portáteis consumidos por `exec.python` / `exec.node` — [`runtimes-architecture.md`](./runtimes-architecture.md) (novo, Etapa 1, 2026-08-08).
 
@@ -264,7 +264,7 @@ Atualização da tabela do §"Catálogo inicial" para refletir o que a Fase 7 Et
 - [`testing-strategy.md`](./testing-strategy.md) — testes obrigatórios do §7.10
 - [`windows-sandbox-design.md`](./windows-sandbox-design.md) — sandbox da Fase 7
 - [`runtimes-architecture.md`](./runtimes-architecture.md) — Python + Node portáteis
-- [`exec-tools-specification.md`](./exec-tools-specification.md) — `exec.python` / `exec.node` / `exec.shell`
+- [`exec-tools-specification.md`](./exec-tools-specification.md) — `exec.python` / `exec.node` (`exec.shell` tentado e descartado)
 - [ADR-0031](../decisions/0031-fase-7-isolation-model-windows.md) — modelo de isolamento
 - [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) — escopo da Fase 7
 - [ADR-0033](../decisions/0033-sandbox-network-policy.md) — política de rede

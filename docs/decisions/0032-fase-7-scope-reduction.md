@@ -33,7 +33,7 @@ A Fase 7 fecha quando **todos** os critérios abaixo são verdadeiros simultanea
 2. Runtimes portáteis (Node + Python, ADR-0037 planejado, escopo na Etapa 3) estão embutidos e localizados pelo executor.
 3. `exec.python` e `exec.node` estão no `ToolRegistry` (Etapa 4), sob sandbox, com aprovação obrigatória por invocação (ADR-0034).
 4. `files.write` / `files.edit` / `files.list` estão no `ToolRegistry` (Etapa 5), sob Jail, com semântica de sobrescrita explícita (ADR-0035).
-5. `exec.shell` está no `ToolRegistry` (Etapa 6), sob sandbox, com `Denylist` de comandos destrutivos + aprovação obrigatória (ADR-0034).
+5. ~~`exec.shell` está no `ToolRegistry` (Etapa 6), sob sandbox, com `Denylist` de comandos destrutivos + aprovação obrigatória (ADR-0034).~~ **Revisado em 2026-08-14**: `exec.shell` foi tentado na Etapa 7 e descartado (bypass de allowlist via operadores de shell na v1; binários MSYS2 da allowlist incompatíveis com Low Integrity na correção tentada — ver ADR-0034 §"Histórico de revisão"). Este critério deixa de ser bloqueante pra fechar a Fase 7 — a fase entrega execução isolada via `exec.python`/`exec.node`, sem terminal de comandos arbitrários.
 6. Rede do sandbox passa por proxy local negando por padrão (ADR-0033).
 7. Mapa de E2E por etapa nomeado em `docs/status.md` (D2 do ADR-0026), com a regra de "teste de negação" (do prompt do user, 2026-08-08) — cada etapa da 2 em diante entrega **pelo menos um teste que prova o que o sandbox bloqueia**, não só o que ele permite.
 8. `docs/status.md` marca Fase 7 como `concluída` com a coluna `E2E de cobertura` preenchida com `path::fn_name` e `Passo CI` apontando o lugar onde roda.
