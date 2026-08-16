@@ -40,7 +40,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
     </td>
     <td width="50%" valign="top">
       <b>🛠️ Ferramentas reais</b><br/>
-      A IA lê, lista, escreve e edita arquivos e executa Python, Node e comandos de shell — sempre dentro do workspace da conversa, com aprovação explícita do usuário para ações de risco.
+      A IA lê, lista, escreve e edita arquivos e executa Python e Node — sempre dentro do workspace da conversa, com aprovação explícita do usuário para ações de risco.
     </td>
   </tr>
   <tr>
@@ -77,7 +77,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
 | 4 | Memória e continuidade | ✅ Concluída |
 | 5 | Documentos (Word, Excel, PDF) + Fase de Ligação | ✅ Concluída |
 | 6 | Multimodelo e subagentes (Modo Equipe) | ✅ Concluída |
-| 7 | Execução isolada (sandbox, runtimes, `exec.*`) | ✅ Concluída |
+| 7 | Execução isolada (sandbox, runtimes, `exec.*`) | 🚧 Em andamento |
 | 8 | Modo Desenvolvedor integrado (Git, GitHub, diff, projetos, copiloto) | 🧭 Não iniciada |
 | 9 | Produção (assinatura, atualização, release estável) | 🧭 Não iniciada |
 
@@ -87,7 +87,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
 
 **Conversa** — chat com streaming de tokens, catálogo embutido de modelos, tradução de erros de provedor para PT-BR com ação sugerida, custo por `Usage`, cancelamento que derruba a conexão HTTP de verdade e *journal* de eventos no SQLite: fechar o app no meio de uma resposta não perde nada.
 
-**Ferramentas** — `files.read` · `files.list` · `files.write` · `files.edit` · `docs.generate` · `docs.inspect` · `exec.python` · `exec.node` · `exec.shell`. Escrita atômica com backup automático e hashes SHA-256; edição recusa alterar arquivo que mudou desde a leitura; ferramentas de risco exigem aprovação do usuário em modal.
+**Ferramentas** — `files.read` · `files.list` · `files.write` · `files.edit` · `docs.generate` · `docs.inspect` · `exec.python` · `exec.node`. Escrita atômica com backup automático e hashes SHA-256; edição recusa alterar arquivo que mudou desde a leitura; ferramentas de risco exigem aprovação do usuário em modal.
 
 **Documentos** — geração real de `.docx`, `.xlsx` e `.pdf` pelos kits WordPro, ExcelPro e PdfPro, com identidade visual própria, fontes embutidas e auditoria estrutural bloqueante (um PDF que não passa nas verificações de PDF/A-2B não é entregue como válido).
 

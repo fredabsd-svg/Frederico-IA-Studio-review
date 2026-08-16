@@ -95,10 +95,27 @@ pub fn build_default_exec_tools(
     network_audit: Arc<dyn NetworkAuditSink>,
 ) -> Vec<Arc<dyn Tool>> {
     let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
+    // `exec.shell` **NÃO** entra (ADR-0037, 2026-08-16). A
+    // allowlist de comandos que justificava a ferramenta é
+    // contornável por qualquer separador do `cmd.exe`: `is_allowed`
+    // valida só o primeiro token e `build_args` entrega o command
+    // string inteiro pro `cmd.exe /c`, então `echo x & <qualquer
+    // coisa>` passa. Provado em
+    // `crates/e2e/tests/e2e_exec_shell_out_of_catalog.rs` e em
+    // `frederico_security::exec_patterns::tests::allowlist_is_defeated_by_cmd_exe_command_separators`.
+    // Mesma regra aplicada a `exec.python`/`exec.node` na Etapa 5+ e
+    // ao `dns_intercept` na Etapa 6: capacidade incompleta é
+    // capacidade indisponível.
+    //
+    // O código de `shell.rs` fica no crate (não é deletado como o
+    // `dns_intercept` foi): o conserto é conhecido — recusar
+    // separadores de shell antes do spawn — e a ferramenta volta
+    // ao catálogo quando isso, mais o problema dos binários MSYS2
+    // sob integridade baixa, estiver resolvido. Ver ADR-0037
+    // §"Consequências".
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
-        Arc::new(FilesExecNodeTool::new(base.clone())),
-        Arc::new(FilesExecShellTool::new(base)),
+        Arc::new(FilesExecNodeTool::new(base)),
     ]
 }
 

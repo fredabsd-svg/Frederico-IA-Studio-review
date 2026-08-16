@@ -1,9 +1,9 @@
 # Fase 7 (Modo Desenvolvedor — núcleo: execução isolada): narrativas de release
 
 <!--
-Estado: implementado
+Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-16
-Fase correspondente: 7 (Etapas 1-7 fechadas — fase concluída em 2026-08-14)
+Fase correspondente: 7 (Etapas 1-6+1 fechadas; Etapa 7 reaberta pelo ADR-0037 — fase `em andamento`)
 -->
 
 Índice das narrativas de processo (descrições de PR, lições de
@@ -13,11 +13,21 @@ e ferramentas de escrita/execução sob isolamento. Git, GitHub,
 diff, projetos e checkpoints migraram para a **Fase 8** pelo
 [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md).
 
-**A fase está concluída** desde 2026-08-14 (PR #52, `e535b7f`),
-com as 7 etapas fechadas — incluindo as duas intercaladas que o
-plano original não previa (5+ e 6+1). O `docs/status.md` é a
-fonte da verdade do estado; este arquivo é a fonte da verdade do
-**percurso**.
+**A fase esteve concluída por dois dias e foi reaberta.** Ela
+fechou em 2026-08-14 (PR #52, `e535b7f`) com 7 etapas — incluindo
+as duas intercaladas que o plano não previa (5+ e 6+1). Em
+2026-08-16 o [ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
+mediu o `exec.shell` e o tirou do catálogo: a allowlist de
+comandos não era uma barreira. Como o critério de "done" da fase
+cita a ferramenta nominalmente, a **Etapa 7 reabre** e a fase
+volta a `em andamento`. Os três requisitos para fechá-la de novo
+estão no §D5 daquele ADR.
+
+Este README manteve por dois dias a versão anterior desta
+história, e o registro de que ela existiu fica aqui de propósito.
+O `docs/status.md` é a fonte da verdade do **estado**; este
+arquivo é a fonte da verdade do **percurso** — e o percurso
+inclui ter fechado cedo demais.
 
 **Não duplica o `CHANGELOG.md`**, que registra só o efeito pro
 usuário (§1.7 do `REGRAS-DO-PROJETO.md`). O que mora aqui é a
@@ -35,7 +45,7 @@ foram tomadas no caminho, e o que se aprendeu.
 | Etapa 5 | [`etapa-5-narrativa.md`](./etapa-5-narrativa.md) (PR #45 + #46) | `files.write` / `files.edit` / `files.list` no `ToolRegistry`, sob Jail, com semântica de sobrescrita (atomic + backup + audit). **Regra do user 2026-08-10: 2 PRs, não 3** — `files.write` e `files.edit` compartilham a mesma máquina de escrita atômica, backup e auditoria. PR #45 = `files.list` (read-only, sem approval); PR #46 = `files.write` + `files.edit` (destrutivo, exige approval + `expected_sha256` race defense). |
 | Etapa 5+ | sem narrativa própria (PR #47, `9610a53` + `435a755`) — registro em `CHANGELOG.md` | Path safety no `SecurityJailResolver`. Fechada **com ressalva**: `exec.python`/`exec.node` saíram do catálogo até a barreira de caminho existir de verdade — a regra "capacidade incompleta é capacidade indisponível" aplicada pela primeira vez na fase. |
 | Etapa 6 + 6+1 | [`etapa-6-7-narrativa.md`](./etapa-6-7-narrativa.md) (PR #51, `2fbaf73`) | Rede do sandbox: proxy HTTP/CONNECT local com deny-by-default + `network_audit` + wiring real em `exec.python`/`exec.node`. **4 causas-raiz empilhadas** que faziam o wiring parecer funcionar sem funcionar. |
-| Etapa 7 | [`etapa-6-7-narrativa.md`](./etapa-6-7-narrativa.md) (PR #52, `e535b7f`) | `exec.shell` com denylist + allowlist sempre ativas + allowlist de rede carregada de perfil. **Fecha a fase.** Inclui o descarte do DNS intercept depois de verificação manual elevada. |
+| Etapa 7 | [`etapa-6-7-narrativa.md`](./etapa-6-7-narrativa.md) (PR #52, `e535b7f`; **reaberta** pelo ADR-0037) | Entregou `exec.shell` com denylist + allowlist, mais a allowlist de rede por perfil e o descarte do DNS intercept. A parte de rede permanece; **`exec.shell` foi removido do catálogo dois dias depois** — a allowlist era contornável por qualquer separador do `cmd.exe`. A etapa fecha quando o §D5 do ADR-0037 fechar. |
 
 **Sobre a numeração:** o plano da Etapa 1 previa `exec.shell` como
 Etapa 6 e rede como Etapa 7. Na prática a ordem se inverteu — a
@@ -67,7 +77,7 @@ A análise completa está no [ADR-0032](../../decisions/0032-fase-7-scope-reduct
 | **Etapa 5 — `files.write` / `files.edit` / `files.list`** | **concluída** (PR #45 files.list + PR #46 files.write+files.edit) | Etapa 6 | Etapa 2 | `FilesWriteTool` + `FilesEditTool` + `FilesListTool` com Jail + atomicidade + backup + audit. **Regra do user 2026-08-10: 2 PRs, não 3** — as ferramentas destrutivas juntas num só diff. |
 | **Etapa 5+ — Path safety no `SecurityJailResolver`** | **concluída com ressalva** (PR #47, `9610a53`; complemento em `435a755`) | Etapa 6 | Etapa 2 + Etapa 4 | Barreira de caminho real no Jail. `exec.python`/`exec.node` **removidos do catálogo** até ela existir — não iam ficar expostos com o escape de `..\` que a Etapa 4 provou por teste |
 | **Etapa 6 + 6+1 — Rede do sandbox (proxy) + wiring** | **concluída** (PR #51, `2fbaf73`) | Etapa 7 | Etapa 2 + Etapa 4 | `crates/security/src/network.rs` + `network_audit_sink.rs` + migration `0031_network_audit.sql` + `NetworkProxyGuard` RAII injetando `HTTP_PROXY`/`HTTPS_PROXY` no filho |
-| **Etapa 7 — `exec.shell` + allowlist de rede por perfil** | **concluída — fecha a fase** (PR #52, `e535b7f`) | — | Etapa 2 + Etapa 4 + Etapa 6 | `FilesExecShellTool` (`risk_level: Critical`) + `frederico_security::exec_patterns` + `PermissionSet.network_allowlist` lido do perfil TOML |
+| **Etapa 7 — `exec.shell` + allowlist de rede por perfil** | **reaberta** (PR #52 `e535b7f` fechou; ADR-0037 reabriu em 2026-08-16) | — | Etapa 2 + Etapa 4 + Etapa 6 | A allowlist de rede por perfil **permanece entregue**. `FilesExecShellTool` saiu do catálogo; volta quando os 3 requisitos do ADR-0037 §D5 fecharem |
 
 **Regra de teste de negação (do prompt do user, 2026-08-08):** cada etapa da 2 em diante entrega **pelo menos um teste que prova o que o sandbox bloqueia**, não só o que ele permite. Sandbox se prova impedindo, não funcionando. O `windows-sandbox-design.md` §"Mapa de E2E planejado por etapa" lista os 12 testes planejados (1-2 por etapa).
 
@@ -100,13 +110,31 @@ Nenhum dos 6 sobreviveu intacto ao contato com o código, e isso está registrad
 
 ## O que a fase entregou — e o que ela deixou aberto
 
-Fechada em 2026-08-14 (PR #52, `e535b7f`), com 7 etapas em 12
-PRs. O que passa a existir no produto:
+Seis etapas e meia fechadas em 12 PRs. O que existe no produto
+hoje:
 
 - **Sandbox de 3 camadas** (Jail + Job Object + Restricted Token + env zeroed), com path safety real depois da Etapa 5+.
 - **Runtimes portáteis** Python 3.12.4 e Node 20.16.0, SHA-256 pinned, sem depender do PATH da máquina.
-- **9 ferramentas** no catálogo: `files.read` / `files.list` / `files.write` / `files.edit`, `docs.generate` / `docs.inspect`, `exec.python` / `exec.node` / `exec.shell`.
+- **8 ferramentas** no catálogo: `files.read` / `files.list` / `files.write` / `files.edit`, `docs.generate` / `docs.inspect`, `exec.python` / `exec.node`.
 - **Rede deny-by-default** para o filho do sandbox, com auditoria append-only em `network_audit` e allowlist vinda do perfil TOML do usuário ∩ projeto.
+
+**O que a fase anunciou e teve de retirar:** `exec.shell` esteve
+no catálogo entre 14 e 16 de agosto. O
+[ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
+mediu e removeu: `is_allowed` validava só o primeiro token, mas o
+comando inteiro ia para o `cmd.exe /c`, que trata `&`, `&&`, `|`
+e `||` como separadores — `ver` sozinho era recusado, `echo
+marcador & ver` executava os dois. E 7 dos 9 binários da
+allowlist são MSYS2, que morrem sob o rótulo de integridade baixa
+com `STATUS_ACCESS_DENIED`. A barreira não impedia o que devia
+nem permitia o que prometia.
+
+É a terceira aplicação da regra **capacidade incompleta é
+capacidade indisponível** nesta fase — depois de `exec.python`/
+`exec.node` (Etapa 5+) e do DNS intercept (Etapa 6). A diferença,
+desta vez, é que a capacidade já tinha sido anunciada como
+concluída, e a fase teve de voltar a `em andamento` por causa
+disso.
 
 **As lacunas ficam nomeadas, não escondidas** — todas em
 `SECURITY.md` e no `security-threat-model.md`, e todas repetidas
@@ -146,6 +174,7 @@ saiu inteiro em vez de virar nota de rodapé.
 - 2026-08-08 — Etapa 2 (primitivas do sandbox) fechada (PR #42, `930c098`). 4 primitivas Rust em `crates/security/src/`. Documentação inline em `status.md` §7.
 - 2026-08-08 — Etapa 3 (runtimes embutidos) fechada (PR #43, `da9e98f2`). Novo crate `frederico-runtimes` com Python 3.12.4 + Node 20.16.0 portáteis, SHA-256 pinned, 5 testes de regressão. Documentação inline em `status.md` §7.
 - 2026-08-10 — Etapa 4 (`exec.python` / `exec.node` no registro) fechada em PR #44 (CI run final verde `#31384435313` 9m2s após 5 falhas consecutivas). **Achado crítico:** o `SecurityJailResolver` v1 (Job + Token + EnvFilter) **NÃO tem path safety enforcement** — o test `child_cannot_write_outside_workspace` (I3) provou que python escapa via `open('..\\evil.txt')` relativo ao workdir. Box::leak + .zip copy + `can_run_python` foram os fixes certos pra fazer o python rodar de verdade; o test catching a falha de path safety é exatamente o que teste de negação existe pra fazer. 3 testes `#[ignore]` serão reabertos na Etapa 5+ quando o sandbox ganhar AppContainer ou ACLs no Restricted Token. Saga completa do CI flake (5 erros distintos: `doc_lazy_continuation`, `build_default_tools` 1-arg duplicate, regex Python quebrando `//` + backticks, unused vars, os error 3 com 5 tentativas de fix) documentada no `status.md` §7 e na narrativa de Etapa 4.
+- 2026-08-16 — **Etapa 7 reaberta; a fase volta a `em andamento`** ([ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)). `exec.shell` saiu do catálogo depois de medido: a allowlist era contornável por qualquer separador do `cmd.exe`, e 7 dos 9 binários que ela permitia não rodam sob integridade baixa. Este README e a narrativa das Etapas 6/7 tinham sido escritos horas antes descrevendo a fase como concluída com 9 ferramentas; foram corrigidos no mesmo PR. **Lição do episódio:** o `README.md` da raiz vinha dizendo desde o PR #54 que a ferramenta fora descartada, contra todos os outros documentos — e estava certo. Uma revisão de código conferiu o catálogo, viu `exec.shell` registrado e "corrigiu" o README de volta. Conferir contra o código não bastou, porque o código era a coisa em disputa; só a medição do comportamento resolveu.
 - 2026-08-16 — **Fechamento documental da fase.** Este README estava afirmando "Etapas 1-5 fechadas; Etapa 6 não iniciada" dois dias depois de a fase ter fechado, e a tabela de etapas ainda descrevia o plano (`exec.shell` na 6, rede na 7) em vez do que foi entregue (rede na 6, `exec.shell` na 7). Corrigido: cabeçalho, as duas tabelas, a numeração real com as etapas 5+ e 6+1 que o plano não previa, seção nova "O que a fase entregou — e o que ela deixou aberto" com as 7 lacunas nomeadas, e a narrativa das Etapas 6/7. Registrada também a pendência do CI noturno (abaixo). **Achado do fechamento:** o `CI Nightly` nunca ficou verde — 12 falhas consecutivas desde 2026-08-05, todas por `OPENROUTER_API_KEY` ausente no repositório. A cobertura noturna que o ADR-0026 §D2 e o ADR-0019 tratam como "mais fraca por natureza" era, na prática, **inexistente**; o passo de `check-core-purity` que vem depois dela nunca chegou a rodar no noturno.
 - 2026-08-14 — **Etapa 7 fechada (PR #52, `e535b7f`) — fase concluída.** `exec.shell` com denylist + allowlist sempre ativas (`risk_level: Critical`) + `PermissionSet.network_allowlist` carregado do perfil TOML usuário ∩ projeto, substituindo o `NetworkAllowlist::new()` hardcoded vazio. No mesmo dia: 2 das 3 pendências de rede fechadas (feature flag `FREDERICO_NETWORK_PROXY_V1` removida; bug de fail-open do `PermissionSet.network` corrigido) e **a 3ª descartada** — o DNS intercept foi wireado, testado com privilégio elevado real, provado não-funcional e removido por inteiro. Detalhe na [narrativa das Etapas 6/7](./etapa-6-7-narrativa.md).
 - 2026-08-13 — **Etapas 6 e 6+1 fechadas (PR #51, `2fbaf73`).** Proxy HTTP/CONNECT local com deny-by-default + auditoria em `network_audit` (Etapa 6), e o wiring real em `exec.python`/`exec.node` (Etapa 6+1). O wiring destravou 4 causas-raiz empilhadas — `CREATE_UNICODE_ENVIRONMENT` faltando, um fallback silencioso que anulava o `EnvFilter` inteiro, `SystemRoot`/`windir` fora do `EnvAllowlist::REQUIRED`, e o `run_id` errado no audit sink. A 2ª era uma **regressão de segurança silenciosa** vivendo em produção: quando a 1ª falhava, o filho herdava o ambiente inteiro do pai, credenciais incluídas, sem erro visível.

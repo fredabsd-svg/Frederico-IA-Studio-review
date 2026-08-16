@@ -1,13 +1,17 @@
 # Security Policy
 
 > Frederico IA Studio — modelo de segurança do sandbox Windows
-> (Fase 7, Etapa 7 — fecha a Fase 7).
+> (Fase 7, `em andamento`).
 >
-> **Última atualização:** 2026-08-14 (Etapa 7 fechada — `exec.shell`
-> com denylist/allowlist de comandos + allowlist de rede carregada
-> de perfil TOML, em vez de hardcoded vazia; DNS intercept via
-> `netsh` tentado e removido depois de verificação provar que não
-> protegia nada).
+> **Última atualização:** 2026-08-16 (ADR-0037 — `exec.shell` saiu
+> do catálogo depois que a allowlist de comandos foi medida e se
+> mostrou contornável por qualquer separador do `cmd.exe`; a Fase 7
+> voltou a `em andamento`).
+>
+> Antes: 2026-08-14 (Etapa 7 — allowlist de rede carregada de
+> perfil TOML em vez de hardcoded vazia; DNS intercept via `netsh`
+> tentado e removido depois de verificação provar que não protegia
+> nada).
 
 ## Resumo
 
@@ -219,30 +223,44 @@ criar um service Windows que aplica os labels (roda como
 SYSTEM com SeSecurityPrivilege); o app user-mode chama o
 service via RPC. Complexo, Fases 8+.
 
-### 4. **`exec.shell` — denylist/allowlist são defesa em
-   profundidade, não a barreira primária**
+### 4. **Não existe execução de shell — `exec.shell` saiu do
+   catálogo (ADR-0037)**
 
-`exec.shell` (Etapa 7) roda sob as mesmas 4 camadas acima, mais
-uma checagem de comando em `frederico_security::exec_patterns`
-**antes** do spawn: uma denylist de comandos destrutivos (`rm
--rf`, `format`, `diskpart`, etc.) e uma allowlist de binários
-read-only (`ls`, `cat`, `grep`, ...). As duas são aplicadas
-**incondicionalmente** — não existe hoje um caminho pra ler
-`PermissionSet.terminal` dentro do `Tool::execute` (o
-`ToolContext` não carrega `PermissionSet`), então não há um modo
-"sem allowlist" para usuário avançado ainda.
+Entre 2026-08-14 e 2026-08-16, `exec.shell` esteve no catálogo e
+esta seção descrevia a denylist/allowlist de comandos como defesa
+em profundidade. **A allowlist foi medida e não é uma barreira.**
 
-**Limitação honesta:** o match é substring case-insensitive
-contra o command string inteiro, não um parser de shell. `rm -r
--f` (flags separadas) **não** casa `rm -rf` — bypass conhecido,
-fixado em teste
-(`crates/security/src/exec_patterns.rs::shell_denylist_hit_documents_split_flag_bypass`),
-não escondido. Um comando que passa pela denylist/allowlist
-ainda roda sob as 4 camadas de processo — path safety continua
-bloqueando write-up, e a rede continua deny-by-default pelo
-proxy. A denylist/allowlist reduz a superfície óbvia (o modelo
-tentando `rm -rf` diretamente); não é uma prova formal de que
-nenhum comando destrutivo passa.
+`frederico_security::exec_patterns::is_allowed` valida só o
+**primeiro token** do comando, e o `build_args` entregava o
+command string **inteiro** pro `cmd.exe /c` — que interpreta
+`&`, `&&`, `||` e `|` como separadores. Medição pelo caminho real
+da ferramenta:
+
+| Comando | Resultado |
+|---|---|
+| `ver` | recusado pela allowlist |
+| `echo marcador & ver` | **executou os dois** |
+
+Ou seja: qualquer comando arbitrário passava atrás de um `echo`.
+Somado a isso, 7 dos 9 binários da allowlist (`ls`, `cat`,
+`head`, `tail`, `grep`, `wc`, `pwd`) vêm do MSYS2 e morrem sob o
+rótulo de integridade baixa com `NtCreateDirectoryObject ...
+0xC0000022` — a allowlist não impedia o que devia impedir e não
+permitia quase nada do que prometia.
+
+Pela regra **capacidade incompleta é capacidade indisponível** (a
+mesma que tirou `exec.python`/`exec.node` do catálogo na Etapa 5+
+e deletou o `dns_intercept` na Etapa 6), a ferramenta saiu. O
+código continua em `crates/tool-registry/src/exec/shell.rs`, sem
+ser registrado; os 3 requisitos pra voltar estão no
+[ADR-0037](docs/decisions/0037-exec-shell-fora-do-catalogo.md)
+§D5. A ausência é fixada em teste
+(`crates/e2e/tests/e2e_exec_shell_out_of_catalog.rs::exec_shell_is_not_in_default_catalog`).
+
+**Consequência prática:** hoje o produto não executa comandos de
+terminal. Execução arbitrária existe só via `exec.python` e
+`exec.node`, que rodam sob as 4 camadas acima e exigem aprovação
+do usuário a cada invocação.
 
 ## Como reportar vulnerabilidades
 

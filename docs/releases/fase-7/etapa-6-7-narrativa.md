@@ -117,19 +117,42 @@ filho (`crates/security/tests/env_credential_not_leaked.rs`) —
 validado reintroduzindo `env=None` de propósito pra confirmar que
 o teste pega a regressão.
 
-## Etapa 7 — `exec.shell` (PR #52)
+## Etapa 7 — `exec.shell` (PR #52), entregue e retirada dois dias depois
+
+> **Esta etapa foi reaberta.** O `exec.shell` descrito abaixo saiu
+> do catálogo em 2026-08-16 pelo
+> [ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md).
+> A seção fica como está, no passado, porque o percurso é o
+> assunto deste arquivo — e o percurso inclui o erro. A allowlist
+> de rede por perfil, entregue no mesmo PR, permanece.
 
 Mesmo padrão de sandbox das outras `exec.*`, com duas diferenças
 de política: `risk_level: Critical` e denylist + allowlist de
 comandos **sempre ativas**, checadas antes de qualquer spawn.
 
-A honestidade sobre o alcance delas está no código e nos testes:
-o match é substring literal, não um parser de shell, então
-`rm -r -f` não casa `rm -rf`. Isso está fixado em
-`denylist_hit_documents_split_flag_bypass`. A barreira real
-contra dano ao host continua sendo o Jail (Mandatory Label\Low)
-mais o Restricted Token; a denylist é defesa em profundidade
-contra o caso comum, e é descrita como tal.
+A honestidade sobre o alcance delas parecia estar no código e nos
+testes: o match é substring literal, não um parser de shell,
+então `rm -r -f` não casa `rm -rf`, e isso ficou fixado em
+`denylist_hit_documents_split_flag_bypass`. A limitação do
+"primeiro token" na allowlist também foi registrada como
+pendência nomeada.
+
+**O que não se percebeu é que essa limitação esvaziava a barreira
+inteira.** `is_allowed` validava o primeiro token, mas
+`build_args` entregava o command string **completo** para o
+`cmd.exe /c` — que trata `&`, `&&`, `|` e `||` como separadores.
+Medido dois dias depois pelo caminho real da ferramenta: `ver`
+sozinho é recusado; `echo marcador & ver` executa os dois. E 7
+dos 9 binários da allowlist (`ls`, `cat`, `head`, `tail`,
+`grep`, `wc`, `pwd`) vêm do MSYS2 e morrem sob o rótulo de
+integridade baixa com `STATUS_ACCESS_DENIED`.
+
+Vale reter **por que a etapa passou**: a limitação estava
+documentada, o teste que a fixava existia, e a revisão leu os
+dois. Ninguém rodou `echo marcador & ver`. **Documentar uma
+limitação não é o mesmo que medir o alcance dela** — e nesta
+fase essa distinção já tinha custado caro duas vezes, no wiring
+do proxy e no DNS intercept.
 
 **Achado ao investigar o escopo de aprovação:** o cache de
 aprovação por escopo (`OneTurn`/`OneSession` reusando uma decisão
@@ -204,17 +227,25 @@ continuado a contar com ele.
 
 ## O que fica registrado da fase
 
-- Segurança não se revisa lendo código: **as duas falhas graves
-  destas etapas — a herança silenciosa de ambiente e o DNS que
-  nunca interceptou — passariam por qualquer revisão de
-  diff.** Foram verificação fim-a-fim e privilégio real que as
-  acharam.
+- Segurança não se revisa lendo código: **as três falhas graves
+  destas etapas — a herança silenciosa de ambiente, o DNS que
+  nunca interceptou e a allowlist de shell contornável por um
+  `&` — passariam por qualquer revisão de diff.** Foram
+  verificação fim-a-fim, privilégio real e execução do comando
+  que as acharam.
 - Teste que aceita o resultado esperado por qualquer caminho não
   prova o caminho. Prova do meio antes da prova do fim.
 - Spec descreve intenção até que alguém confira. O `OneTurn` de
   `exec.python` viveu semanas numa spec sem existir no código.
-- Remover é uma entrega. Duas vezes nesta fase (Etapa 5+ e Etapa
-  7) o trabalho certo foi tirar capacidade do produto.
+- **Documentar uma limitação não é medir o alcance dela.** A
+  limitação do "primeiro token" estava escrita, testada e lida
+  em revisão — e ninguém rodou `echo marcador & ver`. Limitação
+  registrada vira limitação aceita, e limitação aceita para de
+  ser investigada.
+- Remover é uma entrega. Três vezes nesta fase (Etapa 5+, o DNS
+  da Etapa 6, e o `exec.shell` da Etapa 7) o trabalho certo foi
+  tirar capacidade do produto — a última delas depois de já ter
+  sido anunciada como concluída.
 
 ## Referências
 
