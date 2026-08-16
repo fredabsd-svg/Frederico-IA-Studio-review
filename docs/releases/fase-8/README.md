@@ -3,7 +3,7 @@
 <!--
 Estado: especificado
 Verificado contra o código em: —
-Fase correspondente: 8 (Etapa 1 fechada; Etapas 2-7 não iniciadas)
+Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapas 2, 3, 4, 5, 6 e 7 não iniciadas)
 -->
 
 Índice das narrativas de processo da **Fase 8** — Git local portátil, GitHub, projetos, marcos e diff viewer. O escopo veio do [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md) §D2, quando a Fase 7 ficou restrita à execução isolada, e foi cortado pelo [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
@@ -16,7 +16,7 @@ Fase correspondente: 8 (Etapa 1 fechada; Etapas 2-7 não iniciadas)
 |---|---|---|
 | **1 — Planejamento** | este README + os 6 ADRs | 6 ADRs (0038-0043) + 3 specs novos + `status.md` + `CHANGELOG.md`. Sem código. |
 | 2 — Noturno verde + credencial | (a ser escrito) | Consertar o `CI Nightly` e prová-lo verde; estender a trilha DPAPI para token de serviço. |
-| 2b — Fechar o §D5 do ADR-0037 | (a ser escrito) | `exec.shell` volta ao catálogo (ou é aposentado por ADR novo) e a Fase 7 volta a `concluída`. Herdada, não escolhida — ver abaixo. |
+| **2b — Fechar o §D5 do ADR-0037** | [etapa-2b-narrativa.md](etapa-2b-narrativa.md) | **Fechada.** `exec.shell` de volta ao catálogo com resolução própria de programa (ADR-0044); Fase 7 reclosada. Herdada, não escolhida — ver abaixo. |
 | 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). |
 | 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. |
 | 5 — `github-engine` | (a ser escrito) | Auth, push, `create_pr`, matriz de autorização. Noturno + twin. |
@@ -38,6 +38,10 @@ A Fase 7 aprendeu a mesma lição duas vezes, do jeito caro: o wiring do proxy e
 Enquanto esta Etapa 1 era escrita, o ADR-0037 (PR #56) mediu o `exec.shell`, provou que a allowlist de comandos era contornável por qualquer separador do `cmd.exe`, tirou a ferramenta do catálogo e **devolveu a Fase 7 a `em andamento`**. O roadmap fixa `8 → 3 + 4 + 6 + 7`, e pular pré-requisito exige ADR — é o §D6 do [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
 
 A resolução, em uma frase: **a Fase 8 abre, absorve a pendência como Etapa 2b, e não fecha antes da Fase 7 fechar.**
+
+**Fechou no mesmo dia** ([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md), narrativa em [etapa-2b-narrativa.md](etapa-2b-narrativa.md)). `exec.shell` voltou ao catálogo com o `cmd.exe` fora do papel de resolvedor, e a Fase 7 voltou a `concluída` — cai a pré-condição 2 de 2. Fica a 1 de 2: o `CI Nightly` verde, que é a Etapa 2.
+
+O item 2 do §D5 do ADR-0037 pedia uma resposta a um fato, e **o fato estava errado**: os comandos da allowlist antiga não morriam por incompatibilidade com o rótulo de integridade baixa; morriam porque o processo filho não recebe `PATH`. Cumprir aquele requisito ao pé da letra teria encolhido a allowlist para `echo` + `find` — e `find` também não funciona. A medição também achou um caminho de fuga que não estava em documento nenhum: o `cmd.exe` procura o programa no diretório corrente antes do `PATH`, e o diretório corrente é o workspace onde o `files.write` escreve.
 
 O que sustenta abrir mesmo assim: nada no escopo desta fase — Git, GitHub, projetos, marcos, diff — toca `exec.shell`; a fundação que ela usa (sandbox, runtimes, file ops, `PermissionSet`, rede) continua entregue e intacta; e a Etapa 1 é planejamento, então não há código sendo construído sobre nada. Esperar não acelera o §D5 do ADR-0037, cujo item 2 pode reabrir o ADR-0031.
 

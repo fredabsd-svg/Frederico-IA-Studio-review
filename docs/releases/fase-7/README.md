@@ -3,7 +3,7 @@
 <!--
 Estado: parcialmente implementado
 Verificado contra o código em: 2026-08-16
-Fase correspondente: 7 (Etapas 1-6+1 fechadas; Etapa 7 reaberta pelo ADR-0037 — fase `em andamento`)
+Fase correspondente: 7 (Etapas 1-7 fechadas; a Etapa 7 foi reaberta pelo ADR-0037 e reclosada pelo ADR-0044 — fase `concluída`)
 -->
 
 Índice das narrativas de processo (descrições de PR, lições de
@@ -13,15 +13,23 @@ e ferramentas de escrita/execução sob isolamento. Git, GitHub,
 diff, projetos e checkpoints migraram para a **Fase 8** pelo
 [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md).
 
-**A fase esteve concluída por dois dias e foi reaberta.** Ela
-fechou em 2026-08-14 (PR #52, `e535b7f`) com 7 etapas — incluindo
-as duas intercaladas que o plano não previa (5+ e 6+1). Em
-2026-08-16 o [ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
+**A fase esteve concluída por dois dias, foi reaberta, e fechou de
+novo.** Ela fechou em 2026-08-14 (PR #52, `e535b7f`) com 7 etapas —
+incluindo as duas intercaladas que o plano não previa (5+ e 6+1).
+Em 2026-08-16 o [ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
 mediu o `exec.shell` e o tirou do catálogo: a allowlist de
 comandos não era uma barreira. Como o critério de "done" da fase
-cita a ferramenta nominalmente, a **Etapa 7 reabre** e a fase
-volta a `em andamento`. Os três requisitos para fechá-la de novo
-estão no §D5 daquele ADR.
+cita a ferramenta nominalmente, a **Etapa 7 reabriu** e a fase
+voltou a `em andamento`.
+
+**Fechou de vez no mesmo dia**, pela Etapa 2b da Fase 8
+([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md),
+narrativa em [`../fase-8/etapa-2b-narrativa.md`](../fase-8/etapa-2b-narrativa.md)):
+os três requisitos do §D5 foram cumpridos e `exec.shell` voltou ao
+catálogo com o `cmd.exe` fora do papel de resolvedor de programa.
+O conserto pertence à Fase 8 porque foi lá que ele foi planejado e
+executado — a Fase 7 recebe o resultado, não o crédito pelo
+percurso.
 
 Este README manteve por dois dias a versão anterior desta
 história, e o registro de que ela existiu fica aqui de propósito.
@@ -115,19 +123,17 @@ hoje:
 
 - **Sandbox de 3 camadas** (Jail + Job Object + Restricted Token + env zeroed), com path safety real depois da Etapa 5+.
 - **Runtimes portáteis** Python 3.12.4 e Node 20.16.0, SHA-256 pinned, sem depender do PATH da máquina.
-- **8 ferramentas** no catálogo: `files.read` / `files.list` / `files.write` / `files.edit`, `docs.generate` / `docs.inspect`, `exec.python` / `exec.node`.
+- **9 ferramentas** no catálogo: `files.read` / `files.list` / `files.write` / `files.edit`, `docs.generate` / `docs.inspect`, `exec.python` / `exec.node` / `exec.shell`.
 - **Rede deny-by-default** para o filho do sandbox, com auditoria append-only em `network_audit` e allowlist vinda do perfil TOML do usuário ∩ projeto.
 
-**O que a fase anunciou e teve de retirar:** `exec.shell` esteve
-no catálogo entre 14 e 16 de agosto. O
-[ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
+**O que a fase anunciou, teve de retirar, e recebeu de volta
+consertado:** `exec.shell` esteve no catálogo entre 14 e 16 de
+agosto. O [ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)
 mediu e removeu: `is_allowed` validava só o primeiro token, mas o
 comando inteiro ia para o `cmd.exe /c`, que trata `&`, `&&`, `|`
 e `||` como separadores — `ver` sozinho era recusado, `echo
-marcador & ver` executava os dois. E 7 dos 9 binários da
-allowlist são MSYS2, que morrem sob o rótulo de integridade baixa
-com `STATUS_ACCESS_DENIED`. A barreira não impedia o que devia
-nem permitia o que prometia.
+marcador & ver` executava os dois. A barreira não impedia o que
+devia impedir.
 
 É a terceira aplicação da regra **capacidade incompleta é
 capacidade indisponível** nesta fase — depois de `exec.python`/
@@ -135,6 +141,17 @@ capacidade indisponível** nesta fase — depois de `exec.python`/
 desta vez, é que a capacidade já tinha sido anunciada como
 concluída, e a fase teve de voltar a `em andamento` por causa
 disso.
+
+A ferramenta voltou pela Etapa 2b da Fase 8
+([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md)),
+com o `cmd.exe` fora do papel de resolvedor. **Uma afirmação desta
+página caiu junto:** a de que 7 dos 9 binários da allowlist antiga
+morriam sob o rótulo de integridade baixa. A medição da Etapa 2b
+mostrou que eles nem chegavam a ser encontrados — o filho não
+recebe `PATH` —, e que binários MSYS2 rodam sob o sandbox sem
+problema. O texto acima foi corrigido; o registro de que a
+afirmação existiu fica aqui, pela mesma razão que o resto desta
+página existe.
 
 **As lacunas ficam nomeadas, não escondidas** — todas em
 `SECURITY.md` e no `security-threat-model.md`, e todas repetidas
@@ -174,6 +191,7 @@ saiu inteiro em vez de virar nota de rodapé.
 - 2026-08-08 — Etapa 2 (primitivas do sandbox) fechada (PR #42, `930c098`). 4 primitivas Rust em `crates/security/src/`. Documentação inline em `status.md` §7.
 - 2026-08-08 — Etapa 3 (runtimes embutidos) fechada (PR #43, `da9e98f2`). Novo crate `frederico-runtimes` com Python 3.12.4 + Node 20.16.0 portáteis, SHA-256 pinned, 5 testes de regressão. Documentação inline em `status.md` §7.
 - 2026-08-10 — Etapa 4 (`exec.python` / `exec.node` no registro) fechada em PR #44 (CI run final verde `#31384435313` 9m2s após 5 falhas consecutivas). **Achado crítico:** o `SecurityJailResolver` v1 (Job + Token + EnvFilter) **NÃO tem path safety enforcement** — o test `child_cannot_write_outside_workspace` (I3) provou que python escapa via `open('..\\evil.txt')` relativo ao workdir. Box::leak + .zip copy + `can_run_python` foram os fixes certos pra fazer o python rodar de verdade; o test catching a falha de path safety é exatamente o que teste de negação existe pra fazer. 3 testes `#[ignore]` serão reabertos na Etapa 5+ quando o sandbox ganhar AppContainer ou ACLs no Restricted Token. Saga completa do CI flake (5 erros distintos: `doc_lazy_continuation`, `build_default_tools` 1-arg duplicate, regex Python quebrando `//` + backticks, unused vars, os error 3 com 5 tentativas de fix) documentada no `status.md` §7 e na narrativa de Etapa 4.
+- 2026-08-16 — **Etapa 7 reclosada; a fase volta a `concluída`** ([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md), Etapa 2b da Fase 8). `exec.shell` voltou ao catálogo com resolução própria de programa: o `cmd.exe` não escolhe mais o binário, metacaracteres são recusados antes do spawn, e a allowlist virou uma lista fechada de 11 programas medidos. **Duas afirmações desta página foram corrigidas junto**, e a correção veio de medir, não de reler: os binários da allowlist antiga não morriam por integridade baixa (o filho não tem `PATH`, então nenhum era encontrado — nem `find`, que o ADR-0037 contava como sobrevivente), e binários MSYS2 rodam sob o sandbox. Achado novo, que não estava em documento nenhum: o `cmd.exe` procura o programa no diretório corrente antes do `PATH`, e o diretório corrente é o workspace onde o `files.write` escreve — plantar um arquivo lá executava esse arquivo.
 - 2026-08-16 — **Etapa 7 reaberta; a fase volta a `em andamento`** ([ADR-0037](../../decisions/0037-exec-shell-fora-do-catalogo.md)). `exec.shell` saiu do catálogo depois de medido: a allowlist era contornável por qualquer separador do `cmd.exe`, e 7 dos 9 binários que ela permitia não rodam sob integridade baixa. Este README e a narrativa das Etapas 6/7 tinham sido escritos horas antes descrevendo a fase como concluída com 9 ferramentas; foram corrigidos no mesmo PR. **Lição do episódio:** o `README.md` da raiz vinha dizendo desde o PR #54 que a ferramenta fora descartada, contra todos os outros documentos — e estava certo. Uma revisão de código conferiu o catálogo, viu `exec.shell` registrado e "corrigiu" o README de volta. Conferir contra o código não bastou, porque o código era a coisa em disputa; só a medição do comportamento resolveu.
 - 2026-08-16 — **Fechamento documental da fase.** Este README estava afirmando "Etapas 1-5 fechadas; Etapa 6 não iniciada" dois dias depois de a fase ter fechado, e a tabela de etapas ainda descrevia o plano (`exec.shell` na 6, rede na 7) em vez do que foi entregue (rede na 6, `exec.shell` na 7). Corrigido: cabeçalho, as duas tabelas, a numeração real com as etapas 5+ e 6+1 que o plano não previa, seção nova "O que a fase entregou — e o que ela deixou aberto" com as 7 lacunas nomeadas, e a narrativa das Etapas 6/7. Registrada também a pendência do CI noturno (abaixo). **Achado do fechamento:** o `CI Nightly` nunca ficou verde — 12 falhas consecutivas desde 2026-08-05, todas por `OPENROUTER_API_KEY` ausente no repositório. A cobertura noturna que o ADR-0026 §D2 e o ADR-0019 tratam como "mais fraca por natureza" era, na prática, **inexistente**; o passo de `check-core-purity` que vem depois dela nunca chegou a rodar no noturno.
 - 2026-08-14 — **Etapa 7 fechada (PR #52, `e535b7f`) — fase concluída.** `exec.shell` com denylist + allowlist sempre ativas (`risk_level: Critical`) + `PermissionSet.network_allowlist` carregado do perfil TOML usuário ∩ projeto, substituindo o `NetworkAllowlist::new()` hardcoded vazio. No mesmo dia: 2 das 3 pendências de rede fechadas (feature flag `FREDERICO_NETWORK_PROXY_V1` removida; bug de fail-open do `PermissionSet.network` corrigido) e **a 3ª descartada** — o DNS intercept foi wireado, testado com privilégio elevado real, provado não-funcional e removido por inteiro. Detalhe na [narrativa das Etapas 6/7](./etapa-6-7-narrativa.md).

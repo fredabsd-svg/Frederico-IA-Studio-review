@@ -1,5 +1,7 @@
 # 0037 — `exec.shell` sai do catálogo: a allowlist de comandos não é uma barreira
 
+> **Substituído parcialmente pelo [ADR-0044](0044-exec-shell-com-resolucao-propria-de-programa.md)** (2026-08-16). Os três requisitos do §D5 foram cumpridos na Etapa 2b da Fase 8, então `exec.shell` voltou ao catálogo (§D1 revertido) e a Fase 7 voltou a `concluída` (§D3 revertido). O diagnóstico deste ADR — a allowlist da v1 não era barreira — continua valendo integralmente, e é ele que justifica o desenho novo. **A premissa do §D5 item 2 foi revista:** a medição da Etapa 2b mostrou que os binários da allowlist não falhavam por incompatibilidade com o rótulo de integridade baixa, e sim porque o filho não tem `PATH` — inclusive `find`, que este ADR contava como sobrevivente. Binários MSYS2 rodam sob o sandbox. Ver o §Contexto do ADR-0044.
+
 ## Contexto
 
 A Etapa 7 da Fase 7 (PR #52, 2026-08-14) entregou `exec.shell` e, com ela, promoveu a Fase 7 a `concluída`. A ferramenta executa `cmd.exe /c "<command>"` sob o sandbox (Job Object + Restricted Token + env filtrado + proxy de rede) e se defende, além disso, com duas listas de comandos em `frederico_security::exec_patterns`:
