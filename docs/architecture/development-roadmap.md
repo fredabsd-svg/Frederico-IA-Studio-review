@@ -31,11 +31,11 @@ A tabela de estado vivo está em [`docs/status.md`](../status.md). Este roadmap 
 - **Fase 8 herda a dependência da Fase 7** (sem sandbox da Fase 7, o `exec.shell` da Fase 8 é inseguro). Pré-requisito atualizado: `8 → 3 + 4 + 6 + 7`.
 - **Fase 7 ganha E2E de noturno** (`pip install`, `npm install` rodam contra a rede real): twin determinístico no PR + `#[ignore]` noturno, regra D2 do ADR-0026.
 
-**Alterado em relação ao plano (2026-08-16, Etapa 1 da Fase 8, [ADR-0038](../decisions/0038-fase-8-escopo-e-etapas.md)):**
+**Alterado em relação ao plano (2026-08-16, Etapa 1 da Fase 8, [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md)):**
 
 - **Copiloto (Nino) e tarefas saem da Fase 8.** É uma terceira natureza — produto e interação —, com critério de aceite qualitativo (`PROMPT MESTRE` §24.1) que não fecha por teste. Colá-lo a uma fase que já tem primitiva local e integração externa autenticada é o padrão que o ADR-0032 desmontou. Vira item próprio abaixo.
 - **"PR criado pelo app" ganha pré-condição**: o `CI Nightly` precisa de um run verde citável antes da promoção da fase. Em 2026-08-16 ele acumulava 12 falhas consecutivas desde 2026-08-05 por secret ausente — a cobertura noturna era inexistente, com aparência de cobertura.
-- **Checkpoints viram "marcos de projeto"** ([ADR-0041](../decisions/0041-projetos-e-checkpoints-nomeados.md)): o `CheckpointRepo` que o ADR-0032 §D2 mandava estender nunca foi escrito, e o checkpoint de run da migração `0003` tem semântica diferente (morre com o run).
+- **Checkpoints viram "marcos de projeto"** ([ADR-0042](../decisions/0042-projetos-e-checkpoints-nomeados.md)): o `CheckpointRepo` que o ADR-0032 §D2 mandava estender nunca foi escrito, e o checkpoint de run da migração `0003` tem semântica diferente (morre com o run).
 
 ## Itens com fase própria a definir
 
@@ -43,9 +43,9 @@ Trabalho reconhecido, com dono documental, sem fase atribuída — para que nenh
 
 | Item | Origem | Por que não tem fase ainda |
 |---|---|---|
-| **Copiloto (Nino) e tarefas** | `PROMPT MESTRE` §24.1; tirado da Fase 8 pelo ADR-0038 §D1 | Critério de aceite qualitativo; precisa de um ADR que o torne verificável antes de virar fase |
+| **Copiloto (Nino) e tarefas** | `PROMPT MESTRE` §24.1; tirado da Fase 8 pelo ADR-0039 §D1 | Critério de aceite qualitativo; precisa de um ADR que o torne verificável antes de virar fase |
 | **Filtro de rede no nível de processo (WFP/WDAC)** | Fase 7 — fecharia DNS exfiltration e o bypass por socket raw | Natureza de kernel/política do Windows; exige ADR próprio |
-| **OAuth device flow para GitHub** | ADR-0040, alternativa 1 | Exige registrar um GitHub App e manter `client_id` do produto — decisão de produto, não de engenharia |
+| **OAuth device flow para GitHub** | ADR-0041, alternativa 1 | Exige registrar um GitHub App e manter `client_id` do produto — decisão de produto, não de engenharia |
 | **Retomada de run a partir de checkpoint** | Tabela `checkpoints` (migração `0003`) sem dono em código | Nada a consome hoje; construir por simetria seria mais estrutura sem dono |
 
 ## Pré-requisitos entre fases

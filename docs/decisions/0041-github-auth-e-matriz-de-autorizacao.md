@@ -1,8 +1,8 @@
-# 0040 — GitHub: token no DPAPI, matriz de autorização e operações irreversíveis
+# 0041 — GitHub: token no DPAPI, matriz de autorização e operações irreversíveis
 
 ## Contexto
 
-A Fase 8 (ADR-0038 §D1) entrega `push` e criação de PR pelo app. É a primeira vez que o produto executa uma **operação destrutiva em serviço externo autenticado** por conta do agente. Todas as anteriores eram locais: escrita de arquivo sob Jail, execução sob sandbox, rede sob proxy com allowlist.
+A Fase 8 (ADR-0039 §D1) entrega `push` e criação de PR pelo app. É a primeira vez que o produto executa uma **operação destrutiva em serviço externo autenticado** por conta do agente. Todas as anteriores eram locais: escrita de arquivo sob Jail, execução sob sandbox, rede sob proxy com allowlist.
 
 A diferença importa. Um `files.write` errado tem backup `.bak` e hashes no audit (ADR-0035). Um `git push --force` errado altera o repositório de outras pessoas, e não há `.bak` do GitHub. Um PR criado por engano notifica revisores e fica no histórico mesmo se fechado.
 
@@ -40,13 +40,13 @@ Quem precisa de force-push tem `exec.shell`, com o comando à vista, denylist e 
 
 `push` e `create_pr` exigem aprovação por invocação (`OneExecution`), e o pedido mostra **repositório, branch e contagem de commits** — não "o agente quer usar o GitHub". O ADR-0034 já estabeleceu que o pedido carrega o comando exato; aqui o equivalente é o alvo exato.
 
-**Nota de realidade** herdada da Fase 7 Etapa 7: o cache de aprovação por escopo não existe em código, então toda tool com `requires_user_approval` já pede aprovação a cada invocação. `OneExecution` é o comportamento real de hoje sem código adicional — e o ADR-0038 §D4 registra a construção do cache como trabalho da Etapa 7, momento em que esta garantia precisará de código próprio para **não** ser afrouxada junto.
+**Nota de realidade** herdada da Fase 7 Etapa 7: o cache de aprovação por escopo não existe em código, então toda tool com `requires_user_approval` já pede aprovação a cada invocação. `OneExecution` é o comportamento real de hoje sem código adicional — e o ADR-0039 §D4 registra a construção do cache como trabalho da Etapa 7, momento em que esta garantia precisará de código próprio para **não** ser afrouxada junto.
 
 ### D5 — E2E é noturno, com twin determinístico obrigatório
 
 Criar PR de verdade exige rede, secret e serviço externo: `#[ignore]`, noturno, conforme REGRA §3.3. O twin determinístico roda em todo PR contra um servidor HTTP local que fala o subconjunto usado da API — provando o caminho de produção do `github-engine` sem tocar o GitHub.
 
-O twin não é opcional nem "quando der": a REGRA §3.3 impede promover fase sem ele, e o ADR-0038 §D2 acrescenta que o noturno precisa de um run verde citável antes de a fase fechar.
+O twin não é opcional nem "quando der": a REGRA §3.3 impede promover fase sem ele, e o ADR-0039 §D2 acrescenta que o noturno precisa de um run verde citável antes de a fase fechar.
 
 ## Alternativas descartadas
 
@@ -61,7 +61,7 @@ O twin não é opcional nem "quando der": a REGRA §3.3 impede promover fase sem
 - **Fica mais fácil:** auditar. Cada operação tem repositório, branch e decisão de autorização registrados, no mesmo espírito do `network_audit` da Fase 7.
 - **Fica mais difícil:** usar o app como cliente de Git completo. Rebase interativo, force-push e reescrita de histórico ficam fora — deliberadamente.
 - **Custo de configuração:** sem repositório na matriz, nada funciona. É fail-closed, e a UI precisa dizer isso com clareza, senão o usuário lê como bug. Risco real, registrado como item de UI da Etapa 6.
-- **Dependência de secret no CI** para o noturno, que o ADR-0038 §D2 transformou em pré-condição de fechamento da fase.
+- **Dependência de secret no CI** para o noturno, que o ADR-0039 §D2 transformou em pré-condição de fechamento da fase.
 
 ## Histórico de revisão
 

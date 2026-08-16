@@ -6,9 +6,9 @@ Fase correspondente: 8
 
 # Integração com GitHub (`github-engine`)
 
-**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/github-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0037](../decisions/0037-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
+**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/github-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0038](../decisions/0038-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
 
-Decisão que governa este spec: [ADR-0040](../decisions/0040-github-auth-e-matriz-de-autorizacao.md).
+Decisão que governa este spec: [ADR-0041](../decisions/0041-github-auth-e-matriz-de-autorizacao.md).
 
 ## Por que este módulo é diferente de todos os anteriores
 
@@ -18,7 +18,7 @@ Aqui não há desfazer. Um `push` errado altera o repositório de outras pessoas
 
 ## O que este módulo NÃO faz
 
-- **Não faz force-push.** Não é opção com aprovação reforçada — é **ausência de API** (ADR-0040 §D3). Quem precisa tem `exec.shell`, com o comando à vista, denylist e aprovação.
+- **Não faz force-push.** Não é opção com aprovação reforçada — é **ausência de API** (ADR-0041 §D3). Quem precisa tem `exec.shell`, com o comando à vista, denylist e aprovação.
 - **Não apaga branch, não fecha issue, não faz merge.** A superfície é `read`, `push`, `create_pr`.
 - **Não guarda token em arquivo nem em variável de ambiente.** Só Windows Credential Manager.
 - **Não assume repositório.** Sem entrada na matriz de autorização, nada funciona — fail-closed.
@@ -31,7 +31,7 @@ Aqui não há desfazer. Um `push` errado altera o repositório de outras pessoas
 
 ## Matriz de autorização
 
-Permissão de GitHub não é booleano (ADR-0040 §D2). `PermissionSet` ganha eixo estruturado:
+Permissão de GitHub não é booleano (ADR-0041 §D2). `PermissionSet` ganha eixo estruturado:
 
 | Dimensão | Forma | Vazio significa |
 |---|---|---|
@@ -62,10 +62,10 @@ O E2E que cria PR de verdade precisa de rede, secret e serviço externo: `#[igno
 | `github_rejects_repo_outside_matrix` | todo PR | **Negação** — repositório fora da matriz é recusado |
 | `github_has_no_force_push_api` | todo PR | **Negação** — a API não expõe force; falha se alguém a acrescentar |
 
-**Pré-condição de fechamento da fase (ADR-0038 §D2):** o `CI Nightly` precisa de ao menos um run verde citado no `status.md`. Em 2026-08-16 ele acumulava 12 falhas consecutivas desde 2026-08-05, todas por secret ausente — a cobertura noturna que o [ADR-0026](../decisions/0026-e2e-coverage-gate.md) §D2 classifica como "mais fraca por natureza" era, na prática, inexistente. Um E2E noturno num pipeline que nunca completa não é cobertura fraca: é cobertura nenhuma com aparência de cobertura.
+**Pré-condição de fechamento da fase (ADR-0039 §D2):** o `CI Nightly` precisa de ao menos um run verde citado no `status.md`. Em 2026-08-16 ele acumulava 12 falhas consecutivas desde 2026-08-05, todas por secret ausente — a cobertura noturna que o [ADR-0026](../decisions/0026-e2e-coverage-gate.md) §D2 classifica como "mais fraca por natureza" era, na prática, inexistente. Um E2E noturno num pipeline que nunca completa não é cobertura fraca: é cobertura nenhuma com aparência de cobertura.
 
 ## Referências
 
-- [ADR-0040](../decisions/0040-github-auth-e-matriz-de-autorizacao.md), [ADR-0038](../decisions/0038-fase-8-escopo-e-etapas.md), [ADR-0026](../decisions/0026-e2e-coverage-gate.md)
+- [ADR-0041](../decisions/0041-github-auth-e-matriz-de-autorizacao.md), [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md), [ADR-0026](../decisions/0026-e2e-coverage-gate.md)
 - [`tool-permission-model.md`](./tool-permission-model.md) — eixos do `PermissionSet`
 - [`git-integration-architecture.md`](./git-integration-architecture.md) — a metade local

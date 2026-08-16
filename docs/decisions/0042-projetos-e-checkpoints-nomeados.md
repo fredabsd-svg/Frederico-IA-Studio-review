@@ -1,4 +1,4 @@
-# 0041 — Projetos e checkpoints: construir, não estender
+# 0042 — Projetos e checkpoints: construir, não estender
 
 ## Contexto
 
@@ -23,13 +23,13 @@ Nomes distintos porque a confusão já custou um ADR. Chamar os dois de "checkpo
 
 ### D2 — Marco de projeto é commit no `git-engine`, não cópia de arquivos
 
-Um marco é uma referência Git criada pelo `git-engine` (ADR-0039) no repositório do workspace, mais uma linha de metadados no banco (nome humano, descrição, quando, qual conversa originou).
+Um marco é uma referência Git criada pelo `git-engine` (ADR-0040) no repositório do workspace, mais uma linha de metadados no banco (nome humano, descrição, quando, qual conversa originou).
 
 Rejeitada a alternativa óbvia — copiar a árvore de arquivos para uma pasta de backup — porque duplica dados do usuário, não escala com o tamanho do workspace, e reimplementa mal o que o Git faz bem. O custo é a dependência: **marco exige o workspace sob Git**, e um workspace sem repositório não tem marcos. É limitação declarada, e a UI diz isso em vez de oferecer um botão que falha.
 
 ### D3 — Restaurar é operação destrutiva, com aprovação e sem `--force`
 
-Restaurar um marco descarta trabalho não salvo. Portanto: aprovação por invocação (ADR-0034), pedido mostrando **nome do marco, data e contagem de arquivos afetados**, e — pela mesma regra do ADR-0040 §D3 — nenhuma API que descarte mudanças sem checkpoint automático anterior.
+Restaurar um marco descarta trabalho não salvo. Portanto: aprovação por invocação (ADR-0034), pedido mostrando **nome do marco, data e contagem de arquivos afetados**, e — pela mesma regra do ADR-0041 §D3 — nenhuma API que descarte mudanças sem checkpoint automático anterior.
 
 ### D4 — Projeto é o workspace com metadados, não uma entidade nova
 

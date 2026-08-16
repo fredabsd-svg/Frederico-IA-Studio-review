@@ -1,8 +1,8 @@
-# 0039 — `git-engine`: biblioteca embutida, nunca o `git` do PATH
+# 0040 — `git-engine`: biblioteca embutida, nunca o `git` do PATH
 
 ## Contexto
 
-A Fase 8 (ADR-0038 §D1) entrega Git local: status, diff, log, branch e commit sobre o workspace da conversa. Três caminhos existem, e a escolha define o que dá para prometer honestamente.
+A Fase 8 (ADR-0039 §D1) entrega Git local: status, diff, log, branch e commit sobre o workspace da conversa. Três caminhos existem, e a escolha define o que dá para prometer honestamente.
 
 O contexto do projeto restringe mais do que o de um app genérico:
 
@@ -30,7 +30,7 @@ Este ADR **não** crava a biblioteca. Ele crava os critérios e o método, porqu
 | Critério | Peso | Por quê |
 |---|---|---|
 | Sem toolchain C no build | alto | `git2` liga `libgit2-sys`, que compila C. `gix` é Rust puro. Um build que quebra no MinGW é custo recorrente. |
-| Cobertura das operações do §D1 do ADR-0038 | alto | Ler (status, diff, log) é diferente de escrever (commit, branch). Escrita é onde as implementações divergem em maturidade. |
+| Cobertura das operações do §D1 do ADR-0039 | alto | Ler (status, diff, log) é diferente de escrever (commit, branch). Escrita é onde as implementações divergem em maturidade. |
 | `unsafe` na árvore de dependências | médio | O crate é do núcleo; `forbid` vale para o nosso código, mas a dependência entra no binário. |
 | Superfície de API estável | médio | Trocar de biblioteca depois custa o crate inteiro. |
 
@@ -44,7 +44,7 @@ O crate não conhece o sistema de arquivos além do caminho que recebe. Toda ope
 
 ### D4 — Escrita exige aprovação; leitura não
 
-Alinhado ao ADR-0034: `git.status`, `git.diff`, `git.log` são leitura, sem aprovação. `git.commit`, `git.branch` alteram estado e exigem aprovação por invocação. `git.push` não pertence a este crate — é GitHub, ADR-0040.
+Alinhado ao ADR-0034: `git.status`, `git.diff`, `git.log` são leitura, sem aprovação. `git.commit`, `git.branch` alteram estado e exigem aprovação por invocação. `git.push` não pertence a este crate — é GitHub, ADR-0041.
 
 ## Alternativas descartadas
 

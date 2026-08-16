@@ -1,4 +1,4 @@
-# 0037 — A Etapa 1 (planejamento) não dispara a trava do §1.13
+# 0038 — A Etapa 1 (planejamento) não dispara a trava do §1.13
 
 ## Contexto
 

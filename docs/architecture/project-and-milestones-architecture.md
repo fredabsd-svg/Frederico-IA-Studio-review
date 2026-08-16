@@ -6,15 +6,15 @@ Fase correspondente: 8
 
 # Projetos e marcos (`project-engine`)
 
-**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/project-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0037](../decisions/0037-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
+**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/project-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0038](../decisions/0038-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
 
-Decisão que governa este spec: [ADR-0041](../decisions/0041-projetos-e-checkpoints-nomeados.md).
+Decisão que governa este spec: [ADR-0042](../decisions/0042-projetos-e-checkpoints-nomeados.md).
 
 ## Duas coisas com o mesmo nome
 
 O [ADR-0032](../decisions/0032-fase-7-scope-reduction.md) §D2 planejou os checkpoints da Fase 8 como "extensão do `CheckpointRepo` da Fase 3". A varredura de 2026-08-16 mostrou que **o `CheckpointRepo` não existe**: `grep -rn "CheckpointRepo" --include=*.rs` não retorna nada, e nenhum arquivo Rust lê ou escreve a tabela `checkpoints`. O que existe é a tabela, criada pela migração `0003_runs_and_checkpoints.sql`, com `run_id` e `ON DELETE CASCADE`.
 
-Daí a separação de nomes do ADR-0041 §D1:
+Daí a separação de nomes do ADR-0042 §D1:
 
 | | **Checkpoint de run** | **Marco de projeto** |
 |---|---|---|
@@ -37,7 +37,7 @@ Abrir projeto **não amplia o alcance do agente**: a resolução continua passan
 
 Uma referência Git criada pelo [`git-engine`](./git-integration-architecture.md) no repositório do workspace, mais uma linha de metadados no banco: nome humano, descrição, quando, e qual conversa o originou.
 
-**Não é cópia de árvore de arquivos** (ADR-0041 §D2). Copiar duplicaria dados do usuário, não escalaria com o tamanho do workspace e reimplementaria mal o que o Git faz bem.
+**Não é cópia de árvore de arquivos** (ADR-0042 §D2). Copiar duplicaria dados do usuário, não escalaria com o tamanho do workspace e reimplementaria mal o que o Git faz bem.
 
 O custo é uma dependência declarada: **marco exige workspace sob Git**. Workspace sem repositório não tem marcos, e a UI diz isso — em vez de oferecer um botão que falha.
 
@@ -45,7 +45,7 @@ A vantagem é verificabilidade: "marco é um commit com nome" é conferível pel
 
 ## Restaurar é destrutivo
 
-Restaurar descarta trabalho não salvo. Portanto (ADR-0041 §D3): aprovação por invocação, com **nome do marco, data e contagem de arquivos afetados** no pedido; e nenhuma API que descarte mudanças sem marco automático anterior — mesma regra do force-push do [ADR-0040](../decisions/0040-github-auth-e-matriz-de-autorizacao.md) §D3.
+Restaurar descarta trabalho não salvo. Portanto (ADR-0042 §D3): aprovação por invocação, com **nome do marco, data e contagem de arquivos afetados** no pedido; e nenhuma API que descarte mudanças sem marco automático anterior — mesma regra do force-push do [ADR-0041](../decisions/0041-github-auth-e-matriz-de-autorizacao.md) §D3.
 
 ## Testes previstos
 
@@ -58,6 +58,6 @@ Restaurar descarta trabalho não salvo. Portanto (ADR-0041 §D3): aprovação po
 
 ## Referências
 
-- [ADR-0041](../decisions/0041-projetos-e-checkpoints-nomeados.md), [ADR-0038](../decisions/0038-fase-8-escopo-e-etapas.md)
+- [ADR-0042](../decisions/0042-projetos-e-checkpoints-nomeados.md), [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md)
 - [`git-integration-architecture.md`](./git-integration-architecture.md)
 - [`agent-state-machine.md`](./agent-state-machine.md) — onde o checkpoint de run se encaixaria

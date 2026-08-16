@@ -1,4 +1,4 @@
-# 0038 — Escopo e etapas da Fase 8 (Modo Desenvolvedor integrado)
+# 0039 — Escopo e etapas da Fase 8 (Modo Desenvolvedor integrado)
 
 ## Contexto
 
@@ -41,13 +41,14 @@ Não é burocracia acrescentada: é a REGRA §2.2 aplicada ao workflow que a fas
 
 | Etapa | Foco | Bloqueia |
 |---|---|---|
-| **1 — Planejamento** | Este ADR + 0037 + 0039-0042, specs novos, `releases/fase-8/README.md`, `status.md`, `CHANGELOG.md`. Sem código. | — |
+| **1 — Planejamento** | Este ADR + 0038 + 0040-0043, specs novos, `releases/fase-8/README.md`, `status.md`, `CHANGELOG.md`. Sem código. | — |
 | **2 — Noturno verde + fundação de credencial** | Consertar o `CI Nightly` (secret ausente) e provar verde. Estender a trilha DPAPI para token de serviço. | Etapa 5 |
+| **2b — Fechar o §D5 do ADR-0037 e reclosar a Fase 7** | `exec.shell` volta ao catálogo (ou é aposentado por ADR novo), e a Fase 7 volta a `concluída`. Ver §D6. | Promoção da Fase 8 |
 | **3 — `git-engine`** | Crate novo, puro, `unsafe_code = "forbid"`. Status, diff, log, branch, commit sobre repositório local. | Etapa 4, 6 |
 | **4 — Projetos e checkpoints** | `crates/project-engine/` + checkpoints nomeados sobre o `CheckpointRepo` existente. | — |
 | **5 — `github-engine`** | Auth, push, `create_pr`, matriz de autorização. E2E noturno + twin determinístico. | — |
 | **6 — Diff viewer + UI de projeto** | Frontend consumindo `git-engine` e `project-engine`. | — |
-| **7 — Fechamento** | Pendências herdadas da Fase 7 (D4), catálogo dinâmico (ADR-0042), promoção da fase. | — |
+| **7 — Fechamento** | Pendências herdadas da Fase 7 (D4), catálogo dinâmico (ADR-0043), promoção da fase. | — |
 
 Cada etapa da 3 em diante entrega **pelo menos um teste de negação** — o que a ferramenta recusa, não só o que ela faz. Regra herdada da Fase 7, que a validou: foi um teste de negação que expôs o escape de path do sandbox na Etapa 4 daquela fase.
 
@@ -61,13 +62,29 @@ Três pendências da Fase 7 apontam explicitamente para a Fase 8 e são adotadas
 
 ### D5 — Catálogo de modelos dinâmico entra como decisão da fase, não como implementação dela
 
-A revisão de 2026-08-16 confirmou que o catálogo é estático por decisão (ADR-0006), não por esquecimento: 13 modelos embutidos no binário, zero HTTP no crate, `/models` inexistente no código. O ADR-0042 revisita essa decisão. A implementação fica na Etapa 7, e o ADR-0042 é quem diz se ela acontece — porque a decisão precede o código (§1.6).
+A revisão de 2026-08-16 confirmou que o catálogo é estático por decisão (ADR-0006), não por esquecimento: 13 modelos embutidos no binário, zero HTTP no crate, `/models` inexistente no código. O ADR-0043 revisita essa decisão. A implementação fica na Etapa 7, e o ADR-0043 é quem diz se ela acontece — porque a decisão precede o código (§1.6).
+
+### D6 — A Fase 8 abre com a Fase 7 reaberta, e o pré-requisito é resolvido dentro dela
+
+Enquanto esta Etapa 1 era escrita, o ADR-0037 (`docs/decisions/0037-exec-shell-fora-do-catalogo.md`, PR #56) tirou `exec.shell` do catálogo e **devolveu a Fase 7 a `em andamento`**. O `development-roadmap.md` fixa `8 → 3 + 4 + 6 + 7` e diz que pular pré-requisito exige ADR. Este é o ADR.
+
+**O que a Fase 8 não pode fazer:** ignorar a pendência e seguir. Seria a régua sendo movida por conveniência, que é exatamente o que o ADR-0037 §"Alternativas" 3 rejeitou.
+
+**O que ela faz:** absorve a pendência como etapa própria (2b, acima) — que é o que o próprio ADR-0037 sugere em §Consequências ("é razoável que D5 seja retomada como etapa dela"). A Fase 8 **não é promovida a `concluída`** enquanto a Fase 7 não voltar a `concluída`.
+
+A justificativa para abrir mesmo assim, em vez de esperar:
+
+1. **A pendência não bloqueia o trabalho desta fase.** Git, GitHub, projetos, marcos e diff não dependem de `exec.shell` em nenhum ponto. O pré-requisito existe para impedir construir sobre fundação inexistente — e a fundação que a Fase 8 usa (sandbox, runtimes, file ops, `PermissionSet`, rede) está entregue e não foi tocada pelo ADR-0037.
+2. **A Etapa 1 é planejamento.** Não há código a construir sobre nada. O custo de estar errado aqui é reescrever documento, não desfazer implementação.
+3. **Esperar não acelera o §D5.** O item 2 dele — a incompatibilidade dos binários MSYS2 com o rótulo de integridade baixa — pode reabrir o ADR-0031, e é trabalho de dias ou semanas. Congelar todo o Modo Desenvolvedor até lá troca uma pendência nomeada por uma fase parada.
+
+**A trava permanece explícita e mecânica:** a promoção da Fase 8 tem agora duas pré-condições registradas — um run verde citável do `CI Nightly` (§D2) e a Fase 7 de volta a `concluída` (este §D6). As duas ficam na coluna "Pendências" da Fase 8 no `status.md`.
 
 ## Alternativas descartadas
 
 1. **Manter o copiloto (Nino) na Fase 8**, como o ADR-0032 §D2 previa. Rejeitado: acrescenta uma natureza (produto/interação) a uma fase que já tem duas (primitiva local e integração externa autenticada), com critério de aceite que não fecha por teste. É o padrão que o ADR-0032 desmontou, reintroduzido.
 2. **Começar pelo `git-engine`**, deixando o CI noturno para o fim. Rejeitado: o critério de done da fase depende do noturno, e descobrir na Etapa 7 que ele não funciona é descobrir tarde. A Fase 7 aprendeu isso duas vezes — o wiring do proxy e o DNS intercept passaram por prontos até serem exercitados de verdade.
-3. **Usar `git` do PATH em vez de embutir** — mais simples, sem crate novo. Rejeitado pelo mesmo princípio dos runtimes portáteis da Fase 7 (ADR-0031): depender do ambiente da máquina do usuário torna o comportamento não reprodutível e o erro indiagnosticável. Detalhe no ADR-0039.
+3. **Usar `git` do PATH em vez de embutir** — mais simples, sem crate novo. Rejeitado pelo mesmo princípio dos runtimes portáteis da Fase 7 (ADR-0031): depender do ambiente da máquina do usuário torna o comportamento não reprodutível e o erro indiagnosticável. Detalhe no ADR-0040.
 4. **Fase 8 só com Git local, GitHub em fase separada.** Rejeitado por fragmentação: Git local sem push é metade de uma ferramenta, e o ADR-0032 já rejeitou o mesmo tipo de corte (alternativa 4 daquele ADR). As duas partilham a mesma lente de revisão — integração com sistema de versionamento.
 
 ## Consequências

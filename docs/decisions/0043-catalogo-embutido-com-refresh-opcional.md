@@ -1,4 +1,4 @@
-# 0042 — Catálogo embutido como base, com refresh opcional do provedor
+# 0043 — Catálogo embutido como base, com refresh opcional do provedor
 
 > **Substitui parcialmente o [ADR-0006](0006-model-catalog-crate.md)** — mantém o catálogo embutido e a estrutura do `ModelDescriptor`; revisa a decisão de que o catálogo é *exclusivamente* embutido.
 
@@ -59,7 +59,7 @@ O ADR-0006 rejeitou rede citando "fronteira de confiança nova". A objeção era
 - **Fica mais fácil:** usar modelo novo. Deixa de exigir release do produto.
 - **Fica mais difícil:** garantir que todo modelo listado funciona. Modelo vindo de refresh pode faltar campo ou não suportar tool calling; a marca de origem do §D4 é o que impede a UI de prometer no lugar do provedor.
 - **Superfície nova:** resposta de provedor externo passa a alimentar dado que o motor consome. Tratada como entrada não confiável, com o mesmo schema do embutido.
-- **Migração e op nova de IPC** — implementação na Etapa 7 da Fase 8 (ADR-0038 §D5).
+- **Migração e op nova de IPC** — implementação na Etapa 7 da Fase 8 (ADR-0039 §D5).
 - **O ADR-0006 recebe o carimbo de substituído parcialmente**, e continua valendo no que este não toca (estrutura do `ModelDescriptor`, `build.rs`, `catalog_hash`).
 
 ## Histórico de revisão
