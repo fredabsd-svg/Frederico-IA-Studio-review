@@ -1,38 +1,104 @@
+import { useEffect, useState } from "react";
+import { getAppVersion } from "../services";
+import { FASES } from "../generated/phase-status";
+
+/**
+ * Tela `/sobre`.
+ *
+ * **Nada aqui é escrito à mão sobre o estado do produto.** Duas
+ * regras moldam este arquivo:
+ *
+ * 1. **Versão** — vem de `getAppVersion()`, que lê o binário em
+ *    runtime. A fonte única é `tauri.conf.json`. O
+ *    `check-docs.mjs` falha se um literal de versão aparecer no
+ *    código do frontend (REGRAS §1.9).
+ * 2. **Estado das fases** — vem de `generated/phase-status.ts`,
+ *    derivado do `docs/status.md` pelo
+ *    `scripts/generate-phase-status.mjs`. O CI falha se o
+ *    gerado divergir da fonte (§1.10).
+ *
+ * A versão anterior desta tela mantinha as duas coisas à mão, e
+ * as duas apodreceram: anunciava a versão errada e uma fase em
+ * andamento que já tinha fechado havia cinco fases, listava tool
+ * calls, memória e documentos como "não funciona ainda" com as
+ * três fases concluídas, e chamava a `WindowsCredentialStore` de
+ * stub depois de o DPAPI real ter entrado. Uma tela que promete o
+ * que o código não faz é o defeito que a §1.1 existe para
+ * prevenir — e esta era a mais visível de todas, porque é o
+ * usuário que a lê.
+ *
+ * Por isso a lista de funcionalidades saiu daqui inteira. Ela não
+ * é derivável do `status.md` sem prosa ambígua, e prosa mantida à
+ * mão foi exatamente o que falhou. O que fica é o que a máquina
+ * consegue manter honesto: versão, tabela de fases, e o ponteiro
+ * para a fonte.
+ */
 export function About() {
+  const [versao, setVersao] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelado = false;
+    getAppVersion()
+      .then((v) => {
+        if (!cancelado) setVersao(v);
+      })
+      .catch((e: unknown) => {
+        if (!cancelado) setErro(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  const concluidas = FASES.filter((f) => f.estado === "concluída").length;
+
   return (
     <section>
       <h2>Sobre</h2>
       <p>
-        Frederico IA Studio é um estúdio de IA desktop para Windows 10/11.
-        Versão <strong>0.2.0</strong> — Fase 2 (Chat e provedores) em
-        andamento.
+        Frederico IA Studio é um estúdio de IA desktop para Windows 10/11.{" "}
+        {erro !== null ? (
+          <span>Versão indisponível ({erro}).</span>
+        ) : versao === null ? (
+          <span>Carregando versão…</span>
+        ) : (
+          <span>
+            Versão <strong>{versao}</strong>.
+          </span>
+        )}
       </p>
-      <p>O que <strong>funciona</strong> hoje:</p>
-      <ul>
-        <li>Casca Tauri + React + TypeScript + Vite (Fase 1).</li>
-        <li>Navegação entre rotas: <code>/chat</code>, <code>/settings</code>, <code>/sobre</code>.</li>
-        <li>SQLite local com 2 migrações (<code>0001_initial</code> + <code>0002_chat_core</code>).</li>
-        <li>IPC núcleo ↔ casca: 18 operações de chat, provedor, catálogo, conversa, mensagem e run.</li>
-        <li>Catálogo embutido de 13 modelos (OpenAI, Anthropic, OpenRouter, DeepSeek, Mistral, NVIDIA NIM, Ollama, LM Studio, simulated).</li>
-        <li>Adapters reais para OpenAI-compat (cobre 7 provedores) e Anthropic (formato genuinamente diferente).</li>
-        <li>Chat com streaming de tokens via eventos Tauri, recarregar-janela-meio-stream via <code>RunGetEvents</code>.</li>
-        <li>Cancelamento de run, watchdog de 60s, custo por <code>Usage</code>.</li>
-        <li>Erros de provedor com tradução PT-BR + ação sugerida.</li>
-        <li>Logs estruturados via <code>tracing</code>.</li>
-      </ul>
-      <p>O que <strong>não</strong> funciona ainda:</p>
-      <ul>
-        <li>Execução de <code>tool_call</code> (Fase 3 — Motor de execução e ferramentas).</li>
-        <li>Memória e continuidade (Fase 4).</li>
-        <li>Documentos Word/Excel/PDF (Fase 5).</li>
-        <li>Impl real de DPAPI (a <code>WindowsCredentialStore</code> é stub na v0.2).</li>
-      </ul>
+
       <p>
-        O projeto anterior morreu em parte porque a documentação prometia
-        e o código divergia. Aqui a regra é a oposta:{" "}
-        <code>docs/status.md</code> é a fonte da verdade do que está
-        pronto. Funcionalidade só entra nele quando os testes da
-        respectiva fase passam.
+        Estado por fase — {concluidas} de {FASES.length} concluídas. Derivado de{" "}
+        <code>docs/status.md</code>, não escrito à mão:
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Fase</th>
+            <th scope="col">Nome</th>
+            <th scope="col">Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {FASES.map((f) => (
+            <tr key={f.id}>
+              <td>{f.id}</td>
+              <td>{f.nome}</td>
+              <td>{f.estado}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <p>
+        O projeto anterior morreu em parte porque a documentação prometia e o
+        código divergia. Aqui a regra é a oposta: <code>docs/status.md</code> é
+        a fonte da verdade do que está pronto, e uma fase só é marcada como
+        concluída quando os testes dela passam. Esta tela lê essa fonte em vez
+        de repeti-la — o detalhe de cada fase, incluindo as pendências
+        conhecidas, está lá.
       </p>
     </section>
   );

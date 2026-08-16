@@ -76,7 +76,9 @@ Tudo que puder ser derivado do código **é derivado do código**, na build ou e
 - blocos do DocumentSpec (do schema versionado);
 - lista de bibliotecas dos runtimes embutidos (do manifesto de pacotes);
 - entidades do banco (das migrações);
-- lista de permissões e categorias.
+- lista de permissões e categorias;
+- **estado das fases exibido na UI** (do `docs/status.md`, via `scripts/generate-phase-status.mjs`);
+- **número de versão mostrado ao usuário** (do binário, via `tauri.conf.json` — literal de versão no código do frontend é defeito, cobrado pelo `check-docs.mjs`).
 
 O documento gerado leva no topo o aviso "ARQUIVO GERADO — não edite; fonte: <caminho>". Editar um arquivo gerado à mão é defeito. Este é o antídoto direto para os bugs de inventário do projeto anterior: se o texto vive em dois lugares, um deles vai mentir.
 

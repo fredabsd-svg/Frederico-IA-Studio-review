@@ -13,6 +13,7 @@
 // com o código". Isso é revisão humana (REGRAS §1.13, tabela final). Aqui só
 // entra o que é mecânico.
 
+import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, normalize, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -267,10 +268,94 @@ function checarLinks() {
 }
 
 // ---------------------------------------------------------------------------
+// §1.9 — arquivos gerados
+// ---------------------------------------------------------------------------
+
+/**
+ * Confere que todo arquivo gerado bate com o que seu gerador
+ * produz hoje. A §1.10 já exigia isso ("um arquivo marcado como
+ * gerado divergir do que o script de geração produz"); até aqui
+ * a regra existia sem cobrança mecânica.
+ */
+function checarArquivosGerados() {
+  const geradores = [
+    {
+      script: "scripts/generate-phase-status.mjs",
+      alvo: "apps/desktop/src/generated/phase-status.ts",
+    },
+  ];
+  for (const g of geradores) {
+    const r = spawnSync(process.execPath, [join(ROOT, g.script), "--check"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    if (r.status !== 0) {
+      falha(
+        "gerado",
+        g.alvo,
+        `divergiu da fonte — rode \`node ${g.script}\` e commite. ` +
+          `${(r.stderr || r.stdout || "").trim()}`,
+      );
+    }
+  }
+}
+
+/**
+ * Proíbe número de versão literal no código do frontend (§1.9).
+ *
+ * Motivo concreto: a tela `/sobre` anunciou "Versão 0.2.0" por
+ * várias fases enquanto `tauri.conf.json` e `package.json` diziam
+ * 0.1.0 — três fontes, duas mentindo. A versão exibida ao usuário
+ * vem de `getAppVersion()`, que lê o binário; nenhum literal
+ * precisa existir no `src/`.
+ *
+ * O casamento é deliberadamente estreito — semver de 3 partes com
+ * borda de palavra — para não pegar versões de dependência, IDs,
+ * datas ou strings de teste que legitimamente contenham números.
+ */
+function checarVersaoLiteralNoFrontend() {
+  const DIR = join(ROOT, "apps/desktop/src");
+  if (!existsSync(DIR)) return;
+  const SEMVER = /(?<![\w.])\d+\.\d+\.\d+(?![\w.])/;
+
+  const arquivos = [];
+  (function varrer(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) varrer(p);
+      else if (/\.(ts|tsx)$/.test(e.name)) arquivos.push(p);
+    }
+  })(DIR);
+
+  for (const arquivo of arquivos) {
+    const linhas = readFileSync(arquivo, "utf8").split("\n");
+    linhas.forEach((linha, i) => {
+      // Comentário citando o histórico ("chegou a anunciar 0.2.0")
+      // é documentação, não fonte da verdade — e é justamente onde
+      // este gate quer que a explicação viva.
+      const t = linha.trim();
+      if (t.startsWith("*") || t.startsWith("//") || t.startsWith("/*")) return;
+      const m = linha.match(SEMVER);
+      if (m) {
+        falha(
+          "versão-literal",
+          rel(arquivo),
+          `linha ${i + 1}: número de versão literal "${m[0]}" no frontend. ` +
+            `A versão vem de \`getAppVersion()\` (fonte: tauri.conf.json), ` +
+            `nunca escrita à mão (REGRAS §1.9).`,
+        );
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 checarSpecs();
 checarDocsDeModulo();
 checarLinks();
+checarArquivosGerados();
+checarVersaoLiteralNoFrontend();
 
 const json = process.argv.includes("--json");
 if (json) {
@@ -284,7 +369,7 @@ if (json) {
   }
   console.log(
     falhas.length === 0
-      ? "check-docs: OK (cabeçalhos, carimbos, trava §1.13, docs de módulo, links)"
+      ? "check-docs: OK (cabeçalhos, carimbos, trava §1.13, docs de módulo, links, arquivos gerados, versão literal)"
       : `check-docs: ${falhas.length} falha(s)`,
   );
 }
