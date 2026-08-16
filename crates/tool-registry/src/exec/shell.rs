@@ -55,7 +55,15 @@ pub struct FilesExecShellTool {
 }
 
 impl FilesExecShellTool {
+    /// **Fora do catálogo desde o ADR-0037 (2026-08-16).**
+    /// `build_default_exec_tools` não constrói mais esta
+    /// ferramenta — a allowlist de comandos é contornável por
+    /// qualquer separador do `cmd.exe`. O construtor fica aqui
+    /// (com o resto do arquivo) porque o conserto é conhecido e a
+    /// ferramenta deve voltar; enquanto não volta, nada a
+    /// constrói.
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn new(base: FilesExecToolBase) -> Self {
         Self {
             manifest: Self::build_manifest(),

