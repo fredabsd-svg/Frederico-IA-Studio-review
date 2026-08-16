@@ -221,6 +221,21 @@ pre {
   padding: 0.25rem 0.5rem;
 }
 
+/* O seletor de modelo era um `button.link` — texto colorido sem
+   borda, sublinhado só no hover, indistinguível de um rótulo.
+   Existia e funcionava; ninguém o encontrava. Agora é um
+   `<select>` sempre visível, com rótulo explícito ao lado. */
+.conv-model {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.conv-model-rotulo {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+}
+
 .messages {
   list-style: none;
   margin: 0;
