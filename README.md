@@ -77,7 +77,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
 | 4 | Memória e continuidade | ✅ Concluída |
 | 5 | Documentos (Word, Excel, PDF) + Fase de Ligação | ✅ Concluída |
 | 6 | Multimodelo e subagentes (Modo Equipe) | ✅ Concluída |
-| 7 | Execução isolada (sandbox, runtimes, `exec.*`) | ✅ Concluída |
+| 7 | Execução isolada (sandbox, runtimes, `exec.*`) | 🚧 Em andamento |
 | 8 | Modo Desenvolvedor integrado (Git, GitHub, diff, projetos, copiloto) | 🧭 Não iniciada |
 | 9 | Produção (assinatura, atualização, release estável) | 🧭 Não iniciada |
 
@@ -154,7 +154,7 @@ Cada crate tem um documento próprio em [`docs/modules/`](docs/modules/) com API
 
 ## Instalação
 
-Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+ e MinGW-w64 (toolchain GNU).
+Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+, MinGW-w64 (toolchain GNU) e o CLI do Tauri 2.x (`cargo install tauri-cli --version "^2.0"`).
 
 ```pwsh
 git clone https://github.com/fredabsd-svg/Frederico-IA-Studio-review.git
@@ -166,7 +166,7 @@ npm install
 cargo tauri build           # gera o instalador NSIS
 ```
 
-O instalador fica em `apps/desktop/src-tauri/target/release/bundle/nsis/` (ex.: `Frederico IA Studio_0.1.0_x64-setup.exe`).
+O instalador fica em `target/release/bundle/nsis/`, na raiz do repositório (ex.: `Frederico IA Studio_0.1.0_x64-setup.exe`).
 
 ## Desenvolvimento
 
