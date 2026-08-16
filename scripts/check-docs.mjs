@@ -119,20 +119,41 @@ function ancorasDe(texto) {
 // 1+2+3. Cabeçalho, carimbo e trava do caminho inverso (§1.13)
 // ---------------------------------------------------------------------------
 
+/**
+ * Estado de cada fase + se a linha dela carrega a marca
+ * `somente-planejamento` (ADR-0037).
+ *
+ * A marca vive na coluna "Evidência" e afrouxa a trava do §1.13
+ * enquanto a fase tiver apenas a Etapa 1 (planejamento) fechada —
+ * momento em que o código ainda não existe e `especificado` é o
+ * estado verdadeiro do spec. Conferida por substring,
+ * case-insensitive, mesma forma da `regra não-aplicável` do §3.5.
+ */
 function estadoDasFases() {
   const texto = readFileSync(join(ROOT, "docs/status.md"), "utf8");
   const fases = new Map();
-  for (const m of texto.matchAll(/^\|\s*(\d)\s*\|[^|]*\|\s*([^|]+?)\s*\|/gm)) {
-    fases.set(Number(m[1]), m[2].trim());
+  for (const m of texto.matchAll(
+    /^\|\s*(\d)\s*\|[^|]*\|\s*([^|]+?)\s*\|([^|]*)\|/gm,
+  )) {
+    fases.set(Number(m[1]), {
+      estado: m[2].trim(),
+      somentePlanejamento: /somente-planejamento/i.test(m[3]),
+    });
   }
   return fases;
 }
 
 function checarSpecs() {
   const fases = estadoDasFases();
+  // Uma fase só "começou", para efeito da trava, quando tem código —
+  // isto é, quando não está mais marcada como somente-planejamento.
   const iniciadas = new Set(
     [...fases.entries()]
-      .filter(([, e]) => e === "em andamento" || e === "concluída")
+      .filter(
+        ([, f]) =>
+          (f.estado === "em andamento" || f.estado === "concluída") &&
+          !f.somentePlanejamento,
+      )
       .map(([n]) => n),
   );
   const hoje = new Date();
