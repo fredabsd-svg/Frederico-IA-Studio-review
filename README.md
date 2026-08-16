@@ -40,7 +40,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
     </td>
     <td width="50%" valign="top">
       <b>🛠️ Ferramentas reais</b><br/>
-      A IA lê, lista, escreve e edita arquivos e executa Python e Node — sempre dentro do workspace da conversa, com aprovação explícita do usuário para ações de risco.
+      A IA lê, lista, escreve e edita arquivos e executa Python, Node e comandos de shell — sempre dentro do workspace da conversa, com aprovação explícita do usuário para ações de risco.
     </td>
   </tr>
   <tr>
@@ -87,7 +87,7 @@ O princípio inegociável do projeto: **o sistema nunca finge o que não fez.** 
 
 **Conversa** — chat com streaming de tokens, catálogo embutido de modelos, tradução de erros de provedor para PT-BR com ação sugerida, custo por `Usage`, cancelamento que derruba a conexão HTTP de verdade e *journal* de eventos no SQLite: fechar o app no meio de uma resposta não perde nada.
 
-**Ferramentas** — `files.read` · `files.list` · `files.write` · `files.edit` · `docs.generate` · `docs.inspect` · `exec.python` · `exec.node`. Escrita atômica com backup automático e hashes SHA-256; edição recusa alterar arquivo que mudou desde a leitura; ferramentas de risco exigem aprovação do usuário em modal.
+**Ferramentas** — `files.read` · `files.list` · `files.write` · `files.edit` · `docs.generate` · `docs.inspect` · `exec.python` · `exec.node` · `exec.shell`. Escrita atômica com backup automático e hashes SHA-256; edição recusa alterar arquivo que mudou desde a leitura; ferramentas de risco exigem aprovação do usuário em modal.
 
 **Documentos** — geração real de `.docx`, `.xlsx` e `.pdf` pelos kits WordPro, ExcelPro e PdfPro, com identidade visual própria, fontes embutidas e auditoria estrutural bloqueante (um PDF que não passa nas verificações de PDF/A-2B não é entregue como válido).
 
@@ -154,7 +154,7 @@ Cada crate tem um documento próprio em [`docs/modules/`](docs/modules/) com API
 
 ## Instalação
 
-Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+ e MinGW-w64 (toolchain GNU).
+Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+, MinGW-w64 (toolchain GNU) e o CLI do Tauri 2.x (`cargo install tauri-cli --version "^2.0"`).
 
 ```pwsh
 git clone https://github.com/fredabsd-svg/Frederico-IA-Studio-review.git
@@ -166,7 +166,7 @@ npm install
 cargo tauri build           # gera o instalador NSIS
 ```
 
-O instalador fica em `apps/desktop/src-tauri/target/release/bundle/nsis/` (ex.: `Frederico IA Studio_0.1.0_x64-setup.exe`).
+O instalador fica em `target/release/bundle/nsis/`, na raiz do repositório (ex.: `Frederico IA Studio_0.1.0_x64-setup.exe`).
 
 ## Desenvolvimento
 
