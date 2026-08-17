@@ -54,7 +54,7 @@ mod common;
 /// não está no env. **Sempre panic** — não tem skip silencioso
 /// (mesma regra do `e2e_docs_generate_with_real_worker` apontando
 /// pro `bootstrap.ps1`).
-fn memory_real_providers_or_skip() -> SecretString {
+fn memory_real_providers_or_fail() -> SecretString {
     match std::env::var("OPENROUTER_API_KEY") {
         Ok(key) if !key.is_empty() => SecretString::new(key.into_boxed_str()),
         _ => panic!(
@@ -73,7 +73,7 @@ fn memory_real_providers_or_skip() -> SecretString {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requer OPENROUTER_API_KEY em runtime; roda no CI noturno via ci-nightly.yml (nao no CI de PR)"]
 async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
-    let key = memory_real_providers_or_skip();
+    let key = memory_real_providers_or_fail();
     let db = Arc::new(Database::open_in_memory().await.expect("open in-memory db"));
 
     // Providers reais.

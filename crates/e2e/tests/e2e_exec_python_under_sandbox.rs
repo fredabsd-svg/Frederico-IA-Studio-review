@@ -27,7 +27,7 @@
 //! **Setup:** os testes precisam de `python-3.12.4` (embeddable)
 //! bootstrapped via `frederico-runtimes` (rede necessária; **falha**
 //! com mensagem clara se indisponível — degradação declarada).
-//! Mesma decisão do `memory_real_providers_or_skip!` da Fase de
+//! Mesma decisão do `memory_real_providers_or_fail` da Fase de
 //! Ligação: teste de segurança que **pula** por ausência do runtime
 //! que ele deveria testar é **fail-open com outra roupa** (o test
 //! passa sem ter provado nada). Por isso o setup hard-fails se o
@@ -70,7 +70,7 @@ use tempfile::TempDir;
 /// (embeddable distribution baixada do python.org pelo
 /// `frederico-runtimes`). **Hard-fail** se o bootstrap não
 /// consegue entregar um python rodando — mesma decisão do
-/// `memory_real_providers_or_skip!` da Fase de Ligação:
+/// `memory_real_providers_or_fail` da Fase de Ligação:
 /// teste de segurança que **pula** por ausência do runtime
 /// que ele deveria testar é fail-open com outra roupa
 /// (o test passa sem ter provado nada).
@@ -119,7 +119,7 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
             "runtime python-3.12.4 indisponível: bootstrap falhou. \
              Teste de segurança não pode pular — pular por \
              ausência do runtime é fail-open (mesma decisão do \
-             memory_real_providers_or_skip! da Fase de Ligação). \
+             memory_real_providers_or_fail da Fase de Ligação). \
              Verifique a rede ou pre-popule o cache em {}",
             tmp.path().display()
         );

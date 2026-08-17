@@ -105,14 +105,36 @@ jobs:
       # de PR, com provider falso) cobre o pipeline; este
       # aqui cobre o adaptador real contra a API real.
       # Requer `OPENROUTER_API_KEY` em runtime — o helper
-      # `memory_real_providers_or_skip!` faz panic com
-      # mensagem clara apontando pra env se faltar.
+      # `memory_real_providers_or_fail` faz panic com mensagem
+      # clara apontando pra env se faltar. Falhar (em vez de
+      # pular) e' deliberado: teste de cobertura que pula por
+      # ausencia do que deveria testar e' fail-open com outra
+      # roupa. Ver ADR-0026 D2.
+      #
+      # ATENCAO (Etapa 2 da Fase 8): este passo falha desde
+      # 2026-08-05 porque o secret `OPENROUTER_API_KEY` **nao
+      # existe** no repositorio. O noturno rodou verde em
+      # 2026-08-03 e 2026-08-04; quebrou no `d41b182` (PR #27),
+      # que acrescentou este passo. Conserto: `gh secret set
+      # OPENROUTER_API_KEY` — acao do mantenedor, nao de codigo.
       - name: E2E memory real (OpenRouter + gpt-4o-mini + text-embedding-3-small)
         shell: pwsh
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored
 
+      # `if: always()` porque um guard nao pode ser mascarado por
+      # um passo que depende de provedor externo. Sem isso, este
+      # guard aparece como `skipped` toda vez que o passo acima
+      # falha — foi o que aconteceu por 13 noites seguidas: o
+      # `check-core-purity` do noturno **nunca rodou** desde
+      # 2026-08-05, e ninguem viu, porque o job ja estava
+      # vermelho por outro motivo.
+      #
+      # Um passo vermelho continua deixando o job vermelho. O
+      # `always()` muda o que **e' medido**, nao o que e'
+      # reportado.
       - name: Core purity guard (ADR-0003)
+        if: always()
         shell: pwsh
         run: ./scripts/check-core-purity.ps1

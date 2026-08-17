@@ -1,5 +1,11 @@
 ## [Não publicado]
 
+### Corrigido — o guard de arquitetura do CI noturno voltou a rodar (2026-08-17)
+
+- **Uma verificação de arquitetura passou 13 noites sem acontecer, e nada avisou.** O `Core purity guard` — o passo que confere que o núcleo não importa dependência de plataforma — vinha aparecendo como `skipped` no CI noturno desde 2026-08-05, porque o passo anterior falhava e derrubava o resto do job. Como o job já ficava vermelho por outro motivo, a ausência do guard não chamava atenção. Agora ele roda independentemente do que veio antes.
+- **Isto não deixa o noturno verde nem afrouxa nada:** o passo que falha continua falhando e continua deixando o job vermelho. O que muda é o que passa a ser **medido**.
+- **Correção de registro:** o CI noturno **não** "nunca funcionou", como a documentação vinha afirmando. Ele rodou verde em 2026-08-03 e 2026-08-04 e quebrou em 2026-08-05, quando entrou um passo que depende de um secret que não existia no repositório. É uma regressão datada, com conserto de uma linha de configuração — não um pipeline natimorto.
+- **Nome corrigido:** `memory_real_providers_or_skip` passou a `memory_real_providers_or_fail`. A função faz `panic!` e sempre fez; o comportamento é o correto — um teste de cobertura que **pula** por ausência daquilo que deveria testar é fail-open com outra roupa. Era o nome que mentia.
 ### Adicionado — Fase 8, Etapa 2b: comandos de terminal de volta, com o `cmd.exe` fora da decisão; a Fase 7 volta a `concluída` (2026-08-16)
 
 - **O app volta a executar comandos de terminal, e agora só 11 deles.** A ferramenta `exec.shell` voltou ao catálogo ([ADR-0044](docs/decisions/0044-exec-shell-com-resolucao-propria-de-programa.md)) depois de ter saído no mesmo dia. Para o usuário: dá para listar arquivos (`dir`, `tree`), ler (`type`, `more`), procurar texto (`findstr`), ordenar (`sort`) e comparar arquivos (`fc`), sempre dentro da pasta da conversa e sempre com aprovação a cada invocação. O que **não** dá é encadear comandos, mandar a saída para um arquivo ou usar pipe — a ferramenta recusa e diz o motivo, em vez de executar algo diferente do que foi lido na tela.
