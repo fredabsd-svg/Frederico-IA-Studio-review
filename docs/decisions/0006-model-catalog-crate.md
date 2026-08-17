@@ -1,5 +1,7 @@
 # 0006 — `model-catalog` como crate do núcleo com catálogo embutido
 
+> **Substituído parcialmente pelo [ADR-0043](0043-catalogo-embutido-com-refresh-opcional.md)** (2026-08-16). A decisão de que o catálogo é **exclusivamente** embutido foi revista: o embutido continua sendo a base e a garantia de funcionamento offline, mas passa a existir um refresh opcional e explícito contra o provedor. Todo o resto deste ADR — estrutura do `ModelDescriptor`, validação por schema no `build.rs`, `include_str!`, `catalog_hash` — continua valendo.
+
 ## Contexto
 
 Cada provedor oferece vários modelos, e cada modelo tem um conjunto distinto de atributos que a UI e o motor precisam conhecer para tomar decisões corretas:

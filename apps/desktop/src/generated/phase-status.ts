@@ -28,6 +28,6 @@ export const FASES: readonly Fase[] = [
   { id: "5b", nome: "Fase de Ligação (integração casca + document-kits no ToolRegistry)", estado: "concluída" },
   { id: "6", nome: "Multimodelo e subagentes", estado: "concluída" },
   { id: "7", nome: "Execução isolada (Modo Desenvolvedor: núcleo)", estado: "em andamento" },
-  { id: "8", nome: "Modo Desenvolvedor integrado", estado: "não iniciada" },
+  { id: "8", nome: "Modo Desenvolvedor integrado", estado: "em andamento" },
   { id: "9", nome: "Produção", estado: "não iniciada" },
 ];

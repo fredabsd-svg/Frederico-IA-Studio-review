@@ -21,7 +21,7 @@ A tabela de estado vivo está em [`docs/status.md`](../status.md). Este roadmap 
 | 5 | Documentos | Document Worker, Docling, cache, OCR, WordPro, ExcelPro, PDFPro, validações | **Fluxo vertical 2** do `PROMPT MESTRE` §33 funciona com kit Excel; depois Word e PDF |
 | 6 | Multimodelo e subagentes | Comparação, conselho, debate, pipeline, especialistas, dependências, cancelamento hierárquico | Pipeline sequencial do `PROMPT MESTRE` §14.4 executa com 2+ modelos reais; subagente herda permissões do pai |
 | 7 | Execução isolada (Modo Desenvolvedor: núcleo) | Sandbox (Jail + Job Object + Restricted Token + env zeroed + proxy de rede), runtimes portáteis (Python + Node), `exec.python` / `exec.node` / `exec.shell` no Tool Registry, `files.write` / `files.edit` / `files.list` no Tool Registry | Sandbox isola execução (teste de negação verde); `pip install` e `npm install` rodam via proxy com allowlist; `I1` do threat model fecha com teste de regressão; `exec.shell` com `Denylist` recusa comandos destrutivos; **rede do sandbox é `#[ignore]` (noturno) por natureza** |
-| 8 | Modo Desenvolvedor integrado | Git portátil, GitHub (auth + push + PR), diff, projetos, checkpoints, copiloto (Nino), tarefas | PR criado pelo app (E2E noturno — `#[ignore]`); diff viewer funcional; projetos com workspace dedicado; checkpoints nomeados; copiloto cumpre `PROMPT MESTRE` §24.1 (1-6) |
+| 8 | Modo Desenvolvedor integrado | Git portátil (biblioteca linkada, nunca o `git` do PATH), GitHub (auth + push + PR), diff, projetos, marcos nomeados | PR criado pelo app (E2E noturno — `#[ignore]`) **com o `CI Nightly` provado verde e o run citado no `status.md`**; twin determinístico do E2E de GitHub rodando em todo PR; diff viewer funcional; projetos com workspace dedicado; marcos nomeados sobre o `git-engine` |
 | 9 | Produção | Testes completos, segurança, assinatura, instalador, atualização, documentação, máquina limpa, versão estável | Todos os critérios de aceite do `PROMPT MESTRE` §32 marcados, instalador roda em máquina limpa |
 
 **Alterado em relação ao plano original (2026-08-08, Etapa 1 da Fase 7, ADR-0032):**
@@ -30,6 +30,23 @@ A tabela de estado vivo está em [`docs/status.md`](../status.md). Este roadmap 
 - **Fase 8** mudou de escopo: absorve Git, GitHub, diff, projetos, checkpoints. O conteúdo "Copiloto, tarefas, refinamento" (Nino + sugestões + acessibilidade) vira subdivisão da Fase 8, não a fase inteira.
 - **Fase 8 herda a dependência da Fase 7** (sem sandbox da Fase 7, o `exec.shell` da Fase 8 é inseguro). Pré-requisito atualizado: `8 → 3 + 4 + 6 + 7`.
 - **Fase 7 ganha E2E de noturno** (`pip install`, `npm install` rodam contra a rede real): twin determinístico no PR + `#[ignore]` noturno, regra D2 do ADR-0026.
+
+**Alterado em relação ao plano (2026-08-16, Etapa 1 da Fase 8, [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md)):**
+
+- **Copiloto (Nino) e tarefas saem da Fase 8.** É uma terceira natureza — produto e interação —, com critério de aceite qualitativo (`PROMPT MESTRE` §24.1) que não fecha por teste. Colá-lo a uma fase que já tem primitiva local e integração externa autenticada é o padrão que o ADR-0032 desmontou. Vira item próprio abaixo.
+- **"PR criado pelo app" ganha pré-condição**: o `CI Nightly` precisa de um run verde citável antes da promoção da fase. Em 2026-08-16 ele acumulava 12 falhas consecutivas desde 2026-08-05 por secret ausente — a cobertura noturna era inexistente, com aparência de cobertura.
+- **Checkpoints viram "marcos de projeto"** ([ADR-0042](../decisions/0042-projetos-e-checkpoints-nomeados.md)): o `CheckpointRepo` que o ADR-0032 §D2 mandava estender nunca foi escrito, e o checkpoint de run da migração `0003` tem semântica diferente (morre com o run).
+
+## Itens com fase própria a definir
+
+Trabalho reconhecido, com dono documental, sem fase atribuída — para que nenhum spec precise especular sobre o "quando":
+
+| Item | Origem | Por que não tem fase ainda |
+|---|---|---|
+| **Copiloto (Nino) e tarefas** | `PROMPT MESTRE` §24.1; tirado da Fase 8 pelo ADR-0039 §D1 | Critério de aceite qualitativo; precisa de um ADR que o torne verificável antes de virar fase |
+| **Filtro de rede no nível de processo (WFP/WDAC)** | Fase 7 — fecharia DNS exfiltration e o bypass por socket raw | Natureza de kernel/política do Windows; exige ADR próprio |
+| **OAuth device flow para GitHub** | ADR-0041, alternativa 1 | Exige registrar um GitHub App e manter `client_id` do produto — decisão de produto, não de engenharia |
+| **Retomada de run a partir de checkpoint** | Tabela `checkpoints` (migração `0003`) sem dono em código | Nada a consome hoje; construir por simetria seria mais estrutura sem dono |
 
 ## Pré-requisitos entre fases
 
