@@ -15,7 +15,7 @@ Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapa 2 parcialmente entregue; E
 | Etapa | Arquivo | Assunto |
 |---|---|---|
 | **1 — Planejamento** | este README + os 6 ADRs | 6 ADRs (0038-0043) + 3 specs novos + `status.md` + `CHANGELOG.md`. Sem código. |
-| 2 — Noturno verde + credencial | (a ser escrito) | Consertar o `CI Nightly` e prová-lo verde; estender a trilha DPAPI para token de serviço. |
+| 2 — Noturno verde + credencial | (a ser escrito) | Consertar o `CI Nightly` e prová-lo verde; estender a trilha DPAPI para token de serviço. **Credencial entregue em 2026-08-17; noturno verde no ramo (run `32055019774`), à espera do verde em `main`.** |
 | **2b — Fechar o §D5 do ADR-0037** | [etapa-2b-narrativa.md](etapa-2b-narrativa.md) | **Fechada.** `exec.shell` de volta ao catálogo com resolução própria de programa (ADR-0044); Fase 7 reclosada. Herdada, não escolhida — ver abaixo. |
 | 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). |
 | 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. |
@@ -34,13 +34,15 @@ Ou seja: a cobertura que o [ADR-0026](../../decisions/0026-e2e-coverage-gate.md)
 
 A Fase 7 aprendeu a mesma lição duas vezes, do jeito caro: o wiring do proxy e o DNS intercept passaram por prontos até serem exercitados de verdade — um revelou 4 causas-raiz, o outro teve de ser removido inteiro. Aqui a ordem das etapas incorpora o aprendizado em vez de repeti-lo.
 
+**E a ordem se pagou em 2026-08-17.** O secret foi criado, e o passo continuou vermelho — o diagnóstico de "falta configuração" cobria três defeitos, descobertos um de cada vez porque cada correção destravava o seguinte: a frase do teste era fato sobre terceiro e o classificador a recusava com razão; o teste fixava o escopo em `Profile` quando escopo é decisão do classificador; e, por baixo dos dois, um defeito de produção — o system prompt manda o modelo emitir `type` e o `NewMemory` exigia `type_`, então **o caminho real do classificador nunca funcionou ponta a ponta na história do repositório**, com os unitários verdes o tempo todo porque os fixtures deles foram escritos contra o nome Rust do campo, não contra o contrato com o modelo. O noturno ficou verde no run `32055019774` (ramo `fix/e2e-memoria-frase-e-escopo`, PR #67). Se a Etapa 3 tivesse vindo primeiro, esse defeito só apareceria no fechamento da fase — ou não apareceria.
+
 ## A fase abre com a anterior reaberta
 
 Enquanto esta Etapa 1 era escrita, o ADR-0037 (PR #56) mediu o `exec.shell`, provou que a allowlist de comandos era contornável por qualquer separador do `cmd.exe`, tirou a ferramenta do catálogo e **devolveu a Fase 7 a `em andamento`**. O roadmap fixa `8 → 3 + 4 + 6 + 7`, e pular pré-requisito exige ADR — é o §D6 do [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
 
 A resolução, em uma frase: **a Fase 8 abre, absorve a pendência como Etapa 2b, e não fecha antes da Fase 7 fechar.**
 
-**Fechou no mesmo dia** ([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md), narrativa em [etapa-2b-narrativa.md](etapa-2b-narrativa.md)). `exec.shell` voltou ao catálogo com o `cmd.exe` fora do papel de resolvedor, e a Fase 7 voltou a `concluída` — cai a pré-condição 2 de 2. Fica a 1 de 2: o `CI Nightly` verde, que é a Etapa 2.
+**Fechou no mesmo dia** ([ADR-0044](../../decisions/0044-exec-shell-com-resolucao-propria-de-programa.md), narrativa em [etapa-2b-narrativa.md](etapa-2b-narrativa.md)). `exec.shell` voltou ao catálogo com o `cmd.exe` fora do papel de resolvedor, e a Fase 7 voltou a `concluída` — cai a pré-condição 2 de 2. Fica a 1 de 2: o `CI Nightly` verde, que é a Etapa 2 — **verde no ramo em 2026-08-17 (run `32055019774`), pendente de repetir em `main`**.
 
 O item 2 do §D5 do ADR-0037 pedia uma resposta a um fato, e **o fato estava errado**: os comandos da allowlist antiga não morriam por incompatibilidade com o rótulo de integridade baixa; morriam porque o processo filho não recebe `PATH`. Cumprir aquele requisito ao pé da letra teria encolhido a allowlist para `echo` + `find` — e `find` também não funciona. A medição também achou um caminho de fuga que não estava em documento nenhum: o `cmd.exe` procura o programa no diretório corrente antes do `PATH`, e o diretório corrente é o workspace onde o `files.write` escreve.
 
