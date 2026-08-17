@@ -3,7 +3,7 @@
 <!--
 Estado: especificado
 Verificado contra o código em: —
-Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapas 2, 3, 4, 5, 6 e 7 não iniciadas)
+Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapa 2 parcialmente entregue; Etapas 3, 4, 5, 5b, 6 e 7 não iniciadas)
 -->
 
 Índice das narrativas de processo da **Fase 8** — Git local portátil, GitHub, projetos, marcos e diff viewer. O escopo veio do [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md) §D2, quando a Fase 7 ficou restrita à execução isolada, e foi cortado pelo [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
@@ -20,6 +20,7 @@ Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapas 2, 3, 4, 5, 6 e 7 não in
 | 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). |
 | 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. |
 | 5 — `github-engine` | (a ser escrito) | Auth, push, `create_pr`, matriz de autorização. Noturno + twin. |
+| 5b — Identidade visual e acessibilidade | (a ser escrito) | Tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas. [ADR-0045](../../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). |
 | 6 — Diff viewer + UI de projeto | (a ser escrito) | Frontend consumindo os dois crates. |
 | 7 — Fechamento | (a ser escrito) | Pendências herdadas da Fase 7 + catálogo dinâmico (ADR-0043) + promoção. |
 
