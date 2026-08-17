@@ -557,6 +557,26 @@ impl MemoryRecord {
 pub struct NewMemory {
     pub scope_type: MemoryScopeType,
     pub scope_id: String,
+    /// **O `alias` não é cosmético — sem ele o caminho real não
+    /// funciona.** O system prompt do classificador
+    /// (`frederico_memory::classifier::build_system_prompt`) manda o
+    /// modelo emitir o campo como `type`; o nome Rust é `type_`
+    /// porque `type` é palavra reservada. Sem o alias, o modelo
+    /// obedece ao prompt e o parse falha com
+    /// `missing field type_`.
+    ///
+    /// Foi o que aconteceu no run noturno `32051227583`
+    /// (2026-08-17), o primeiro em que o classificador real chegou a
+    /// devolver um registro. Os testes de unidade não pegavam porque
+    /// os fixtures deles foram escritos com `type_`, ou seja, contra
+    /// o nome do campo em Rust e não contra o que o prompt pede ao
+    /// modelo — teste escrito contra a implementação, não contra o
+    /// contrato.
+    ///
+    /// `alias` e não `rename`: aceita as duas grafias e não muda
+    /// como o campo é escrito, então os fixtures existentes seguem
+    /// válidos.
+    #[serde(alias = "type")]
     pub type_: MemoryType,
     pub content: String,
     pub origin: MemoryOrigin,
