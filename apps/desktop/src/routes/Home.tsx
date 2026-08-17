@@ -64,7 +64,7 @@ export function Home() {
         <dd>{state.pong ? "ok" : "falhou"}</dd>
       </dl>
       <p>
-        Esta tela é o <em>vertical fino</em> da Fase 1: a UI conversa com a
+        Esta tela é o <em>vertical fino</em> do produto: a UI conversa com a
         casca, a casca despacha via IPC para o núcleo Rust, o núcleo abre o
         SQLite, roda a migração inicial e devolve o estado persistido.
       </p>
