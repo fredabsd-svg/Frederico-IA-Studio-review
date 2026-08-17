@@ -30,7 +30,8 @@ use frederico_model_catalog::{
     SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
 };
 use frederico_tool_registry::{
-    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, Tool, ToolRegistry,
+    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, TerminalMode, Tool,
+    ToolRegistry,
 };
 
 // ============================================================================
@@ -505,14 +506,17 @@ pub fn initial_permission_set_for_exec() -> PermissionSet {
         // restricted token).
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
-        // `terminal` fica em `TerminalMode::None` (o default).
-        // O bump pra `Allowlist` existiu entre a Etapa 7 e o
-        // ADR-0037, enquanto `exec.shell` esteve no catálogo;
-        // saiu junto com a ferramenta. Bump atômico vale nos dois
+        // Etapa 2b da Fase 8 (ADR-0044): `terminal` volta a
+        // `Allowlist`, junto com `exec.shell` no
+        // `build_default_exec_tools` e na allowlist de run. O bump
+        // saiu pelo ADR-0037 quando a ferramenta saiu e volta
+        // agora que ela voltou — bump atômico vale nos dois
         // sentidos (ADR-0020 §3 D3): capability, allowlist e
-        // permissão entram juntas ou saem juntas — anunciar
-        // `terminal: Allowlist` sem nenhuma tool de terminal
-        // registrada seria relatar uma capacidade inexistente.
+        // permissão entram juntas ou saem juntas. `Allowlist`
+        // (não `RequireApproval` nem `Denylist`) é o modo que
+        // descreve o que o código faz: uma lista fechada de 11
+        // programas, tudo fora dela recusado.
+        terminal: TerminalMode::Allowlist,
         ..PermissionSet::default()
     }
 }
@@ -542,8 +546,9 @@ pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
         // `initial_permission_set_for_exec` acima.
         python: RuntimePermission::Sandboxed,
         node: RuntimePermission::Sandboxed,
-        // `terminal` em `None` (default) — ver comentário em
-        // `initial_permission_set_for_exec`.
+        // `terminal: Allowlist` (Etapa 2b da Fase 8, ADR-0044) —
+        // ver comentário em `initial_permission_set_for_exec`.
+        terminal: TerminalMode::Allowlist,
         ..PermissionSet::default()
     }
 }
@@ -873,12 +878,14 @@ pub fn build_default_allowed_for_run(
         // (quando o document-worker também está disponível).
         allowed.push(frederico_core::ToolId::new("exec.python"));
         allowed.push(frederico_core::ToolId::new("exec.node"));
-        // `exec.shell` **NÃO** entra (ADR-0037, 2026-08-16): a
-        // allowlist de comandos que justificava a ferramenta é
-        // contornável por qualquer separador do `cmd.exe`. Saiu do
-        // `build_default_exec_tools` junto com esta linha e com o
-        // bump de `PermissionSet::terminal` — os três se movem
-        // juntos ou nenhum se move (bump atômico, ADR-0020 §3 D3).
+        // `exec.shell` voltou (ADR-0044, Etapa 2b da Fase 8) depois
+        // de ter saído pelo ADR-0037. Entra junto com o
+        // `build_default_exec_tools` e com o bump de
+        // `PermissionSet::terminal` pra `Allowlist` — os três se
+        // movem juntos ou nenhum se move (bump atômico, ADR-0020
+        // §3 D3). Foi essa regra que os tirou juntos em agosto e é
+        // a mesma que os devolve juntos.
+        allowed.push(frederico_core::ToolId::new("exec.shell"));
     }
 
     allowed
@@ -1261,8 +1268,8 @@ mod tests {
         let tools = build_default_tools(None, Some(exec_deps));
         assert_eq!(
             tools.len(),
-            6,
-            "Esperado 6 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node"
+            7,
+            "Esperado 7 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node + exec.shell"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
@@ -1272,10 +1279,12 @@ mod tests {
         assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.python")));
         assert!(ids.contains(&frederico_core::ToolId::new("exec.node")));
-        // ADR-0037: `exec.shell` saiu do catálogo. Asserção de
-        // negação, não ausência de asserção — se alguém religar a
-        // ferramenta sem passar pelo ADR, este teste quebra.
-        assert!(!ids.contains(&frederico_core::ToolId::new("exec.shell")));
+        // ADR-0044 (Etapa 2b da Fase 8): `exec.shell` voltou ao
+        // catálogo depois de ter saído pelo ADR-0037. Volta junto
+        // com a allowlist de run e o bump de `terminal` — o teste
+        // `exec_shell_returns_atomically_with_allowlist_and_permission`
+        // abaixo é quem prova que os três andam juntos.
+        assert!(ids.contains(&frederico_core::ToolId::new("exec.shell")));
         // Sem invoker, docs.generate e docs.inspect NÃO aparecem.
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(!ids.contains(&frederico_core::ToolId::new("docs.inspect")));
@@ -1318,5 +1327,82 @@ mod tests {
         assert!(allowed.contains(&frederico_core::ToolId::new("files.edit")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.generate")));
         assert!(allowed.contains(&frederico_core::ToolId::new("docs.inspect")));
+    }
+
+    /// **O bump atômico do `exec.shell`, verificado nas três peças
+    /// de uma vez** (ADR-0020 §3 D3, ADR-0044).
+    ///
+    /// A ferramenta saiu do produto em três lugares pelo ADR-0037 —
+    /// catálogo, allowlist de run e `PermissionSet::terminal` — e
+    /// voltou nos mesmos três. O risco que este teste cobre é
+    /// alguém mover um sem mover os outros: registrar a tool sem
+    /// pôr na allowlist a torna inalcançável em silêncio, e
+    /// anunciar `terminal: Allowlist` sem tool de terminal é
+    /// relatar capacidade inexistente. Nenhuma das duas falhas
+    /// aparece em teste que olhe uma peça só.
+    #[test]
+    fn exec_shell_returns_atomically_with_allowlist_and_permission() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let runtime_cfg = frederico_runtimes::RuntimeConfig {
+            install_root: tmp.path().to_path_buf(),
+            keep_n_versions: 1,
+            allow_download: false,
+            mirror_url: None,
+            download_timeout: std::time::Duration::from_secs(1),
+        };
+        let runtimes = Arc::new(
+            frederico_runtimes::RuntimeRegistry::new(runtime_cfg).expect("RuntimeRegistry::new"),
+        );
+        let resolver = frederico_security::jail::SecurityJailResolver::new(
+            frederico_security::jail::SecurityJailConfig::secure_default(),
+        )
+        .expect("SecurityJailResolver::new");
+        let audit: Arc<dyn frederico_tool_registry::AuditSink> =
+            Arc::new(frederico_tool_registry::NoopAuditSink);
+        let network_audit: Arc<dyn frederico_security::network::NetworkAuditSink> =
+            Arc::new(frederico_security::network::NoopNetworkAuditSink);
+        let exec_deps = ExecDeps {
+            resolver,
+            runtimes,
+            audit,
+            network_allowlist: frederico_security::network::NetworkAllowlist::new(),
+            network_audit,
+        };
+
+        let shell = frederico_core::ToolId::new("exec.shell");
+
+        // Peça 1 — catálogo.
+        let tools = build_default_tools(None, Some(exec_deps.clone()));
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        assert!(ids.contains(&shell), "exec.shell fora do catalogo: {ids:?}");
+
+        // Peça 2 — allowlist da run. Sem ela o `RunExecutor`
+        // recusa a invocação com `ToolNotAllowed` mesmo com a tool
+        // registrada.
+        let allowed = build_default_allowed_for_run(None, Some(&exec_deps));
+        assert!(
+            allowed.contains(&shell),
+            "exec.shell fora da allowlist de run: {allowed:?}"
+        );
+
+        // Peça 3 — `PermissionSet::terminal`, nos dois construtores
+        // que a casca usa em produção.
+        assert_eq!(
+            initial_permission_set_for_exec().terminal,
+            TerminalMode::Allowlist
+        );
+        assert_eq!(
+            initial_permission_set_for_capable_launcher_and_exec().terminal,
+            TerminalMode::Allowlist
+        );
+
+        // E o lado negativo do mesmo bump: sem `exec_deps`, nenhuma
+        // das peças de exec aparece.
+        let sem_exec = build_default_allowed_for_run(None, None);
+        assert!(
+            !sem_exec.contains(&shell),
+            "exec.shell na allowlist sem exec_deps: {sem_exec:?}"
+        );
     }
 }

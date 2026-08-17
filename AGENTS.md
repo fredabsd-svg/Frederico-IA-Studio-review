@@ -57,32 +57,36 @@ vivas, e nenhuma delas está repetida aqui.
   `SpecialistRegistry`, `PermissionSet` fail-closed, `SubagentRunner`
   com orçamento herdado e teto anti-explosão, pipeline sequencial
   persistido, `RunEvent` journal (ADR-0029), UI do Modo Equipe.
-- **Fase 7** (Execução isolada) — concluída em 2026-08-13: sandbox do
+- **Fase 7** (Execução isolada) — concluída em 2026-08-13, reaberta e
+  reclosada em 2026-08-16 (ver a nota sobre `exec.shell` abaixo):
+  sandbox do
   Windows (Job Object + Restricted Token + `CreateProcessAsUserW` +
   env filtrado), crate `frederico-runtimes` (Python 3.12.4 e Node
   20.16.0 portáteis, com SHA-256 pinado), proxy de rede com allowlist
   deny-by-default, e `files.list`/`files.write`/`files.edit` +
-  `exec.python`/`exec.node` no Tool Registry.
+  `exec.python`/`exec.node`/`exec.shell` no Tool Registry.
   **Antes de tocar em sandbox, rede ou aprovação, leia a coluna
   "Pendências" da linha da Fase 7 no `status.md`** — ela nomeia
   limitações conhecidas e fixadas em teste.
-  **Contradição aberta sobre `exec.shell` — resolva antes de confiar em
-  qualquer um dos lados:** o código registra a ferramenta
-  (`FilesExecShellTool` em `crates/tool-registry/src/exec/mod.rs`, e
-  `exec.shell` na allowlist de `crates/app/src/composition.rs`), e o
-  `status.md`, o `CHANGELOG.md`, o `SECURITY.md` §4 e o
-  `exec-tools-specification.md` a descrevem como entregue na Etapa 7
-  (PR #52). Já o `README.md` (PR #54, 2026-08-16) removeu as menções
-  afirmando que ela "foi descartada no mesmo dia (ver PR #52) por
-  bypass de allowlist via `cmd.exe` e incompatibilidade estrutural dos
-  binários MSYS2 com o token de integridade baixa" — mas o PR #52 é
-  justamente o que a implementou, e nenhum código foi removido. Ou a
-  decisão de descartar existiu e não chegou ao código, ou o README está
-  errado. Enquanto isso não for decidido por ADR, trate `exec.shell`
-  como **capacidade em disputa**, não como entregue.
-- **Fase 8** (Modo Desenvolvedor integrado) — **não iniciada**. Absorve
-  Git, GitHub, diff, projetos, checkpoints e copiloto conforme
-  ADR-0032. Pré-requisito `8 → 3 + 4 + 6 + 7`, todos satisfeitos.
+  **A contradição sobre `exec.shell` foi resolvida em 2026-08-16**, por
+  dois ADRs no mesmo dia: o [ADR-0037](docs/decisions/0037-exec-shell-fora-do-catalogo.md)
+  mediu que a allowlist de comandos era contornável por qualquer
+  separador do `cmd.exe`, tirou a ferramenta do catálogo e reabriu a
+  fase; o [ADR-0044](docs/decisions/0044-exec-shell-com-resolucao-propria-de-programa.md)
+  (Etapa 2b da Fase 8) a devolveu com um desenho em que **o `cmd.exe`
+  não resolve programa** e reclosou a fase. Ao mexer nela, a regra a
+  não quebrar é essa: o programa vem de uma lista fechada, resolvido
+  por caminho absoluto em `System32` — reintroduzir busca por nome
+  reabre execução arbitrária a partir de uma escrita de arquivo no
+  workspace.
+- **Fase 8** (Modo Desenvolvedor integrado) — **em andamento**. Escopo
+  cortado pelo [ADR-0039](docs/decisions/0039-fase-8-escopo-e-etapas.md):
+  Git local, GitHub, projetos, marcos e diff; o copiloto (Nino) saiu.
+  Etapa 1 (planejamento, 6 ADRs + 3 specs) e Etapa 2b (`exec.shell`)
+  fechadas; as demais não iniciadas. **O fechamento da fase ainda está
+  travado** pela pré-condição 1 de 2 do ADR-0039 §D2: o workflow
+  `CI Nightly` precisa de um run verde citável e acumula falhas desde
+  2026-08-05 por secret ausente.
 - **Fase 9** (Produção) — não iniciada.
 
 Regra de promoção de fase (`status.md` §"Regra de promoção"): testes da

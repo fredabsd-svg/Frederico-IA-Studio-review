@@ -211,15 +211,19 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 ## 4. Decisões não óbvias e armadilhas conhecidas
 
-- **`exec.shell` existe em `src/exec/shell.rs` mas NÃO está no
-  catálogo** (ADR-0037, 2026-08-16). `build_default_exec_tools`
-  devolve só `exec.python` e `exec.node`. A allowlist de comandos
-  que justificava a ferramenta valida apenas o primeiro token,
-  enquanto o comando inteiro vai pro `cmd.exe /c` — então
-  `echo x & <qualquer coisa>` passava. Não reative o registro sem
-  cumprir os 3 requisitos do ADR-0037 §D5; há teste de negação
-  fixando a ausência
-  (`crates/e2e/tests/e2e_exec_shell_out_of_catalog.rs`).
+- **No `exec.shell`, o `cmd.exe` não resolve programa — e não pode
+  voltar a resolver** (ADR-0044, 2026-08-16). A ferramenta saiu do
+  catálogo pelo ADR-0037 (a allowlist validava o primeiro token
+  enquanto o comando inteiro ia pro `cmd.exe /c`, então
+  `echo x & <qualquer coisa>` passava) e voltou com
+  `exec_patterns::plan_command` decidindo o par (programa, `argv`):
+  builtin via `cmd.exe /d /v:off /c`, ou executável do `System32`
+  por **caminho absoluto**, com spawn direto. A armadilha a evitar
+  é sutil: o `cmd.exe` procura o binário no diretório corrente
+  antes do `PATH`, e o diretório corrente do filho é o workspace,
+  onde o `files.write` escreve — reintroduzir a resolução por nome
+  reabre execução arbitrária a partir de uma escrita de arquivo.
+  Fixado em `crates/e2e/tests/e2e_exec_shell_hardened.rs`.
 
 - **A Etapa 2 só tem `files.read`.** O spec §7.11 lista
   `files.read / files.write / files.list / files.edit`,

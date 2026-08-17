@@ -95,27 +95,28 @@ pub fn build_default_exec_tools(
     network_audit: Arc<dyn NetworkAuditSink>,
 ) -> Vec<Arc<dyn Tool>> {
     let base = FilesExecToolBase::new(resolver, runtimes, audit, network_allowlist, network_audit);
-    // `exec.shell` **NÃO** entra (ADR-0037, 2026-08-16). A
-    // allowlist de comandos que justificava a ferramenta é
-    // contornável por qualquer separador do `cmd.exe`: `is_allowed`
-    // valida só o primeiro token e `build_args` entrega o command
-    // string inteiro pro `cmd.exe /c`, então `echo x & <qualquer
-    // coisa>` passa. Provado em
-    // `crates/e2e/tests/e2e_exec_shell_out_of_catalog.rs` e em
-    // `frederico_security::exec_patterns::tests::allowlist_is_defeated_by_cmd_exe_command_separators`.
-    // Mesma regra aplicada a `exec.python`/`exec.node` na Etapa 5+ e
-    // ao `dns_intercept` na Etapa 6: capacidade incompleta é
-    // capacidade indisponível.
+    // `exec.shell` voltou ao catálogo pelo ADR-0044 (Etapa 2b da
+    // Fase 8), depois de ter saído pelo ADR-0037 (2026-08-16).
     //
-    // O código de `shell.rs` fica no crate (não é deletado como o
-    // `dns_intercept` foi): o conserto é conhecido — recusar
-    // separadores de shell antes do spawn — e a ferramenta volta
-    // ao catálogo quando isso, mais o problema dos binários MSYS2
-    // sob integridade baixa, estiver resolvido. Ver ADR-0037
-    // §"Consequências".
+    // O que saiu, na época: uma ferramenta cuja allowlist de
+    // comandos era contornável por qualquer separador do `cmd.exe`
+    // (`echo x & <qualquer coisa>` executava as duas metades). O
+    // código ficou no crate — diferente do `dns_intercept`, que foi
+    // deletado inteiro — porque o conserto era conhecido.
+    //
+    // O que voltou: uma ferramenta em que **o `cmd.exe` não resolve
+    // programa**. Metacaracteres são recusados antes do spawn, o
+    // comando é tokenizado pelo `exec_patterns` e o binário vem de
+    // uma lista fechada de 11 programas read-only, resolvidos por
+    // caminho absoluto. Ver o doc do módulo em `shell.rs`.
+    //
+    // **Bump atômico** (ADR-0020 §3 D3): esta linha, o
+    // `build_default_allowed_for_run` e o bump de
+    // `PermissionSet::terminal` se movem juntos, nos dois sentidos.
     vec![
         Arc::new(FilesExecPythonTool::new(base.clone())),
-        Arc::new(FilesExecNodeTool::new(base)),
+        Arc::new(FilesExecNodeTool::new(base.clone())),
+        Arc::new(FilesExecShellTool::new(base)),
     ]
 }
 
@@ -479,8 +480,19 @@ pub enum ExecError {
     /// ADR-0034 D3). Recusado antes do spawn.
     #[error("comando recusado pela denylist (padrao: {0})")]
     CommandDenied(String),
-    /// `exec.shell`: primeiro token do comando não está na
-    /// `SHELL_ALLOWLIST_DEFAULT` (Etapa 7). Recusado antes do spawn.
+    /// `exec.shell`: o comando contém um metacaractere de shell
+    /// (ADR-0044, item 1 do ADR-0037 §D5). Recusado antes do spawn —
+    /// a ferramenta não interpreta sintaxe de shell, e recusar é
+    /// deliberadamente preferível a escapar.
+    #[error(
+        "comando contem o metacaractere de shell {0:?} — exec.shell nao \
+         interpreta sintaxe de shell (sem pipe, redirecionamento, \
+         encadeamento ou expansao de variavel)"
+    )]
+    CommandHasShellSyntax(char),
+    /// `exec.shell`: o primeiro token não resolve em nenhum programa
+    /// da lista fechada do `exec_patterns` (ADR-0044). Recusado
+    /// antes do spawn.
     #[error("comando '{0}' nao esta na allowlist")]
     CommandNotInAllowlist(String),
 }

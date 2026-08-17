@@ -1,12 +1,17 @@
 # Security Policy
 
 > Frederico IA Studio — modelo de segurança do sandbox Windows
-> (Fase 7, `em andamento`).
+> (Fase 7, `concluída`).
 >
-> **Última atualização:** 2026-08-16 (ADR-0037 — `exec.shell` saiu
-> do catálogo depois que a allowlist de comandos foi medida e se
-> mostrou contornável por qualquer separador do `cmd.exe`; a Fase 7
-> voltou a `em andamento`).
+> **Última atualização:** 2026-08-16 (ADR-0044 — `exec.shell` voltou
+> ao catálogo com resolução própria de programa: o `cmd.exe` não
+> escolhe mais o binário, metacaracteres são recusados antes do
+> spawn, e a allowlist é uma lista fechada de 11 programas medidos.
+> A Fase 7 voltou a `concluída`).
+>
+> Antes: 2026-08-16 (ADR-0037 — `exec.shell` saiu do catálogo depois
+> que a allowlist de comandos foi medida e se mostrou contornável
+> por qualquer separador do `cmd.exe`).
 >
 > Antes: 2026-08-14 (Etapa 7 — allowlist de rede carregada de
 > perfil TOML em vez de hardcoded vazia; DNS intercept via `netsh`
@@ -223,44 +228,55 @@ criar um service Windows que aplica os labels (roda como
 SYSTEM com SeSecurityPrivilege); o app user-mode chama o
 service via RPC. Complexo, Fases 8+.
 
-### 4. **Não existe execução de shell — `exec.shell` saiu do
-   catálogo (ADR-0037)**
+### 4. **`exec.shell` executa 11 programas de inspeção, e nada
+   além disso — o `cmd.exe` não escolhe o binário (ADR-0044)**
 
-Entre 2026-08-14 e 2026-08-16, `exec.shell` esteve no catálogo e
-esta seção descrevia a denylist/allowlist de comandos como defesa
-em profundidade. **A allowlist foi medida e não é uma barreira.**
+Entre 2026-08-14 e 2026-08-16, `exec.shell` esteve no catálogo com
+uma allowlist de comandos apresentada como defesa em profundidade.
+**Ela foi medida e não era uma barreira**: `is_allowed` validava só
+o primeiro token, e o comando inteiro ia pro `cmd.exe /c`, que
+interpreta `&`, `&&`, `||` e `|` como separadores. `ver` sozinho era
+recusado; `echo marcador & ver` executava os dois. O
+[ADR-0037](docs/decisions/0037-exec-shell-fora-do-catalogo.md) tirou
+a ferramenta do catálogo por isso.
 
-`frederico_security::exec_patterns::is_allowed` valida só o
-**primeiro token** do comando, e o `build_args` entregava o
-command string **inteiro** pro `cmd.exe /c` — que interpreta
-`&`, `&&`, `||` e `|` como separadores. Medição pelo caminho real
-da ferramenta:
+O [ADR-0044](docs/decisions/0044-exec-shell-com-resolucao-propria-de-programa.md)
+a devolveu com um desenho diferente, e a diferença é a frase toda:
+**o `cmd.exe` não resolve programa.**
 
-| Comando | Resultado |
-|---|---|
-| `ver` | recusado pela allowlist |
-| `echo marcador & ver` | **executou os dois** |
+- **Metacaracteres são recusados antes do spawn**, nunca escapados:
+  `&`, `|`, `<`, `>`, `^`, `(`, `)`, `%`, `!`, `\n`, `\r`, `\0`.
+  Não há pipe, redirecionamento, encadeamento nem expansão de
+  variável — e a recusa acontece antes de qualquer Job Object ou
+  processo ser criado.
+- **O programa vem de uma lista fechada de 11**, todos read-only e
+  todos medidos rodando sob `Mandatory Label\Low`: os builtins
+  `cd`, `dir`, `echo`, `type`, `ver`, `vol` (via `cmd.exe /d /v:off
+  /c`) e os executáveis `fc`, `findstr`, `more`, `sort`, `tree`
+  (spawn direto de `%SystemRoot%\System32\`, por caminho absoluto).
+- **Programas que rodam mas ficaram de fora, por decisão:** `curl`,
+  `tar` e `certutil` (saída de rede e escrita em disco), `attrib`
+  (escreve quando recebe argumento), `whoami`/`hostname`/
+  `tasklist`/`ipconfig` (identidade e estado do host, não do
+  workspace).
 
-Ou seja: qualquer comando arbitrário passava atrás de um `echo`.
-Somado a isso, 7 dos 9 binários da allowlist (`ls`, `cat`,
-`head`, `tail`, `grep`, `wc`, `pwd`) vêm do MSYS2 e morrem sob o
-rótulo de integridade baixa com `NtCreateDirectoryObject ...
-0xC0000022` — a allowlist não impedia o que devia impedir e não
-permitia quase nada do que prometia.
+**Um caminho de fuga fechado, que não estava documentado antes:** o
+`cmd.exe` procura o programa no diretório corrente **antes** do
+`PATH`, e o diretório corrente do filho é o workspace da conversa —
+onde o `files.write` escreve. Com o desenho antigo, plantar
+`find.bat` no workspace e pedir `find alfa arquivo.txt` executava o
+arquivo plantado: execução arbitrária usando só capacidades já
+concedidas. Com caminho absoluto não existe busca, então não existe
+o que sequestrar. Fixado em teste
+(`crates/e2e/tests/e2e_exec_shell_hardened.rs::refuses_binary_planted_in_the_workspace`).
 
-Pela regra **capacidade incompleta é capacidade indisponível** (a
-mesma que tirou `exec.python`/`exec.node` do catálogo na Etapa 5+
-e deletou o `dns_intercept` na Etapa 6), a ferramenta saiu. O
-código continua em `crates/tool-registry/src/exec/shell.rs`, sem
-ser registrado; os 3 requisitos pra voltar estão no
-[ADR-0037](docs/decisions/0037-exec-shell-fora-do-catalogo.md)
-§D5. A ausência é fixada em teste
-(`crates/e2e/tests/e2e_exec_shell_out_of_catalog.rs::exec_shell_is_not_in_default_catalog`).
-
-**Consequência prática:** hoje o produto não executa comandos de
-terminal. Execução arbitrária existe só via `exec.python` e
-`exec.node`, que rodam sob as 4 camadas acima e exigem aprovação
-do usuário a cada invocação.
+**O que esta ferramenta não protege:** o rótulo de integridade baixa
+restringe **escrita**, não leitura. Um `type` com caminho absoluto lê
+arquivo fora do workspace. É a mesma lacuna de read-up que vale pro
+`exec.python` (ver item 1 desta seção) e o fechamento exige filtro no
+nível de processo (WFP/WDAC), fora do escopo da Fase 8 por decisão do
+ADR-0039 §D4. Fixada em teste
+(`documented_limit_child_can_read_outside_workspace`).
 
 ## Como reportar vulnerabilidades
 
