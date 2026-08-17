@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use frederico_core::{ConversationMessage, MemoryScopeType, MemorySourceType, RetrievalRequest};
+use frederico_core::{ConversationMessage, MemorySourceType, RetrievalRequest};
 use frederico_memory::classifier::{
     CompletionProvider, LlmMemoryClassifier, OpenRouterCompletionProvider,
 };
@@ -129,9 +129,19 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
 
     // Conversa + job.
     let (_conv, conv_id_str) = common::create_memory_test_conversation(&db).await;
+    // A frase é uma **preferência do usuário**, primeiro item da
+    // lista que o system prompt do classificador manda capturar
+    // ("preferências do usuário, factos, decisões, instruções de
+    // projeto…"). A frase anterior — "Maria nasceu em 1985 no Rio
+    // de Janeiro" — era um fato sobre terceiro, e o `gpt-4o-mini`
+    // a recusou no run 32039100961 com a razão registrada em log:
+    // "não se enquadra nas memórias de longo prazo como
+    // preferências, decisões ou contexto relevante para o usuário
+    // ou projeto". O modelo estava certo pelo critério dele; o
+    // teste é que apostava num caso de fronteira.
     let messages = vec![ConversationMessage {
         role: "user".into(),
-        content: "Maria nasceu em 1985 no Rio de Janeiro.".into(),
+        content: "Prefiro receber todos os relatórios em PDF, nunca em Word.".into(),
         source: MemorySourceType::new("user_message"),
     }];
     extractor_handle.enqueue(MemoryExtractionJob::new(
@@ -148,6 +158,20 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
     embedding_handle.enqueue(memory_id);
     common::wait_for_embedding(&db, memory_id, Duration::from_secs(30)).await;
 
+    // **O escopo vem do registro persistido, não de um palpite.**
+    // O `search_lexical` filtra por `scope_type` no SQL, então um
+    // escopo diferente do que o classificador atribuiu devolve zero
+    // hits — e o teste falharia dizendo "não encontrou por
+    // paráfrase" quando o problema seria de taxonomia. Qual dos 9
+    // escopos o modelo escolhe é decisão dele; o que este teste
+    // existe para provar é que os adaptadores reais funcionam ponta
+    // a ponta, não qual rótulo o LLM prefere.
+    let registro = frederico_memory::memory_repo::MemoryRepo::new(&db)
+        .get(&memory_id)
+        .await
+        .expect("get do registro classificado")
+        .expect("registro deve existir apos a classificacao");
+
     // Retriever real + query por paráfrase.
     let retriever = HybridRetriever::new(
         &db,
@@ -155,9 +179,9 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
         frederico_memory::config::ScoringWeights::default(),
     );
     let req = RetrievalRequest {
-        scope_type: MemoryScopeType::Profile,
-        scope_id: String::new(),
-        query: "em que ano Maria veio ao mundo?".to_string(),
+        scope_type: registro.scope_type,
+        scope_id: registro.scope_id.clone(),
+        query: "qual formato de arquivo devo usar quando for te entregar um relatorio?".to_string(),
         k: 8,
         token_budget: 1500,
         recency_epsilon: 0.01,
@@ -170,12 +194,14 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
     );
     assert!(
         !result.hits.is_empty(),
-        "retriever deveria ter encontrado Maria por paráfrase"
+        "retriever deveria ter encontrado a preferencia por parafrase \
+         (escopo consultado: {:?})",
+        registro.scope_type
     );
     let hit = &result.hits[0];
     assert!(
-        hit.record.content.contains("1985"),
-        "hit deveria conter 1985, got: {}",
+        hit.record.content.contains("PDF"),
+        "hit deveria conter PDF, got: {}",
         hit.record.content
     );
     assert!(
