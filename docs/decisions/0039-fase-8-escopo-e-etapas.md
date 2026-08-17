@@ -1,5 +1,7 @@
 # 0039 — Escopo e etapas da Fase 8 (Modo Desenvolvedor integrado)
 
+> **Errata de fato, 2026-08-17 (Etapa 2).** O §Contexto e o §D2 afirmam que "a cobertura noturna deste repositório **nunca** funcionou". Medido: o `CI Nightly` rodou **verde** em 2026-08-03 (run `30794191640`) e 2026-08-04 (`30884415872`). A primeira falha é de 2026-08-05, no commit `d41b182` (PR #27, Fase de Ligação Etapa 3), que acrescentou o passo `E2E memory real` exigindo o secret `OPENROUTER_API_KEY` — secret que nunca foi criado. **A decisão do §D2 não muda** (o noturno continua precisando de um run verde citável antes de a fase fechar), e a severidade tampouco: um passo que não podia passar ficou 12 dias sem ninguém notar. O que muda é o diagnóstico — o problema não é um pipeline que nunca funcionou, é uma regressão datada, com autor conhecido e conserto de uma linha de configuração.
+
 ## Contexto
 
 O ADR-0032 §D2 definiu o que a Fase 8 absorve quando a Fase 7 ficou restrita à execução isolada:

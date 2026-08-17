@@ -81,6 +81,11 @@ impl Clock for FakeClock {
 /// usam — a `WindowsCredentialStore` é a implementação de produção.
 pub struct FakeCredentialStore {
     inner: Mutex<HashMap<ProviderId, SecretString>>,
+    /// Credenciais de serviço (Etapa 2 da Fase 8). Mapa separado, do
+    /// mesmo jeito que a produção usa espaços de nome separados no
+    /// cofre — um fake que misturasse os dois esconderia justamente
+    /// a colisão que a `ServiceCredentialKey` existe para impedir.
+    services: Mutex<HashMap<ServiceCredentialKey, SecretString>>,
 }
 
 impl FakeCredentialStore {
@@ -88,6 +93,7 @@ impl FakeCredentialStore {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(HashMap::new()),
+            services: Mutex::new(HashMap::new()),
         })
     }
 
@@ -104,6 +110,7 @@ impl FakeCredentialStore {
             .collect();
         Arc::new(Self {
             inner: Mutex::new(map),
+            services: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -112,7 +119,50 @@ impl Default for FakeCredentialStore {
     fn default() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            services: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+#[async_trait]
+impl ServiceCredentialStore for FakeCredentialStore {
+    async fn get_secret(
+        &self,
+        key: &ServiceCredentialKey,
+    ) -> Result<Option<SecretString>, SecurityError> {
+        Ok(self.services.lock().unwrap().get(key).cloned())
+    }
+
+    async fn set_secret(
+        &self,
+        key: &ServiceCredentialKey,
+        value: &SecretString,
+    ) -> Result<(), SecurityError> {
+        self.services
+            .lock()
+            .unwrap()
+            .insert(key.clone(), value.clone());
+        Ok(())
+    }
+
+    async fn delete_secret(&self, key: &ServiceCredentialKey) -> Result<(), SecurityError> {
+        self.services.lock().unwrap().remove(key);
+        Ok(())
+    }
+
+    async fn list_accounts(&self, service: &str) -> Result<Vec<String>, SecurityError> {
+        // Mesma validação da produção: `service` vira filtro lá, e um
+        // fake mais permissivo que a produção esconde bug em vez de
+        // revelá-lo.
+        let _ = ServiceCredentialKey::new(service, "_")?;
+        Ok(self
+            .services
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.service() == service)
+            .map(|k| k.account().to_string())
+            .collect())
     }
 }
 

@@ -26,6 +26,11 @@ pub enum SecurityError {
     Unsupported(&'static str),
     #[error("erro do cofre de credenciais: {0}")]
     CredentialStore(String),
+    /// Componente de [`ServiceCredentialKey`] malformado. Recusado
+    /// na construção da chave, antes de qualquer chamada Win32 —
+    /// ver a doc do tipo para o porquê.
+    #[error("chave de credencial de serviço invalida: {0}")]
+    InvalidCredentialKey(String),
 }
 
 /// Fonte de tempo injetável. A casca usa `SystemClock` (relógio do SO);
@@ -61,6 +66,149 @@ pub trait CredentialStore: Send + Sync {
     async fn set(&self, provider: &ProviderId, value: &SecretString) -> Result<(), SecurityError>;
     async fn delete(&self, provider: &ProviderId) -> Result<(), SecurityError>;
     async fn list_providers(&self) -> Result<Vec<ProviderId>, SecurityError>;
+}
+
+/// Identifica uma credencial de **serviço externo** no cofre:
+/// o par `(serviço, conta)`.
+///
+/// Existe porque a trilha do [`CredentialStore`] é chaveada por
+/// `ProviderId` — provedor de modelo —, e a Fase 8 precisa guardar
+/// credencial de outra natureza: token de GitHub por conta
+/// ([ADR-0041](../../decisions/0041-github-auth-e-matriz-de-autorizacao.md)
+/// §D1). Reusar `ProviderId` faria um token de escrita em
+/// repositório aparecer na lista de provedores de modelo da UI de
+/// settings, que é onde o usuário gerencia chaves de API — dois
+/// tipos de segredo com ciclos de vida e riscos diferentes na mesma
+/// gaveta.
+///
+/// ## Por que os componentes são validados
+///
+/// O `TargetName` gravado no Windows Credential Manager é
+/// `Frederico-IA-Studio:<serviço>:<conta>`, montado por concatenação.
+/// Sem validação, uma conta chamada `x:github:vitima` produziria o
+/// alvo `Frederico-IA-Studio:conta:x:github:vitima` — e um serviço
+/// conseguiria escrever ou ler no espaço de nomes de outro. Por isso
+/// `:` é recusado nos dois componentes, junto com vazio, espaço em
+/// branco, `*` e `?` (que são curinga no filtro do `CredEnumerateW` e
+/// fariam um `list_accounts` varrer mais do que devia).
+///
+/// ## Por que `provider` é nome de serviço reservado
+///
+/// O alvo de uma chave de provedor é
+/// `Frederico-IA-Studio:provider:<id>`. Com o padrão do ADR-0041, um
+/// serviço chamado `provider` com conta `openai` produziria
+/// **exatamente esse alvo** — e gravar nele sobrescreveria a chave
+/// de API da OpenAI do usuário, por um caminho que nem se parece com
+/// "mexer nas chaves de modelo". Validar caractere não pega isso,
+/// porque não há caractere ilegal em `provider`. Daí a reserva
+/// explícita do nome.
+///
+/// A recusa acontece na construção, então **não existe
+/// `ServiceCredentialKey` malformada** para o resto do código lidar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServiceCredentialKey {
+    service: String,
+    account: String,
+}
+
+impl ServiceCredentialKey {
+    /// Caracteres recusados nos componentes. `:` separa o alvo;
+    /// `*` e `?` são curinga no `CredEnumerateW`.
+    const FORBIDDEN: &'static [char] = &[':', '*', '?'];
+
+    /// Nome de serviço reservado: colidiria com o espaço de nomes
+    /// das chaves de provedor. Ver a doc do tipo.
+    const RESERVED_SERVICE: &'static str = "provider";
+
+    /// Constrói a chave, validando os dois componentes.
+    ///
+    /// # Erros
+    ///
+    /// [`SecurityError::InvalidCredentialKey`] se qualquer componente
+    /// for vazio, só espaços, ou contiver `:`, `*` ou `?`; ou se o
+    /// serviço for o nome reservado `provider`.
+    pub fn new(
+        service: impl Into<String>,
+        account: impl Into<String>,
+    ) -> Result<Self, SecurityError> {
+        let service = service.into();
+        let account = account.into();
+        Self::validate("servico", &service)?;
+        Self::validate("conta", &account)?;
+        if service.eq_ignore_ascii_case(Self::RESERVED_SERVICE) {
+            return Err(SecurityError::InvalidCredentialKey(format!(
+                "'{}' e nome de servico reservado — colidiria com o alvo \
+                 das chaves de provedor no cofre",
+                Self::RESERVED_SERVICE
+            )));
+        }
+        Ok(Self { service, account })
+    }
+
+    fn validate(rotulo: &str, valor: &str) -> Result<(), SecurityError> {
+        if valor.trim().is_empty() {
+            return Err(SecurityError::InvalidCredentialKey(format!(
+                "{rotulo} vazio"
+            )));
+        }
+        if let Some(c) = valor.chars().find(|c| Self::FORBIDDEN.contains(c)) {
+            return Err(SecurityError::InvalidCredentialKey(format!(
+                "{rotulo} contem {c:?}, que e separador ou curinga do alvo no cofre"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Serviço (ex.: `github`).
+    #[must_use]
+    pub fn service(&self) -> &str {
+        &self.service
+    }
+
+    /// Conta dentro do serviço (ex.: o login do usuário).
+    #[must_use]
+    pub fn account(&self) -> &str {
+        &self.account
+    }
+}
+
+/// Cofre de credenciais de **serviço externo**, irmão do
+/// [`CredentialStore`] e com a mesma garantia: o segredo nunca passa
+/// por env, dotenv ou arquivo de config.
+///
+/// A Fase 7 Etapa 6+1 provou por teste
+/// (`crates/security/tests/env_credential_not_leaked.rs`) que
+/// credencial no ambiente do processo pai vaza para o filho do
+/// sandbox quando o `EnvFilter` falha — e que a falha pode ser
+/// silenciosa. Um token de GitHub com escopo de escrita é a pior
+/// versão desse cenário, e é por isso que o ADR-0041 §D1 proíbe o
+/// caminho do ambiente em vez de apenas desencorajá-lo.
+/// ## Por que os métodos não se chamam `get`/`set`/`delete`
+///
+/// `WindowsCredentialStore` implementa **as duas** traits. Com nomes
+/// iguais, todo chamador que tivesse ambas em escopo receberia
+/// `error[E0034]: multiple applicable items in scope` e teria de
+/// escrever `ServiceCredentialStore::get(&store, …)`. O sufixo
+/// `_secret` custa três caracteres e evita empurrar essa cerimônia
+/// para cada ponto de uso.
+#[async_trait]
+pub trait ServiceCredentialStore: Send + Sync {
+    /// Lê o segredo. `None` = não existe (não é erro).
+    async fn get_secret(
+        &self,
+        key: &ServiceCredentialKey,
+    ) -> Result<Option<SecretString>, SecurityError>;
+    /// Grava, sobrescrevendo se já existir.
+    async fn set_secret(
+        &self,
+        key: &ServiceCredentialKey,
+        value: &SecretString,
+    ) -> Result<(), SecurityError>;
+    /// Remove. **Idempotente**: apagar o que não existe é `Ok`.
+    async fn delete_secret(&self, key: &ServiceCredentialKey) -> Result<(), SecurityError>;
+    /// Contas cadastradas para um serviço. Devolve os nomes, nunca
+    /// os segredos.
+    async fn list_accounts(&self, service: &str) -> Result<Vec<String>, SecurityError>;
 }
 
 /// Trait de plataforma injetado pela casca. Carrega os três
