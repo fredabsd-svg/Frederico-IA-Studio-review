@@ -466,36 +466,65 @@ function ConversationHeader(props: {
   onChangeModel: (provider: string, model: string) => void;
 }) {
   const { conv, catalog, onChangeModel } = props;
-  const [editing, setEditing] = useState(false);
-  const models = catalog.filter((m) => m.provider === conv.provider_id);
+
+  // Valor composto `provider/model`: o `<select>` precisa de uma
+  // chave única, e o mesmo `model` pode aparecer em provedores
+  // diferentes (`openrouter` reexpõe modelos da OpenAI e da
+  // Anthropic com o mesmo nome).
+  const atual = `${conv.provider_id}/${conv.model_id}`;
+
+  // Agrupado por provedor, mas **sem filtrar por provedor**. O
+  // backend sempre soube trocar os dois campos de uma vez
+  // (`UPDATE conversations SET provider_id, model_id`); era só a
+  // UI que restringia a escolha ao provedor corrente, deixando
+  // uma conversa presa na OpenAI sem motivo técnico.
+  const porProvedor = new Map<string, ModelDescriptorView[]>();
+  for (const m of catalog) {
+    const lista = porProvedor.get(m.provider);
+    if (lista) lista.push(m);
+    else porProvedor.set(m.provider, [m]);
+  }
+
+  // O modelo da conversa pode não estar no catálogo (catálogo
+  // mudou entre versões). Sem esta opção o `<select>` mostraria
+  // outro modelo como se fosse o dela — mentira silenciosa.
+  const conhecido = catalog.some(
+    (m) => m.provider === conv.provider_id && m.model === conv.model_id,
+  );
+
   return (
     <header className="conv-header">
-      {editing ? (
+      <label className="conv-model">
+        <span className="conv-model-rotulo">Modelo</span>
         <select
-          value={conv.model_id}
+          value={atual}
+          aria-label="Modelo da conversa"
           onChange={(e) => {
-            onChangeModel(conv.provider_id, e.target.value);
-            setEditing(false);
+            const [provider, ...resto] = e.target.value.split("/");
+            // `rejoin` porque há model ids com barra
+            // (`meta-llama/llama-3.1-70b` no OpenRouter).
+            onChangeModel(provider, resto.join("/"));
           }}
-          onBlur={() => setEditing(false)}
-          autoFocus
         >
-          {models.length === 0 && <option value={conv.model_id}>{conv.model_id}</option>}
-          {models.map((m) => (
-            <option key={m.model} value={m.model}>
-              {m.display_name} ({m.model})
+          {!conhecido && (
+            <option value={atual}>
+              {conv.provider_id} / {conv.model_id} (fora do catálogo)
             </option>
+          )}
+          {[...porProvedor.entries()].map(([provider, modelos]) => (
+            <optgroup key={provider} label={provider}>
+              {modelos.map((m) => (
+                <option
+                  key={`${m.provider}/${m.model}`}
+                  value={`${m.provider}/${m.model}`}
+                >
+                  {m.display_name} ({m.model})
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
-      ) : (
-        <button
-          className="link"
-          onClick={() => setEditing(true)}
-          title="Trocar modelo"
-        >
-          {conv.provider_id} / {conv.model_id}
-        </button>
-      )}
+      </label>
       <small>Total: {formatCost(conv.total_cost_microcents)}</small>
     </header>
   );
