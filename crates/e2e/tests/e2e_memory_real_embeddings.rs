@@ -181,7 +181,25 @@ async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
     let req = RetrievalRequest {
         scope_type: registro.scope_type,
         scope_id: registro.scope_id.clone(),
-        query: "qual formato de arquivo devo usar quando for te entregar um relatorio?".to_string(),
+        // **A query precisa de âncora lexical, e isso não é detalhe
+        // do teste — é como o `HybridRetriever` funciona.** O
+        // `search_lexical` é um portão FTS5: o `sanitize_fts5_query`
+        // junta os tokens com ` OR `, e o score semântico só
+        // reordena o que o MATCH devolveu. Query sem nenhum token em
+        // comum com o conteúdo devolve zero candidatos, e o
+        // embedding nunca chega a ser consultado.
+        //
+        // O tokenizador é `unicode61 remove_diacritics 2`: resolve
+        // acento, mas **não faz stemming**. Medido: `relatorio` no
+        // singular dá 0 hits contra "relatórios"; a forma plural dá
+        // 1. Foi assim que o run 32053271597 falhou, já com o
+        // classificador e o embedding funcionando.
+        //
+        // Então a query compartilha o **sujeito** (`relatorios`) e
+        // parafraseia o predicado, sem citar a resposta (`PDF`) —
+        // mesma forma do teste original, que compartilhava "Maria" e
+        // não citava "1985".
+        query: "em que formato os relatorios devem ser entregues?".to_string(),
         k: 8,
         token_budget: 1500,
         recency_epsilon: 0.01,
