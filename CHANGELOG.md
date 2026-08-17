@@ -1,5 +1,15 @@
 ## [Não publicado]
 
+### Planejado — Fase 8, Etapa 5b: a interface ganha identidade, acessibilidade e dono (2026-08-17)
+
+- **O app vai deixar de parecer um protótipo, e há régua para dizer quando isso aconteceu.** O `styles.css` tem hoje 6 tokens de cor, 10 tamanhos de fonte escolhidos caso a caso, 4 raios de borda e **zero estados de foco em 1.037 linhas** — quem navega por teclado não vê onde está. A Etapa 5b ([ADR-0045](docs/decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md)) troca isso por um sistema de tokens com escala de tipografia, espaçamento e estados completos.
+- **A paleta escura não muda, porque ela está certa.** A medição de contraste do tema escuro passa em AA em todos os pares (corpo 14,20:1; secundário 6,19:1; destaque 7,44:1). O `--accent` `#d4a05a` já é um tom de latão — a identidade Tinta & Latão estava no app sem nome. O que faltava era estrutura, não cor.
+- **O tema claro está quebrado hoje, e ninguém avisava.** O bloco `prefers-color-scheme: light` esquece de sobrescrever `--accent`, o que dá 2,24:1 contra o fundo claro — abaixo do mínimo de 4,5:1. Quem usa o Windows em modo claro vê destaque ilegível. Passa a ser coberto por gate.
+- **Acessibilidade tem dono outra vez.** Ela vinha implícita no item "Copiloto, tarefas, refinamento" retirado da fase pelo ADR-0039 §D1 e sumiu do nome quando o item foi para a tabela de itens sem fase. Volta nomeada, com alvo WCAG 2.1 AA no que é automatizável.
+- **"Ficar bonito" não fecha etapa.** O ADR-0039 §D1 tirou o Copiloto da fase porque critério qualitativo não fecha por teste; uma etapa de layout sem porta mecânica teria o mesmo defeito. A 5b fecha contra quatro gates de CI: contraste nos dois temas, foco visível e AA automatizável, zero literal visual fora do `:root`, e travessia da jornada principal só por teclado. Aparência é avaliada por humano e não bloqueia.
+- **O Copiloto (Nino) continua fora.** Sugestão desta etapa vem de lista fixa ligada ao estado da tela. Se precisar de chamada a modelo, é Copiloto, e permanece sem fase.
+- **Sem código neste PR.** A spec `ui-design-system.md` entra no primeiro commit de implementação, já promovida — criá-la agora como "especificado" quebraria a trava do caminho inverso da REGRA §1.13, porque a Fase 8 já tem código mesclado (ADR-0045 §D7).
+
 ### Corrigido — a versão no rodapé do app parou de mentir (2026-08-17)
 
 - **O rodapé anunciava "v0.3.0 (Fase 3: Motor de execução e ferramentas)"** em todas as telas, com a Fase 7 concluída e a versão real vindo do binário. Agora ele mostra a versão de verdade e a fase corrente, ambas derivadas da mesma fonte que a tela "Sobre" já usava.

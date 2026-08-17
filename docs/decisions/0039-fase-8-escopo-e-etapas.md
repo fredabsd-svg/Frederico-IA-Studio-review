@@ -49,10 +49,13 @@ Não é burocracia acrescentada: é a REGRA §2.2 aplicada ao workflow que a fas
 | **3 — `git-engine`** | Crate novo, puro, `unsafe_code = "forbid"`. Status, diff, log, branch, commit sobre repositório local. | Etapa 4, 6 |
 | **4 — Projetos e checkpoints** | `crates/project-engine/` + checkpoints nomeados sobre o `CheckpointRepo` existente. | — |
 | **5 — `github-engine`** | Auth, push, `create_pr`, matriz de autorização. E2E noturno + twin determinístico. | — |
+| **5b — Identidade visual, acessibilidade e sugestões estáticas** | Sistema de design com tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas de estado vazio. Sem tela nova. Ver [ADR-0045](0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). | Etapa 6 |
 | **6 — Diff viewer + UI de projeto** | Frontend consumindo `git-engine` e `project-engine`. | — |
 | **7 — Fechamento** | Pendências herdadas da Fase 7 (D4), catálogo dinâmico (ADR-0043), promoção da fase. | — |
 
 Cada etapa da 3 em diante entrega **pelo menos um teste de negação** — o que a ferramenta recusa, não só o que ela faz. Regra herdada da Fase 7, que a validou: foi um teste de negação que expôs o escape de path do sandbox na Etapa 4 daquela fase.
+
+A Etapa 5b foi acrescentada em 2026-08-17, fora da Etapa 1 de planejamento, pelo [ADR-0045](0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). Ela precede a Etapa 6 porque a 6 é a única etapa de frontend restante da fase — sistema de design que chegasse depois obrigaria a construir o diff viewer e a UI de projeto duas vezes.
 
 ### D4 — Pendências herdadas da Fase 7 entram nomeadas, não por osmose
 

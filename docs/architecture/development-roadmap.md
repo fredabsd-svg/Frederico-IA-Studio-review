@@ -41,13 +41,19 @@ A tabela de estado vivo está em [`docs/status.md`](../status.md). Este roadmap 
 
 - **O critério de aceite da Fase 7 deixa de citar a `Denylist` como a barreira do `exec.shell`.** O que ele exige — recusar comando destrutivo antes do spawn — continua o mesmo e está cumprido; o que muda é o mecanismo nomeado. Quem impede é a **allowlist** de 11 programas read-only: `rm`, `format` e companhia não resolvem em programa nenhum. A denylist ficou redundante por construção e é mantida como tripwire, com a redundância verificada em teste. A régua não se moveu — a frase passou a nomear o que de fato protege, porque a anterior nomeava um mecanismo que o ADR-0037 provou não ser barreira.
 
+**Alterado em 2026-08-17 ([ADR-0045](../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md)):**
+
+- **A Fase 8 ganha a Etapa 5b** — identidade visual do app, acessibilidade (WCAG 2.1 AA automatizável) e sugestões estáticas de interface. Posicionada antes da Etapa 6 porque a 6 é a única etapa de frontend restante.
+- **A acessibilidade recupera dono nomeado.** Ela integrava o conteúdo "Copiloto, tarefas, refinamento (Nino + sugestões + acessibilidade)" retirado da fase pelo ADR-0039 §D1, mas o item que chegou à tabela de itens sem fase chama-se apenas "Copiloto (Nino) e tarefas". A acessibilidade saiu junto sem decisão que a tirasse; volta aqui.
+- **O Copiloto (Nino) continua sem fase.** A Etapa 5b não o antecipa: sugestão que exija chamada a modelo ou inferência sobre a conversa está fora, por definição (ADR-0045 §D4).
+
 ## Itens com fase própria a definir
 
 Trabalho reconhecido, com dono documental, sem fase atribuída — para que nenhum spec precise especular sobre o "quando":
 
 | Item | Origem | Por que não tem fase ainda |
 |---|---|---|
-| **Copiloto (Nino) e tarefas** | `PROMPT MESTRE` §24.1; tirado da Fase 8 pelo ADR-0039 §D1 | Critério de aceite qualitativo; precisa de um ADR que o torne verificável antes de virar fase |
+| **Copiloto (Nino) e tarefas** | `PROMPT MESTRE` §24.1; tirado da Fase 8 pelo ADR-0039 §D1 | Critério de aceite qualitativo; precisa de um ADR que o torne verificável antes de virar fase. **A acessibilidade, que vinha implícita neste item, saiu dele em 2026-08-17 e passou à Fase 8, Etapa 5b ([ADR-0045](../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md)).** |
 | **Filtro de rede no nível de processo (WFP/WDAC)** | Fase 7 — fecharia DNS exfiltration e o bypass por socket raw | Natureza de kernel/política do Windows; exige ADR próprio |
 | **OAuth device flow para GitHub** | ADR-0041, alternativa 1 | Exige registrar um GitHub App e manter `client_id` do produto — decisão de produto, não de engenharia |
 | **Retomada de run a partir de checkpoint** | Tabela `checkpoints` (migração `0003`) sem dono em código | Nada a consome hoje; construir por simetria seria mais estrutura sem dono |
