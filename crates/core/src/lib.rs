@@ -321,9 +321,25 @@ mod tests {
         assert!(require_non_empty("name", "ok").is_ok());
     }
 
+    /// `APP_VERSION` é escrito à mão, mas não pode divergir da
+    /// versão do workspace — é ela que vai para `app_info` no
+    /// banco e para o `User-Agent` dos adapters.
+    ///
+    /// Antes este teste travava no literal `"0.1.0"`, o que o
+    /// tornava inútil justamente no momento em que ele
+    /// importaria: um bump do `Cargo.toml` continuaria verde com
+    /// a constante para trás. Amarrar em `CARGO_PKG_VERSION`
+    /// transforma a duplicação em duplicação **conferida** — a
+    /// versão continua em dois lugares, mas os dois não podem
+    /// mais discordar em silêncio (REGRAS §1.9).
     #[test]
-    fn app_version_constant_is_stable() {
-        assert_eq!(APP_VERSION.to_string(), "0.1.0");
+    fn app_version_constant_matches_cargo_manifest() {
+        assert_eq!(
+            APP_VERSION.to_string(),
+            env!("CARGO_PKG_VERSION"),
+            "APP_VERSION divergiu da versão do Cargo workspace — \
+             atualize a constante em crates/core/src/lib.rs"
+        );
     }
 
     #[test]

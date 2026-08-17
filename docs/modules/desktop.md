@@ -134,10 +134,11 @@ continua valendo pra qualquer usuário com banco de versão anterior
 
 ### Frontend (`apps/desktop/src/`)
 
-- `services/api.ts` — **única** camada que faz `invoke` no Tauri (ADR-0003).
+- `services/api.ts` — **única** camada que faz `invoke` no Tauri (ADR-0003). Expõe também `getAppVersion()`, que lê a versão do binário (`@tauri-apps/api/app`) — fonte única, `tauri.conf.json`.
 - `services/contracts.ts` — tipos espelhados do `frederico-shared-contracts`. Virará arquivo gerado na Fase 2 (REGRAS §1.9).
+- `generated/phase-status.ts` — **ARQUIVO GERADO** por `scripts/generate-phase-status.mjs` a partir de `docs/status.md`. Não edite.
 - `routes/Home.tsx` — busca `app_info` via IPC e mostra o resultado.
-- `routes/About.tsx` — texto estático.
+- `routes/About.tsx` — versão via `getAppVersion()` + tabela de fases derivada de `generated/phase-status.ts`. **Nada escrito à mão sobre o estado do produto.**
 - `App.tsx` — layout com `HashRouter` e 2 rotas.
 
 ## De quem depende / quem depende dele
@@ -149,6 +150,8 @@ continua valendo pra qualquer usuário com banco de versão anterior
 
 - `tauri::async_runtime::block_on` é usado em `setup` para abrir o banco de forma síncrona antes da janela abrir. Trocar para `tokio::spawn` exigiria lidar com inicialização tardia dos comandos.
 - O `services/` do frontend é a **única** camada que importa `@tauri-apps/api/core`. Componentes nunca chamam `invoke` diretamente. Lint futuro no CI deve verificar isso.
+- **Nenhum número de versão literal no `apps/desktop/src/`** — o `check-docs.mjs` falha se aparecer um semver de 3 partes fora de comentário. A regra nasceu de um caso real: a tela `/sobre` anunciou uma versão que nunca existiu enquanto `tauri.conf.json` e `package.json` diziam outra. Se precisar exibir versão, use `getAppVersion()`.
+- **Estado do produto na UI é derivado, nunca escrito.** A `/sobre` mantinha à mão listas de "funciona" e "não funciona ainda"; elas pararam de ser verdade na Fase 3 e continuaram na tela até a Fase 7, afirmando ao usuário que tool calls, memória e documentos não funcionavam — com as três fases concluídas. Texto de UI sobre o estado do sistema apodrece porque ninguém tem motivo para reabri-lo. O que a máquina não consegue derivar do `docs/status.md`, não entra na tela.
 - O CSP em `tauri.conf.json` é restritivo. Recursos adicionais exigem atualização consciente.
 - **`FREDERICO_DATA_DIR` é o ponto de override do data dir** — **NUNCA** o binário deve abrir `%LOCALAPPDATA%` em contexto de test. O smoke test usa `tempfile::tempdir()` e seta essa env var antes de spawnar o binário, garantindo **zero contato com o banco de produção do user**. Sem essa env var, qualquer `cargo test` destruiria conversas/memórias/runs reais (verificado na sessão 2026-08-10: o `frederico.db` do user foi de 376KB pra 0 bytes durante a investigação). Lição: **nunca use o path de produção em tests** — tempdir sempre.
 - **`tracing_subscriber::fmt::layer()` precisa de `.with_writer(std::io::stderr)` explícito** — o default é `stdout`, e o smoke test `smoke_startup` só captura stderr via `Stdio::piped()`. Sem o writer explícito, o `tracing::error!` do startup recovery não aparece no test, e a nova classe de erro não é detectada (volta pro falso "smoke verde" que motivou a criação do test). Garantido em `frederico-diagnostics/src/lib.rs::init`.
