@@ -38,7 +38,7 @@ use std::sync::Mutex;
 
 use frederico_core::ProviderId;
 use frederico_security::windows::WindowsCredentialStore;
-use frederico_security::CredentialStore;
+use frederico_security::{CredentialStore, ServiceCredentialKey, ServiceCredentialStore};
 use secrecy::ExposeSecret;
 
 /// Mutex global para serializar os testes — o Windows Credential
@@ -286,5 +286,144 @@ async fn set_overwrites_existing() {
         .expect("existe após overwrite");
     assert_eq!(got.expose_secret(), "v2-different");
 
+    cleanup.0.clear();
+}
+
+// ===========================================================================
+// Credenciais de serviço (Etapa 2 da Fase 8, ADR-0041 §D1)
+// ===========================================================================
+
+/// Chave de serviço única por execução, mesma estratégia do
+/// `unique_id`: PID + counter. O serviço leva o prefixo `test-` para
+/// nunca cair no espaço de nomes de um serviço real.
+fn unique_service_key(label: &'static str) -> ServiceCredentialKey {
+    let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    ServiceCredentialKey::new(format!("test-svc-{label}-{pid}"), format!("conta-{n}"))
+        .expect("chave de teste valida")
+}
+
+/// Limpeza das credenciais de serviço. Mesmo racional do [`Cleanup`]
+/// de provedor (ver a doc dele): `spawn`, não `block_on`.
+struct ServiceCleanup(Vec<ServiceCredentialKey>);
+
+impl Drop for ServiceCleanup {
+    fn drop(&mut self) {
+        if self.0.is_empty() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            for key in std::mem::take(&mut self.0) {
+                handle.spawn(async move {
+                    let store = WindowsCredentialStore::new();
+                    let _ = store.delete_secret(&key).await;
+                });
+            }
+        }
+    }
+}
+
+/// Round-trip contra o Credential Manager real: grava, lê, apaga.
+/// É o teste que prova que a trilha DPAPI **de serviço** existe de
+/// verdade — sem ele, os testes de unidade provariam só que a string
+/// do alvo é montada como esperado.
+#[tokio::test(flavor = "current_thread")]
+async fn service_set_get_roundtrip() {
+    let _g = lock();
+    let store = WindowsCredentialStore::new();
+    let key = unique_service_key("roundtrip");
+    let mut cleanup = ServiceCleanup(vec![key.clone()]);
+
+    let secret = secrecy::SecretString::new("ghp_token_de_teste_1234".to_string().into());
+    store.set_secret(&key, &secret).await.expect("set");
+
+    let got = store
+        .get_secret(&key)
+        .await
+        .expect("get")
+        .expect("credencial deve existir após set");
+    assert_eq!(got.expose_secret(), "ghp_token_de_teste_1234");
+
+    store.delete_secret(&key).await.expect("delete");
+    assert!(store
+        .get_secret(&key)
+        .await
+        .expect("get pós-delete")
+        .is_none());
+
+    cleanup.0.clear();
+}
+
+/// `list_accounts` devolve as contas de **um** serviço, e nada além.
+/// O controle importa: uma implementação que devolvesse o cofre
+/// inteiro passaria num teste que só checasse "a conta está lá".
+#[tokio::test(flavor = "current_thread")]
+async fn service_list_accounts_is_scoped_to_the_service() {
+    let _g = lock();
+    let store = WindowsCredentialStore::new();
+    let pid = std::process::id();
+    let servico = format!("test-svc-escopo-{pid}");
+    let outro = format!("test-svc-outro-{pid}");
+
+    let a = ServiceCredentialKey::new(servico.clone(), "conta-a").expect("chave a");
+    let b = ServiceCredentialKey::new(servico.clone(), "conta-b").expect("chave b");
+    let alheia = ServiceCredentialKey::new(outro, "conta-alheia").expect("chave alheia");
+    let mut cleanup = ServiceCleanup(vec![a.clone(), b.clone(), alheia.clone()]);
+
+    let s = secrecy::SecretString::new("x".to_string().into());
+    for k in [&a, &b, &alheia] {
+        store.set_secret(k, &s).await.expect("set");
+    }
+
+    let mut contas = store.list_accounts(&servico).await.expect("list_accounts");
+    contas.sort();
+    assert_eq!(contas, vec!["conta-a".to_string(), "conta-b".to_string()]);
+
+    // E o serviço vizinho não vaza para cá.
+    assert!(
+        !contas.iter().any(|c| c == "conta-alheia"),
+        "list_accounts vazou conta de outro servico: {contas:?}"
+    );
+
+    for k in [&a, &b, &alheia] {
+        store.delete_secret(k).await.expect("delete");
+    }
+    cleanup.0.clear();
+}
+
+/// **Teste de negação, contra o cofre real.** Uma credencial de
+/// serviço não pode alcançar o espaço de nomes das chaves de
+/// provedor. O caminho testado é o único que sobraria: pedir uma
+/// chave cujo serviço seja `provider`.
+///
+/// O controle positivo é o que dá sentido ao teste — a credencial de
+/// provedor gravada antes continua intacta depois da tentativa.
+#[tokio::test(flavor = "current_thread")]
+async fn service_credential_cannot_overwrite_a_provider_credential() {
+    let _g = lock();
+    let store = WindowsCredentialStore::new();
+    let id = unique_id("nao-sobrescrever");
+    let mut cleanup = Cleanup(vec![id.clone()]);
+
+    let original = secrecy::SecretString::new("chave-de-modelo-original".to_string().into());
+    store.set(&id, &original).await.expect("set provider");
+
+    // A tentativa morre na construção da chave, antes de qualquer
+    // chamada Win32.
+    let tentativa = ServiceCredentialKey::new("provider", id.as_str());
+    assert!(
+        tentativa.is_err(),
+        "chave de servico no espaco de provedor foi aceita"
+    );
+
+    // Controle positivo: a credencial de provedor segue intacta.
+    let ainda_la = store
+        .get(&id)
+        .await
+        .expect("get")
+        .expect("credencial de provedor deve continuar existindo");
+    assert_eq!(ainda_la.expose_secret(), "chave-de-modelo-original");
+
+    store.delete(&id).await.expect("delete");
     cleanup.0.clear();
 }

@@ -1,5 +1,9 @@
 # 0041 — GitHub: token no DPAPI, matriz de autorização e operações irreversíveis
 
+> **Nota de implementação, 2026-08-17 (Etapa 2).** A trilha de credencial do §D1 foi construída (`ServiceCredentialStore` + `ServiceCredentialKey` em `crates/security/`), e o padrão de `TargetName` que este ADR fixa — `Frederico-IA-Studio:github:<conta>` — revelou uma colisão ao ser implementado: com a mesma regra de montagem, um serviço chamado `provider` com conta `openai` produz `Frederico-IA-Studio:provider:openai`, que é **byte a byte** o alvo da chave de API da OpenAI. Gravar nele sobrescreveria a credencial de modelo do usuário. O padrão do §D1 fica como está; `provider` passa a ser nome de serviço reservado, recusado na construção da chave. Fixado em `service_key_refuses_the_reserved_provider_namespace` e em `service_credential_cannot_overwrite_a_provider_credential`. O restante do ADR (matriz de autorização, ausência de `--force`, aprovação por operação, twin do E2E) continua sem implementação — é trabalho da Etapa 5.
+>
+> A alternativa 5 deste ADR cita "o noturno deste repositório nunca rodou verde em 12 tentativas". Ver a errata do [ADR-0039](0039-fase-8-escopo-e-etapas.md): ele rodou verde antes de 2026-08-05.
+
 ## Contexto
 
 A Fase 8 (ADR-0039 §D1) entrega `push` e criação de PR pelo app. É a primeira vez que o produto executa uma **operação destrutiva em serviço externo autenticado** por conta do agente. Todas as anteriores eram locais: escrita de arquivo sob Jail, execução sob sandbox, rede sob proxy com allowlist.

@@ -1,5 +1,13 @@
 ## [Não publicado]
 
+### Adicionado — Fase 8, Etapa 2 (parcial): cofre para credencial de serviço (2026-08-17)
+
+- **O app ganha onde guardar credencial de serviço externo** — token de GitHub, na Fase 8 — no mesmo cofre do Windows onde já ficam as chaves de API dos modelos, criptografado pelo sistema (DPAPI). Para o usuário, a garantia é a de sempre: o segredo nunca vai para arquivo de configuração nem para variável de ambiente, de onde vazaria para processos filhos.
+- **Uma colisão foi encontrada ao construir, e fechada.** O padrão de nome que o [ADR-0041](docs/decisions/0041-github-auth-e-matriz-de-autorizacao.md) §D1 fixou faria um serviço chamado `provider` gravar exatamente sobre a chave de API da OpenAI do usuário — mesmo endereço no cofre, por um caminho que não se parece com "mexer nas chaves de modelo". O nome passou a ser reservado, e há teste que grava uma chave de provedor, tenta sobrescrevê-la por esse caminho e confirma que ela continua intacta.
+- **Correção de registro nos ADRs:** o ADR-0039 §D2 e a alternativa 5 do ADR-0041 afirmavam que o CI noturno "nunca funcionou". Ele rodou verde em 2026-08-03 e 2026-08-04; quebrou em 2026-08-05, no PR #27, que acrescentou um passo dependente de um secret que nunca foi criado. É uma regressão datada, não um pipeline natimorto. As erratas entram aqui porque é esta entrega que traz os ADRs corrigidos; o conserto do workflow em si saiu na entrada anterior.
+- **O que esta entrega não faz:** não deixa o noturno verde. Isso depende do secret `OPENROUTER_API_KEY` ser criado no repositório — ação do mantenedor, não de código. Enquanto isso não acontecer, a Fase 8 continua com a pré-condição 1 de 2 do ADR-0039 §D2 em aberto.
+- **Testes:** 3 unitários novos em `crates/security/src/windows.rs` (formato do alvo, recusa do espaço de nomes reservado, recusa de curinga e separador) e 3 de integração contra o Windows Credential Manager real em `crates/security/tests/windows_credential_store.rs` (round-trip, escopo do `list_accounts`, e a negação com controle positivo).
+
 ### Corrigido — o guard de arquitetura do CI noturno voltou a rodar (2026-08-17)
 
 - **Uma verificação de arquitetura passou 13 noites sem acontecer, e nada avisou.** O `Core purity guard` — o passo que confere que o núcleo não importa dependência de plataforma — vinha aparecendo como `skipped` no CI noturno desde 2026-08-05, porque o passo anterior falhava e derrubava o resto do job. Como o job já ficava vermelho por outro motivo, a ausência do guard não chamava atenção. Agora ele roda independentemente do que veio antes.

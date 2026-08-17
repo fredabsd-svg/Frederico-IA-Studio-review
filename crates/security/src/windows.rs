@@ -23,7 +23,7 @@
 // aqui por ser a única ponte com a Win32.
 #![allow(unsafe_code)]
 
-use super::{CredentialStore, SecurityError};
+use super::{CredentialStore, SecurityError, ServiceCredentialKey, ServiceCredentialStore};
 use async_trait::async_trait;
 use frederico_core::ProviderId;
 use secrecy::{ExposeSecret, SecretString};
@@ -63,6 +63,20 @@ pub use integrity_label::{
 /// Prefixo do `TargetName`. Usado em `list_providers` como filtro
 /// (`Frederico-IA-Studio:provider:*`).
 const TARGET_PREFIX: &str = "Frederico-IA-Studio:provider:";
+
+/// Prefixo do `TargetName` das credenciais de **serviço** (Etapa 2
+/// da Fase 8, [ADR-0041](../decisions/0041-github-auth-e-matriz-de-autorizacao.md)
+/// §D1). Alvo completo: `Frederico-IA-Studio:<serviço>:<conta>`.
+///
+/// **A colisão com o espaço de provedores é fechada do lado da
+/// chave, não daqui.** Com este padrão, um serviço chamado
+/// `provider` com conta `openai` produziria
+/// `Frederico-IA-Studio:provider:openai` — o alvo idêntico ao da
+/// chave de API da OpenAI, permitindo sobrescrevê-la. Por isso
+/// `ServiceCredentialKey` recusa `provider` como nome de serviço.
+/// Fixado em teste
+/// (`service_key_refuses_the_reserved_provider_namespace`).
+const SERVICE_TARGET_PREFIX: &str = "Frederico-IA-Studio:";
 
 /// `WindowsError::NOT_FOUND` (1168). As funções Win32 retornam isso
 /// como HRESULT `0x80070490`; extraímos o win32 code com `& 0xFFFF`
@@ -259,6 +273,178 @@ impl CredentialStore for WindowsCredentialStore {
     }
 }
 
+/// `TargetName` de uma credencial de serviço:
+/// `Frederico-IA-Studio:<serviço>:<conta>`. Os componentes já vêm
+/// validados pela `ServiceCredentialKey` — não há saneamento a
+/// fazer aqui, e é deliberado que não haja: saneamento no ponto de
+/// uso é o padrão que deixa um caminho sem saneamento passar
+/// despercebido.
+fn service_target_name(key: &ServiceCredentialKey) -> Vec<u16> {
+    to_wide(&format!(
+        "{SERVICE_TARGET_PREFIX}{}:{}",
+        key.service(),
+        key.account()
+    ))
+}
+
+/// Mesma trilha DPAPI do [`CredentialStore`], chaveada por
+/// `(serviço, conta)` em vez de `ProviderId` (Etapa 2 da Fase 8,
+/// ADR-0041 §D1).
+///
+/// **Por que uma segunda trait na mesma struct**, em vez de
+/// generalizar a primeira: `CredentialStore` está no caminho de
+/// produção do chat desde a Fase 2, e trocar a chave dele
+/// obrigaria a mexer em todos os chamadores para entregar uma
+/// capacidade que nenhum deles usa. A struct não tem estado, então
+/// duas traits nela não custam nada — e a separação é a mesma que o
+/// cofre faz: chave de modelo e token de serviço são segredos de
+/// naturezas diferentes.
+#[async_trait]
+impl ServiceCredentialStore for WindowsCredentialStore {
+    async fn get_secret(
+        &self,
+        key: &ServiceCredentialKey,
+    ) -> Result<Option<SecretString>, SecurityError> {
+        let target = service_target_name(key);
+        let mut cred_ptr: *mut CREDENTIALW = std::ptr::null_mut();
+        let result =
+            unsafe { CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0, &mut cred_ptr) };
+        match result {
+            Ok(()) => {
+                if cred_ptr.is_null() {
+                    return Ok(None);
+                }
+                let cred = unsafe { *cred_ptr };
+                let size = cred.CredentialBlobSize as usize;
+                let s = if size == 0 {
+                    String::new()
+                } else {
+                    let bytes = unsafe { std::slice::from_raw_parts(cred.CredentialBlob, size) };
+                    String::from_utf8_lossy(bytes).into_owned()
+                };
+                unsafe { CredFree(creds_to_void(cred_ptr)) };
+                Ok(Some(SecretString::new(s.into())))
+            }
+            Err(e) => {
+                if hresult_to_win32(e.code().0) == ERROR_NOT_FOUND {
+                    return Ok(None);
+                }
+                Err(SecurityError::CredentialStore(format!(
+                    "CredReadW (servico): {e}"
+                )))
+            }
+        }
+    }
+
+    async fn set_secret(
+        &self,
+        key: &ServiceCredentialKey,
+        value: &SecretString,
+    ) -> Result<(), SecurityError> {
+        let target = service_target_name(key);
+        let secret = value.expose_secret();
+        let blob = secret.as_bytes();
+
+        let result = unsafe {
+            let target_pwstr = PWSTR(target.as_ptr() as *mut u16);
+            let cred = CREDENTIALW {
+                Flags: CRED_FLAGS(0),
+                Type: CRED_TYPE_GENERIC,
+                TargetName: target_pwstr,
+                Comment: PWSTR::null(),
+                LastWritten: std::mem::zeroed(),
+                CredentialBlobSize: blob.len() as u32,
+                CredentialBlob: blob.as_ptr() as *mut u8,
+                Persist: CRED_PERSIST_LOCAL_MACHINE,
+                AttributeCount: 0,
+                Attributes: std::ptr::null_mut(),
+                TargetAlias: PWSTR::null(),
+                UserName: PWSTR::null(),
+            };
+            CredWriteW(&cred, 0)
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => Err(SecurityError::CredentialStore(format!(
+                "CredWriteW (servico): {e}"
+            ))),
+        }
+    }
+
+    async fn delete_secret(&self, key: &ServiceCredentialKey) -> Result<(), SecurityError> {
+        let target = service_target_name(key);
+        let result = unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, 0) };
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if hresult_to_win32(e.code().0) == ERROR_NOT_FOUND {
+                    // Idempotente, mesma regra do `CredentialStore`.
+                    return Ok(());
+                }
+                Err(SecurityError::CredentialStore(format!(
+                    "CredDeleteW (servico): {e}"
+                )))
+            }
+        }
+    }
+
+    async fn list_accounts(&self, service: &str) -> Result<Vec<String>, SecurityError> {
+        // O serviço vem de fora e vai virar filtro com curinga, então
+        // passa pela mesma validação da chave — com uma conta
+        // sentinela, já que só o serviço importa aqui. Sem isto, um
+        // `service` com `*` varreria o cofre inteiro, incluindo o
+        // espaço de provedores.
+        let _ = ServiceCredentialKey::new(service, "_")?;
+
+        let prefix = format!("{SERVICE_TARGET_PREFIX}{service}:");
+        let filter = to_wide(&format!("{prefix}*"));
+        let mut count: u32 = 0;
+        let mut creds_ptr: *mut *mut CREDENTIALW = std::ptr::null_mut();
+        let result = unsafe {
+            CredEnumerateW(
+                PCWSTR(filter.as_ptr()),
+                windows::Win32::Security::Credentials::CRED_ENUMERATE_FLAGS(0),
+                &mut count,
+                &mut creds_ptr,
+            )
+        };
+        match result {
+            Ok(()) => {
+                if creds_ptr.is_null() || count == 0 {
+                    return Ok(Vec::new());
+                }
+                // Bloco único: um só `CredFree` (ver o comentário em
+                // `list_providers` — `CredFree` por item é
+                // double-free).
+                let creds = unsafe { std::slice::from_raw_parts(creds_ptr, count as usize) };
+                let mut accounts = Vec::new();
+                for &cred_ptr in creds {
+                    let cred = unsafe { *cred_ptr };
+                    let target = unsafe { from_wide(cred.TargetName.0) };
+                    if let Some(rest) = target.strip_prefix(&prefix) {
+                        // `rest` não pode conter `:` — se contiver, o
+                        // alvo é de outro nível e não é conta deste
+                        // serviço.
+                        if !rest.is_empty() && !rest.contains(':') {
+                            accounts.push(rest.to_string());
+                        }
+                    }
+                }
+                unsafe { CredFree(creds_to_void(creds_ptr)) };
+                Ok(accounts)
+            }
+            Err(e) => {
+                if hresult_to_win32(e.code().0) == ERROR_NOT_FOUND {
+                    return Ok(Vec::new());
+                }
+                Err(SecurityError::CredentialStore(format!(
+                    "CredEnumerateW (servico): {e}"
+                )))
+            }
+        }
+    }
+}
+
 /// Converte um ponteiro alocado por `CredReadW`/`CredEnumerateW` em
 /// `*const c_void` (o que `CredFree` espera no `windows` v0.58).
 ///
@@ -279,6 +465,68 @@ mod tests {
         let n = target_name_for(&ProviderId::new("openai"));
         let s = String::from_utf16_lossy(&n[..n.len() - 1]); // sem null
         assert_eq!(s, "Frederico-IA-Studio:provider:openai");
+    }
+
+    /// Alvo de credencial de serviço, no padrão do ADR-0041 §D1.
+    #[test]
+    fn service_target_name_format() {
+        let key = ServiceCredentialKey::new("github", "fredabsd-svg").expect("chave valida");
+        let n = service_target_name(&key);
+        let s = String::from_utf16_lossy(&n[..n.len() - 1]);
+        assert_eq!(s, "Frederico-IA-Studio:github:fredabsd-svg");
+    }
+
+    /// **Teste de negação — colisão de espaço de nomes.**
+    ///
+    /// Sem a reserva do nome `provider`, esta chave produziria
+    /// `Frederico-IA-Studio:provider:openai`, que é byte a byte o
+    /// alvo da chave de API da OpenAI. Gravar nela sobrescreveria a
+    /// credencial de modelo do usuário — por um caminho que não se
+    /// parece em nada com "mexer nas chaves de modelo".
+    ///
+    /// A validação por caractere não pega este caso: não há
+    /// caractere ilegal em `provider`.
+    #[test]
+    fn service_key_refuses_the_reserved_provider_namespace() {
+        let erro = ServiceCredentialKey::new("provider", "openai")
+            .expect_err("nome de servico reservado deve ser recusado");
+        assert!(
+            matches!(erro, SecurityError::InvalidCredentialKey(_)),
+            "erro inesperado: {erro:?}"
+        );
+
+        // Controle positivo: o alvo que a reserva protege é
+        // exatamente o mesmo que o caminho de provedor produz.
+        let provider = target_name_for(&ProviderId::new("openai"));
+        let alvo_provider = String::from_utf16_lossy(&provider[..provider.len() - 1]);
+        assert_eq!(
+            alvo_provider,
+            format!("{SERVICE_TARGET_PREFIX}provider:openai"),
+            "se este formato mudar, a razao da reserva mudou junto"
+        );
+    }
+
+    /// **Teste de negação — curinga no filtro do `CredEnumerateW`.**
+    ///
+    /// `list_accounts` monta `Frederico-IA-Studio:<servico>:*`. Um
+    /// serviço contendo `*` faria a varredura alcançar o cofre
+    /// inteiro, inclusive o espaço de provedores.
+    #[test]
+    fn service_key_refuses_wildcards_and_separator() {
+        for (servico, conta) in [
+            ("git*", "conta"),
+            ("git?hub", "conta"),
+            ("github", "a*"),
+            ("git:hub", "conta"),
+            ("github", "x:github:vitima"),
+            ("", "conta"),
+            ("github", "   "),
+        ] {
+            assert!(
+                ServiceCredentialKey::new(servico, conta).is_err(),
+                "aceitou chave malformada: servico={servico:?} conta={conta:?}"
+            );
+        }
     }
 
     #[test]
