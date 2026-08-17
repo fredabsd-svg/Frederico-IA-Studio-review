@@ -322,22 +322,42 @@ function checarArquivosGerados() {
 }
 
 /**
- * Proíbe número de versão literal no código do frontend (§1.9).
+ * Proíbe **versão** e **fase** literais no código do frontend (§1.9).
  *
  * Motivo concreto: a tela `/sobre` anunciou "Versão 0.2.0" por
  * várias fases enquanto `tauri.conf.json` e `package.json` diziam
  * 0.1.0 — três fontes, duas mentindo. A versão exibida ao usuário
- * vem de `getAppVersion()`, que lê o binário; nenhum literal
- * precisa existir no `src/`.
+ * vem de `getAppVersion()`, que lê o binário; o estado das fases
+ * vem de `generated/phase-status.ts`, derivado do `docs/status.md`.
+ * Nenhum dos dois precisa de literal no `src/`.
  *
  * O casamento é deliberadamente estreito — semver de 3 partes com
  * borda de palavra — para não pegar versões de dependência, IDs,
  * datas ou strings de teste que legitimamente contenham números.
+ *
+ * ## Dois furos que esta guarda já teve, e que os testes fixam
+ *
+ * 1. **O prefixo `v` escapava.** A expressão era
+ *    `(?<![\w.])\d+\.\d+\.\d+(?![\w.])`, e `v` é caractere de
+ *    palavra: o lookbehind recusava o casamento logo depois dele.
+ *    `"Versão 0.2.0"` era pega; `"v0.3.0"` passava — e `v` é a
+ *    forma mais comum de escrever versão. O rodapé do `App.tsx`
+ *    exibiu `v0.3.0` por cinco fases com a guarda instalada e
+ *    verde.
+ * 2. **Fase literal não era coberta.** A mesma linha do rodapé
+ *    dizia "(Fase 3: Motor de execução e ferramentas)" com a Fase 7
+ *    concluída. Nenhuma expressão de versão pegaria isso.
  */
 function checarVersaoLiteralNoFrontend() {
   const DIR = join(ROOT, "apps/desktop/src");
   if (!existsSync(DIR)) return;
-  const SEMVER = /(?<![\w.])\d+\.\d+\.\d+(?![\w.])/;
+  // `[vV]?` fecha o furo 1 sem alargar o casamento: o lookbehind
+  // continua exigindo borda antes do prefixo, então `rev1.2.3` e
+  // `div1.2.3` seguem fora.
+  const SEMVER = /(?<![\w.])[vV]?\d+\.\d+\.\d+(?![\w.])/;
+  // Fecha o furo 2. Exige dígito depois de "Fase" — `interface Fase`
+  // e `"Fase de Ligação"` (que existe no gerado) não casam.
+  const FASE_LITERAL = /\bFase\s+\d+/;
 
   const arquivos = [];
   (function varrer(dir) {
@@ -364,6 +384,17 @@ function checarVersaoLiteralNoFrontend() {
           `linha ${i + 1}: número de versão literal "${m[0]}" no frontend. ` +
             `A versão vem de \`getAppVersion()\` (fonte: tauri.conf.json), ` +
             `nunca escrita à mão (REGRAS §1.9).`,
+        );
+      }
+      const f = linha.match(FASE_LITERAL);
+      if (f) {
+        falha(
+          "fase-literal",
+          rel(arquivo),
+          `linha ${i + 1}: afirmação de fase literal "${f[0]}" no frontend. ` +
+            `O estado das fases vem de \`generated/phase-status.ts\`, ` +
+            `derivado do \`docs/status.md\` (REGRAS §1.9). ` +
+            `Se a menção for histórica, ela vive em comentário.`,
         );
       }
     });

@@ -1,5 +1,10 @@
 ## [Não publicado]
 
+### Corrigido — a versão no rodapé do app parou de mentir (2026-08-17)
+
+- **O rodapé anunciava "v0.3.0 (Fase 3: Motor de execução e ferramentas)"** em todas as telas, com a Fase 7 concluída e a versão real vindo do binário. Agora ele mostra a versão de verdade e a fase corrente, ambas derivadas da mesma fonte que a tela "Sobre" já usava.
+- **A guarda que deveria ter impedido isso tinha dois furos, e os dois estão fechados.** O primeiro: a verificação recusava número de versão precedido de letra, e `v` é letra — então `0.2.0` era pego e `v0.3.0` passava, que é justamente a forma mais comum de escrever versão. O segundo: não havia verificação nenhuma para afirmação de fase escrita à mão. Uma guarda instalada e verde conviveu com o rodapé errado por cinco fases.
+- **Um segundo texto desatualizado apareceu junto:** a tela inicial dizia ser "o vertical fino da Fase 1". A menção à fase saiu; a descrição do que a tela faz continua.
 ### Adicionado — Fase 8, Etapa 2 (parcial): cofre para credencial de serviço (2026-08-17)
 
 - **O app ganha onde guardar credencial de serviço externo** — token de GitHub, na Fase 8 — no mesmo cofre do Windows onde já ficam as chaves de API dos modelos, criptografado pelo sistema (DPAPI). Para o usuário, a garantia é a de sempre: o segredo nunca vai para arquivo de configuração nem para variável de ambiente, de onde vazaria para processos filhos.

@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { HashRouter, Link, Navigate, Route, Routes } from "react-router-dom";
 import { ApprovalModal } from "./components/ApprovalModal";
 import {
+  getAppVersion,
   listApprovals,
   respondToApproval,
   type ApprovalDecision,
   type ApprovalEntryView,
 } from "./services";
+import { FASES } from "./generated/phase-status";
 import { Chat } from "./routes/Chat";
 import { Settings } from "./routes/Settings";
 import { About } from "./routes/About";
@@ -40,6 +42,33 @@ import { Team } from "./routes/Team";
  * required" e virar push-based.
  */
 export function App() {
+  // Rodapé derivado, nunca escrito à mão (§1.9). O mesmo par de
+  // fontes que a tela `/sobre` usa desde o PR #58: a versão vem do
+  // binário via `getAppVersion()` (fonte: `tauri.conf.json`), e a
+  // fase corrente vem do `generated/phase-status.ts`, derivado do
+  // `docs/status.md`. O literal que estava aqui anunciou
+  // "v0.3.0 (Fase 3)" até a Fase 7 fechar.
+  const [versao, setVersao] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelado = false;
+    getAppVersion()
+      .then((v) => {
+        if (!cancelado) setVersao(v);
+      })
+      // Rodapé é informativo: se a versão não vier, ele a omite em
+      // vez de exibir erro ou um valor inventado.
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  // A fase corrente é a última que não está "não iniciada" — a
+  // mesma leitura que o `status.md` faz de cima para baixo.
+  const faseAtual = [...FASES]
+    .reverse()
+    .find((f) => f.estado !== "não iniciada");
+
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalEntryView | null>(null);
 
@@ -117,7 +146,13 @@ export function App() {
           </Routes>
         </main>
         <footer>
-          <small>Frederico IA Studio — v0.3.0 (Fase 3: Motor de execução e ferramentas)</small>
+          <small>
+            Frederico IA Studio
+            {versao ? ` — v${versao}` : ""}
+            {faseAtual
+              ? ` (Fase ${faseAtual.id}: ${faseAtual.nome} — ${faseAtual.estado})`
+              : ""}
+          </small>
         </footer>
         {pendingApproval && (
           <ApprovalModal
