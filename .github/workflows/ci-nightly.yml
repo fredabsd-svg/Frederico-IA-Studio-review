@@ -121,7 +121,13 @@ jobs:
         shell: pwsh
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored
+        # `--nocapture` e' deliberado: o `MemoryExtractor` roda em
+        # task de background, e a captura do harness de teste e' por
+        # thread — sem isso, o `tracing::warn!` que diz **por que** o
+        # classificador falhou pode nao chegar ao log. Um teste so,
+        # entao o ruido e' limitado. Ver `init_tracing` no arquivo
+        # de teste.
+        run: cargo test -p frederico-e2e --test e2e_memory_real_embeddings -- --include-ignored --nocapture
 
       # `if: always()` porque um guard nao pode ser mascarado por
       # um passo que depende de provedor externo. Sem isso, este

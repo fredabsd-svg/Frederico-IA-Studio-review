@@ -51,6 +51,13 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+# Subscriber de `tracing` para os E2E que dependem de provedor
+# externo. Sem ele, um erro do provedor vira timeout mudo: o
+# `MemoryExtractor` captura o erro do classificador e o registra
+# via `tracing::warn!` sem propagar (regra do ADR-0012 §2), então
+# o teste só observa "nada foi persistido" e não consegue dizer
+# por quê. Ver `e2e_memory_real_embeddings.rs::init_tracing`.
+tracing-subscriber = { workspace = true }
 secrecy = { workspace = true }
 # SHA-256 (usado pelo e2e_files_write_under_jail pra recalcular
 # os hashes D6 esperados e asserir que `after_sha256` do output

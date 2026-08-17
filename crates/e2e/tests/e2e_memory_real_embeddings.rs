@@ -50,6 +50,41 @@ use secrecy::SecretString;
 
 mod common;
 
+/// Liga o `tracing` para que a **razão** de uma falha apareça no
+/// log do CI.
+///
+/// Sem isto, este teste só sabe dizer que nada foi persistido em 30
+/// segundos. O `MemoryExtractor` captura o erro do classificador e o
+/// registra via `tracing::warn!` **sem propagar** (regra do ADR-0012
+/// §2, deliberada: um erro de provedor não pode derrubar o worker), e
+/// a decisão de "não criar memória" sai como `tracing::info!`. Com
+/// nenhum subscriber instalado, os dois desaparecem — e as três
+/// causas que a mensagem de timeout lista (provider indisponível,
+/// classificador descartou, bug de pipeline) ficam indistinguíveis.
+///
+/// Foi exatamente o que aconteceu no run `32031207520` (2026-08-17),
+/// o primeiro depois de o secret `OPENROUTER_API_KEY` passar a
+/// existir: o passo finalmente executou, falhou por timeout, e o log
+/// não permitiu dizer se a chave não tinha crédito, se o modelo
+/// estava indisponível, ou se o classificador simplesmente decidiu
+/// que a frase não era memorável.
+///
+/// `with_test_writer` manda a saída pelo mecanismo de captura do
+/// harness de teste, então ela aparece junto do panic quando o teste
+/// falha — que é justamente quando ela importa.
+///
+/// `try_init` em vez de `init`: se outro teste do mesmo binário já
+/// instalou um subscriber global, isto vira no-op em vez de panic.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filtro = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,frederico_memory=debug"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filtro)
+        .with_test_writer()
+        .try_init();
+}
+
 /// Helper: panic com mensagem clara se `OPENROUTER_API_KEY`
 /// não está no env. **Sempre panic** — não tem skip silencioso
 /// (mesma regra do `e2e_docs_generate_with_real_worker` apontando
@@ -73,6 +108,7 @@ fn memory_real_providers_or_fail() -> SecretString {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requer OPENROUTER_API_KEY em runtime; roda no CI noturno via ci-nightly.yml (nao no CI de PR)"]
 async fn e2e_memory_real_embeddings_recall_by_paraphrase() {
+    init_tracing();
     let key = memory_real_providers_or_fail();
     let db = Arc::new(Database::open_in_memory().await.expect("open in-memory db"));
 
