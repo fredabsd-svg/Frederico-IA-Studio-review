@@ -12,6 +12,7 @@ members = [
     "crates/tool-registry",
     "crates/execution-engine",
     "crates/memory",
+    "crates/git-engine",
     "crates/document-engine",
     "crates/document-kits",
     "crates/process-architecture",

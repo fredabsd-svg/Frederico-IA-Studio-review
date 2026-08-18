@@ -1,12 +1,12 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-08-17
 Fase correspondente: 8
 -->
 
 # Integração com Git (`git-engine`)
 
-**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/git-engine/` foi escrita; o estado `especificado` é literal, e a isenção da §1.3 vale enquanto ele estiver assim (§1.13, com a exceção da Etapa 1 do [ADR-0038](../decisions/0038-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md)). A fonte da verdade do que está pronto é o [`docs/status.md`](../status.md).
+**O `crates/git-engine/` existe desde 2026-08-17, e cobre uma fatia estreita.** O PR de spike da Etapa 3 entregou `iniciar`, `abrir`, `commitar` e `historico`; `status`, `diff` e `branch` continuam sendo descrição do que não existe, e **nenhuma** das ferramentas da tabela abaixo está registrada no Tool Registry. A fonte da verdade do que está pronto é o [`docs/status.md`](../status.md); o as-built do crate é [`docs/modules/git-engine.md`](../modules/git-engine.md).
 
 Decisões que governam este spec: [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md) (escopo da fase) e [ADR-0040](../decisions/0040-git-engine-biblioteca-e-fronteira.md) (biblioteca e fronteira).
 
@@ -49,11 +49,13 @@ A assimetria é a do [ADR-0034](../decisions/0034-fase-7-write-exec-approval-pol
 
 **Nota de realidade herdada da Fase 7:** o cache de aprovação por escopo não existe em código — toda tool com `requires_user_approval` pede aprovação a cada invocação. A coluna acima descreve o comportamento real, e a Etapa 7 (ADR-0039 §D4) precisa preservá-lo ao construir o cache.
 
-## A escolha da biblioteca é um experimento, não uma premissa
+## A escolha da biblioteca foi um experimento, e o resultado contrariou a preferência
 
-O ADR-0040 §D2 **não** crava a biblioteca. A Etapa 3 abre com um spike cujo critério de saída é um teste que faz commit real num repositório temporário e o lê de volta. A preferência declarada é `gix` (Rust puro, sem toolchain C no build); ela cede se a escrita não cobrir as operações da tabela acima.
+O ADR-0040 §D2 não cravou a biblioteca: fixou os critérios e mandou medir. O spike rodou em 2026-08-17 e a preferência por `gix` **caiu**. A decisão está no [ADR-0047](../decisions/0047-git-engine-usa-git2-medido-por-spike.md); o crate usa `git2` 0.21.
 
-Este spec será atualizado com o resultado no mesmo commit em que o crate entrar, e o estado promovido para `parcialmente implementado` — como manda a §1.13.
+O que decidiu não foi o critério original. Os dois candidatos passavam nele — commit escrito, commit lido de volta pela mesma biblioteca. O que a `gix` não fazia era escrever o `.git/index`: o objeto de commit ficava válido e o repositório ficava ilegível para qualquer outro cliente Git, que via o arquivo recém-commitado como apagado. Somaram-se a isso a ausência de troca de branch no facade e a falha ao criar branch sem identidade no config.
+
+Fica a regra que o ADR-0047 §D3 tirou disso: **spike de escrita não fecha lendo pela própria biblioteca — fecha conferindo o artefato com a ferramenta de referência.**
 
 ## Testes previstos
 

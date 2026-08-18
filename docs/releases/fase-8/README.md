@@ -17,7 +17,7 @@ Fase correspondente: 8 (Etapas 1 e 2b fechadas; Etapa 2 parcialmente entregue; E
 | **1 — Planejamento** | este README + os 6 ADRs | 6 ADRs (0038-0043) + 3 specs novos + `status.md` + `CHANGELOG.md`. Sem código. |
 | 2 — Noturno verde + credencial | (a ser escrito) | Consertar o `CI Nightly` e prová-lo verde; estender a trilha DPAPI para token de serviço. **Fechada em 2026-08-17:** credencial de serviço no DPAPI (PR #60) + noturno verde em `main` (run `32063550384`, PR #67). |
 | **2b — Fechar o §D5 do ADR-0037** | [etapa-2b-narrativa.md](etapa-2b-narrativa.md) | **Fechada.** `exec.shell` de volta ao catálogo com resolução própria de programa (ADR-0044); Fase 7 reclosada. Herdada, não escolhida — ver abaixo. |
-| 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). |
+| 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). **PR de spike fechado em 2026-08-17: `git2` escolhida contra a preferência do ADR-0040 §D2 — ver [ADR-0047](../../decisions/0047-git-engine-usa-git2-medido-por-spike.md).** Falta `status`, `diff`, `branch` e o registro no Tool Registry. |
 | 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. |
 | 5 — `github-engine` | (a ser escrito) | Auth, push, `create_pr`, matriz de autorização. Noturno + twin. |
 | 5b — Identidade visual e acessibilidade | (a ser escrito) | Tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas. [ADR-0045](../../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). |

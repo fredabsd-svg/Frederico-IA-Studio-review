@@ -1,0 +1,20 @@
+[package]
+name = "frederico-git-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Operações de Git local sobre o workspace da conversa (Fase 8, Etapa 3: spike de biblioteca + escrita)."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+thiserror = { workspace = true }
+# Biblioteca de Git linkada, nunca `Command::new("git")` (ADR-0040 §D1).
+# `git2` foi escolhida pelo spike da Etapa 3, contra a preferência
+# declarada pelo ADR-0040 §D2 — ver ADR-0047 para a medição.
+git2 = "0.21"
+
+[dev-dependencies]
+tempfile = "3"

@@ -154,7 +154,7 @@ Cada crate tem um documento próprio em [`docs/modules/`](docs/modules/) com API
 
 ## Instalação
 
-Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+, MinGW-w64 (toolchain GNU) e o CLI do Tauri 2.x (`cargo install tauri-cli --version "^2.0"`).
+Requisitos: **Windows 10/11 64 bits**. Como ainda não há release publicada, o instalador é gerado a partir do código-fonte — para isso você precisa de [Rust](https://www.rust-lang.org/tools/install) 1.75+, [Node](https://nodejs.org/) 20+, MinGW-w64 (toolchain GNU) e o CLI do Tauri 2.x (`cargo install tauri-cli --version "^2.0"`). O MinGW não é só para o Tauri: desde a Etapa 3 da Fase 8 o `git-engine` liga o `libgit2`, que é C — **compilar o projeto exige um compilador C** ([ADR-0047](docs/decisions/0047-git-engine-usa-git2-medido-por-spike.md) §D2).
 
 ```pwsh
 git clone https://github.com/fredabsd-svg/Frederico-IA-Studio-review.git

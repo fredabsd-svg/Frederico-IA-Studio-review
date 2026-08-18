@@ -132,8 +132,8 @@ PR de referência e as colunas de E2E preenchidas. Fase não vira
   Tesseract, fontes e bibliotecas empacotadas; comunicação por named
   pipes, **sem** `localhost`.
 
-São **36 ADRs** hoje (`0001`–`0036`); o próximo a ser escrito é o
-`0037`. Além das quatro fundacionais acima, estas são as que mais
+São **47 ADRs** hoje (`0001`–`0047`); o próximo a ser escrito é o
+`0048`. Além das quatro fundacionais acima, estas são as que mais
 restringem trabalho novo:
 
 - **ADR-0022** — `JailResolver`: o jail de sistema de arquivos é
@@ -153,20 +153,21 @@ restringem trabalho novo:
   Binário Rust em `apps/desktop/src-tauri/`, frontend em
   `apps/desktop/src/`. A camada `apps/desktop/src/services/` é a
   **única** que faz `invoke` no Tauri (regra do ADR-0003).
-- **Núcleo:** 17 crates em `crates/` — `core`, `storage`,
+- **Núcleo:** 18 crates em `crates/` — `core`, `storage`,
   `diagnostics`, `security`, `runtimes`, `provider-engine`,
   `model-catalog`, `agent-engine`, `tool-registry`,
-  `execution-engine`, `memory`, `document-engine`, `document-kits`,
-  `process-architecture`, `test-support`, `app`, `e2e`. Sem
+  `execution-engine`, `memory`, `git-engine`, `document-engine`,
+  `document-kits`, `process-architecture`, `test-support`, `app`,
+  `e2e`. Sem
   dependência de plataforma (ADR-0003). O `crates/app` é a camada de
   composição pura que a casca consome.
 - **Contratos compartilhados:** `packages/shared-contracts/`.
 - **Workers sidecar:** `workers/document-worker/` (Python embutido,
   ADR-0004).
-- **Workspace Cargo:** 19 membros (os 17 crates +
+- **Workspace Cargo:** 20 membros (os 18 crates +
   `packages/shared-contracts` + `apps/desktop/src-tauri`).
 - **Documentação:** `docs/architecture/` (21 specs), `docs/decisions/`
-  (36 ADRs), `docs/modules/` (20 docs, 1 por crate/worker),
+  (47 ADRs), `docs/modules/` (21 docs, 1 por crate/worker),
   `docs/releases/` (narrativas por fase), `docs/status.md`.
 - **Divergência conhecida:** a REGRA §1.2 prevê `docs/testing/` e
   `docs/security/`, mas esses diretórios não existem. Na prática,
