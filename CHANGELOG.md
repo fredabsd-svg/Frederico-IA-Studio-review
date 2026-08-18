@@ -1,5 +1,16 @@
 ## [Não publicado]
 
+### Adicionado — Fase 8, Etapa 4: projetos e marcos, com a garantia de que nada se perde (2026-08-18)
+
+- **O app passa a ter projetos.** Uma pasta de trabalho que você nomeia, com a lista dos seus projetos ordenada pelo que você abriu por último. Não há formato proprietário, importação nem conversão: um projeto **é** o diretório, e fechar o app não prende seus arquivos em lugar nenhum.
+- **E passa a ter marcos: "salve como está agora, com um nome".** Depois dá para voltar a esse ponto. Um marco é uma etiqueta no histórico do Git do seu projeto — o que significa que você consegue conferir com o `git` da sua máquina, sem depender do app para acreditar que o marco existe.
+- **Voltar a um marco não apaga nada, e isso é o ponto central da entrega.** Se houver trabalho não salvo, ele vira um marco automático **antes** — nada é descartado, nem o que você tinha esquecido de salvar. E a volta em si é registrada como um passo novo no histórico, não como um apagamento do que veio depois: o caminho errado que você tomou continua lá, recuperável, caso descubra que parte dele era boa.
+- **Marco exige que o projeto esteja sob Git, e o app diz isso em vez de oferecer um botão que falha.** Sem repositório, criar marco é recusado com o motivo, e nada fica gravado pela metade.
+- **Uma correção de premissa no planejamento.** O documento da etapa previa um teste chamado "o caminho do projeto fica dentro do jail". Ele contradizia a própria decisão que o rege: o caminho de um projeto é escolha sua e vive onde você quiser — quem fica confinado é o **assistente**, por conversa, não você. O teste foi substituído pelo que prova o invariante verdadeiro: abrir um projeto não amplia o alcance do assistente.
+- **Uma limitação medida e declarada:** restaurar devolve o **conteúdo** do arquivo, não os bytes exatos. Em instalações padrão do Git no Windows, o final de linha é convertido na materialização — o mesmo que acontece quando você faz `git checkout` na mão. Quem comparar byte a byte vai ver diferença, e ela não é corrupção.
+- **Nada disso aparece em tela ainda**, e o assistente ainda não tem ferramentas de projeto — as duas coisas são etapas seguintes.
+- **Testes:** 20 na etapa — 8 nas primitivas de marco do `git-engine` e 12 no `project-engine`, sendo 11 de negação.
+
 ### Adicionado — Fase 8, Etapa 3: a IA passa a enxergar e versionar o próprio trabalho (2026-08-18)
 
 - **O assistente ganha Git dentro da conversa.** Ele consegue perguntar o que mudou no workspace (`git.status`), ver o patch linha a linha (`git.diff`), consultar o histórico (`git.log`), criar e trocar de branch (`git.branch`) e commitar (`git.commit`). Na prática: dá para pedir "veja o que você alterou e commite com uma mensagem que explique o efeito" e acompanhar cada passo — sem tela ainda, o diff viewer é a Etapa 6.

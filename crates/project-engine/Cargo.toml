@@ -1,0 +1,27 @@
+[package]
+name = "frederico-project-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Projetos (workspace com metadados) e marcos nomeados sobre o git-engine (Fase 8, Etapa 4, ADR-0042)."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+frederico-core = { workspace = true }
+# O marco é uma tag no repositório do workspace (ADR-0042 §D2); os
+# metadados no banco são complemento, não a fonte da verdade.
+frederico-git-engine = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }
+frederico-storage = { workspace = true }

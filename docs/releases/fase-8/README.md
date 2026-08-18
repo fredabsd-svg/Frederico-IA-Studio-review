@@ -3,7 +3,7 @@
 <!--
 Estado: especificado
 Verificado contra o código em: —
-Fase correspondente: 8 (Etapas 1, 2, 2b e 3 fechadas; Etapas 4, 5, 5b, 6 e 7 não iniciadas)
+Fase correspondente: 8 (Etapas 1, 2, 2b e 3 fechadas; Etapa 4 em andamento; Etapas 5, 5b, 6 e 7 não iniciadas)
 -->
 
 Índice das narrativas de processo da **Fase 8** — Git local portátil, GitHub, projetos, marcos e diff viewer. O escopo veio do [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md) §D2, quando a Fase 7 ficou restrita à execução isolada, e foi cortado pelo [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
@@ -18,7 +18,7 @@ Fase correspondente: 8 (Etapas 1, 2, 2b e 3 fechadas; Etapas 4, 5, 5b, 6 e 7 nã
 | 2 — Noturno verde + credencial | (a ser escrito) | Consertar o `CI Nightly` e prová-lo verde; estender a trilha DPAPI para token de serviço. **Fechada em 2026-08-17:** credencial de serviço no DPAPI (PR #60) + noturno verde em `main` (run `32063550384`, PR #67). |
 | **2b — Fechar o §D5 do ADR-0037** | [etapa-2b-narrativa.md](etapa-2b-narrativa.md) | **Fechada.** `exec.shell` de volta ao catálogo com resolução própria de programa (ADR-0044); Fase 7 reclosada. Herdada, não escolhida — ver abaixo. |
 | 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). **PR de spike fechado em 2026-08-17: `git2` escolhida contra a preferência do ADR-0040 §D2 — ver [ADR-0047](../../decisions/0047-git-engine-usa-git2-medido-por-spike.md).** **Fechada em 2026-08-18 pelo PR de implementação:** `status`, `diff` e `branch` no crate, as 5 ferramentas registradas no Tool Registry e na allowlist, 20 testes na etapa (8 de negação). |
-| 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. |
+| 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. **Crate e migração `0032` entregues em 2026-08-18**, com 20 testes; restaurar cria marco automático antes e nunca reescreve histórico. Falta expor ao agente. |
 | 5 — `github-engine` | (a ser escrito) | Auth, push, `create_pr`, matriz de autorização. Noturno + twin. |
 | 5b — Identidade visual e acessibilidade | (a ser escrito) | Tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas. [ADR-0045](../../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). |
 | 6 — Diff viewer + UI de projeto | (a ser escrito) | Frontend consumindo os dois crates. |
