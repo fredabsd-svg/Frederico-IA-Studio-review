@@ -36,6 +36,14 @@ pub enum GitError {
     BranchJaExiste(String),
     #[error("não existe branch chamado {0}")]
     BranchNaoExiste(String),
+    #[error("nome de marco inválido: {0}")]
+    NomeDeTagInvalido(String),
+    #[error("já existe um marco chamado {0}")]
+    TagJaExiste(String),
+    #[error("não existe marco chamado {0}")]
+    TagNaoExiste(String),
+    #[error("há mudança pendente no workspace — crie um marco antes de restaurar")]
+    ArvoreSujaNaRestauracao,
     #[error("falha do Git em {operacao}: {detalhe}")]
     Biblioteca {
         operacao: &'static str,
@@ -407,5 +415,193 @@ impl GitRepo {
             .set_head(&referencia)
             .map_err(GitError::de("mover HEAD"))?;
         Ok(())
+    }
+}
+
+/// Uma tag anotada do repositório — a referência que dá nome a um
+/// marco de projeto ([ADR-0042] §D2).
+///
+/// [ADR-0042]: ../docs/decisions/0042-projetos-e-checkpoints-nomeados.md
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagInfo {
+    pub nome: String,
+    pub commit_id: String,
+    pub mensagem: String,
+}
+
+impl GitRepo {
+    /// Cria uma tag anotada apontando para o `HEAD`.
+    ///
+    /// **Anotada e não leve** (`lightweight`): a tag anotada é um
+    /// objeto próprio, com mensagem e autor, e sobrevive a
+    /// `git gc`. Marco de projeto é dado do usuário — guardá-lo numa
+    /// referência que o Git pode colher seria perder o marco sem
+    /// aviso.
+    pub fn criar_tag(
+        &self,
+        nome: &str,
+        mensagem: &str,
+        autor: &Autor,
+    ) -> Result<TagInfo, GitError> {
+        if nome.trim().is_empty() {
+            return Err(GitError::NomeDeTagInvalido(nome.to_string()));
+        }
+        // O `git2` aceita nomes que o Git recusa depois (espaço, `~`,
+        // `..`). Validar aqui evita criar referência que o próprio
+        // `git` do usuário não consegue ler.
+        if nome.contains([' ', '~', '^', ':', '?', '*', '[', '\\'])
+            || nome.contains("..")
+            || nome.starts_with('-')
+        {
+            return Err(GitError::NomeDeTagInvalido(nome.to_string()));
+        }
+        if self
+            .inner
+            .find_reference(&format!("refs/tags/{nome}"))
+            .is_ok()
+        {
+            return Err(GitError::TagJaExiste(nome.to_string()));
+        }
+        let alvo = match self.inner.head() {
+            Ok(h) => h.peel_to_commit().map_err(GitError::de("ler HEAD"))?,
+            Err(_) => return Err(GitError::SemCommit),
+        };
+        let assinatura = git2::Signature::now(&autor.nome, &autor.email)
+            .map_err(GitError::de("montar assinatura"))?;
+        let objeto = alvo.as_object();
+        self.inner
+            .tag(nome, objeto, &assinatura, mensagem, false)
+            .map_err(GitError::de("criar tag"))?;
+        Ok(TagInfo {
+            nome: nome.to_string(),
+            commit_id: alvo.id().to_string(),
+            mensagem: mensagem.to_string(),
+        })
+    }
+
+    /// Tags anotadas do repositório, ordenadas por nome.
+    pub fn tags(&self) -> Result<Vec<TagInfo>, GitError> {
+        let nomes = self
+            .inner
+            .tag_names(None)
+            .map_err(GitError::de("listar tags"))?;
+        let mut saida = Vec::new();
+        // O item do iterador é `Result<Option<&str>, Error>` no
+        // git2 0.21: erro de leitura e nome não-UTF-8 são casos
+        // distintos, e os dois viram "pula esta entrada" — uma tag
+        // ilegível não pode derrubar a listagem inteira.
+        for nome in nomes.iter().flatten().flatten() {
+            if let Ok(info) = self.tag(nome) {
+                saida.push(info);
+            }
+        }
+        saida.sort_by(|a, b| a.nome.cmp(&b.nome));
+        Ok(saida)
+    }
+
+    /// Uma tag pelo nome.
+    pub fn tag(&self, nome: &str) -> Result<TagInfo, GitError> {
+        let referencia = format!("refs/tags/{nome}");
+        let objeto = self
+            .inner
+            .revparse_single(&referencia)
+            .map_err(|_| GitError::TagNaoExiste(nome.to_string()))?;
+        let commit = objeto
+            .peel_to_commit()
+            .map_err(GitError::de("resolver tag para commit"))?;
+        // Tag anotada tem objeto próprio com mensagem; a leve não.
+        let mensagem = objeto
+            .as_tag()
+            .and_then(|t| t.message().ok().flatten())
+            .unwrap_or_default()
+            .to_string();
+        Ok(TagInfo {
+            nome: nome.to_string(),
+            commit_id: commit.id().to_string(),
+            mensagem,
+        })
+    }
+
+    /// Restaura o conteúdo de uma tag **criando um commit novo**, em
+    /// vez de mover o `HEAD` para trás.
+    ///
+    /// **Nada é descartado, e essa é a decisão.** O [ADR-0042] §D3
+    /// exige que nenhuma API descarte mudanças sem marco automático
+    /// anterior; restaurar por `reset --hard` faria o oposto —
+    /// apagaria commits do usuário e a árvore de trabalho junto.
+    /// Aqui, restaurar é um commit a mais, cuja árvore é a do marco.
+    /// O histórico continua inteiro e o usuário confere com `git log`,
+    /// sem precisar acreditar no app.
+    ///
+    /// O caller é responsável por commitar o que estiver pendente
+    /// antes (o `project-engine` cria um marco automático) — este
+    /// método **recusa** se houver mudança pendente, em vez de
+    /// sobrescrevê-la.
+    ///
+    /// **O que volta é o conteúdo, não os bytes.** O checkout aplica
+    /// a política de fim de linha do Git da máquina: com
+    /// `core.autocrlf=true` — o que vem de fábrica no Git for Windows
+    /// — o blob guardado em LF é materializado em CRLF. É o mesmo que
+    /// o `git checkout` do usuário faria, e por isso está certo; mas
+    /// quem comparar o arquivo restaurado byte a byte com o original
+    /// vai ver diferença. Medido na Etapa 4, e fixado no teste
+    /// `restaurar_marco_traz_o_conteudo_de_volta_sem_apagar_historico`.
+    ///
+    /// [ADR-0042]: ../docs/decisions/0042-projetos-e-checkpoints-nomeados.md
+    pub fn restaurar_tag(&self, nome: &str, autor: &Autor) -> Result<CommitInfo, GitError> {
+        let alvo = self.tag(nome)?;
+
+        // Negação: árvore suja não é sobrescrita em silêncio.
+        if !self.status()?.is_empty() {
+            return Err(GitError::ArvoreSujaNaRestauracao);
+        }
+
+        let oid = git2::Oid::from_str(&alvo.commit_id).map_err(GitError::de("ler id do marco"))?;
+        let commit_do_marco = self
+            .inner
+            .find_commit(oid)
+            .map_err(GitError::de("ler commit do marco"))?;
+        let arvore = commit_do_marco
+            .tree()
+            .map_err(GitError::de("ler árvore do marco"))?;
+
+        let head = self
+            .inner
+            .head()
+            .map_err(GitError::de("ler HEAD"))?
+            .peel_to_commit()
+            .map_err(GitError::de("ler commit do HEAD"))?;
+
+        if head.tree_id() == arvore.id() {
+            return Err(GitError::NadaParaCommitar);
+        }
+
+        let assinatura = git2::Signature::now(&autor.nome, &autor.email)
+            .map_err(GitError::de("montar assinatura"))?;
+        let mensagem = format!("restaura o marco \"{nome}\"");
+        let novo = self
+            .inner
+            .commit(
+                Some("HEAD"),
+                &assinatura,
+                &assinatura,
+                &mensagem,
+                &arvore,
+                &[&head],
+            )
+            .map_err(GitError::de("commitar restauração"))?;
+
+        // Traz a árvore de trabalho e o índice para o commit novo.
+        // `force` é seguro aqui **porque** a árvore foi verificada
+        // limpa acima — não há mudança do usuário para perder.
+        let objeto = self
+            .inner
+            .find_object(novo, None)
+            .map_err(GitError::de("ler commit novo"))?;
+        self.inner
+            .checkout_tree(&objeto, Some(git2::build::CheckoutBuilder::new().force()))
+            .map_err(GitError::de("materializar restauração"))?;
+
+        self.ler_commit(novo)
     }
 }

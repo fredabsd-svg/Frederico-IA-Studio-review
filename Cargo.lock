@@ -1304,6 +1304,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "frederico-project-engine"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "frederico-core",
+ "frederico-git-engine",
+ "frederico-storage",
+ "serde",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "frederico-provider-engine"
 version = "0.1.0"
 dependencies = [

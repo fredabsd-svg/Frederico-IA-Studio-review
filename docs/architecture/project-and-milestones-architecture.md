@@ -1,12 +1,12 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-08-18
 Fase correspondente: 8
 -->
 
 # Projetos e marcos (`project-engine`)
 
-**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/project-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0038](../decisions/0038-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
+**O `crates/project-engine/` existe desde 2026-08-18** (Etapa 4). Projetos, marcos e restauração funcionam; o que ainda não existe é a exposição ao agente (nenhuma ferramenta registrada no Tool Registry) e a UI, que é a Etapa 6. O as-built está em [`docs/modules/project-engine.md`](../modules/project-engine.md); o estado real, em [`docs/status.md`](../status.md).
 
 Decisão que governa este spec: [ADR-0042](../decisions/0042-projetos-e-checkpoints-nomeados.md).
 
@@ -49,12 +49,20 @@ Restaurar descarta trabalho não salvo. Portanto (ADR-0042 §D3): aprovação po
 
 ## Testes previstos
 
-| Teste | Prova |
-|---|---|
-| `project_open_and_list_roundtrip` | Caminho feliz |
-| `milestone_create_then_restore` | Marco criado, restaurado, conteúdo confere |
-| `milestone_requires_git_workspace` | **Negação** — sem repositório, recusa com erro claro (não cria pela metade) |
-| `project_path_stays_inside_jail` | **Negação** — caminho fora do Jail é recusado |
+| Teste | Prova | Estado |
+|---|---|---|
+| `project_open_and_list_roundtrip` | Caminho feliz | entregue |
+| `milestone_create_then_restore` | Marco criado, restaurado, conteúdo confere | entregue |
+| `milestone_requires_git_workspace` | **Negação** — sem repositório, recusa com erro claro (não cria pela metade) | entregue |
+| ~~`project_path_stays_inside_jail`~~ → `abrir_projeto_nao_amplia_o_alcance_do_agente` | **Negação** — ver a correção abaixo | entregue, com outro nome |
+
+**A quarta linha estava errada, e a correção é de premissa.** `project_path_stays_inside_jail` contradiz o §D4 deste mesmo spec: o caminho de um projeto é escolha do **usuário** e vive fora de qualquer jail — o jail é resolvido por conversa ([ADR-0022](../decisions/0022-jail-resolver-v1.md)), não por projeto. Um projeto obrigado a ficar dentro do jail seria um projeto que só existe dentro da pasta da conversa, o que não é um projeto.
+
+O invariante verdadeiro é o outro lado: **registrar projeto não amplia o alcance do agente**. É esse que está fixado. A outra metade da prova vive na Etapa 3 — `nenhuma_ferramenta_de_git_aceita_caminho_de_repositorio` garante que nenhuma ferramenta aceita caminho, e todas abrem `ctx.jail.root()`.
+
+O inventário completo (12 testes) está em [`docs/modules/project-engine.md`](../modules/project-engine.md) §6.
+
+**Uma medição que a etapa acrescentou:** restaurar devolve **o conteúdo**, não os bytes. Com `core.autocrlf=true` — o que vem de fábrica no Git for Windows — o checkout materializa em CRLF o blob guardado em LF. É o mesmo que o `git checkout` do usuário faria, mas quem comparar byte a byte vai ver diferença. Registrado porque a Etapa 6 mostra diff em tela, e ruído de fim de linha é o que faz usuário desconfiar da ferramenta.
 
 ## Referências
 
