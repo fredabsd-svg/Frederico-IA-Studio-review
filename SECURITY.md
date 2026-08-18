@@ -28,9 +28,23 @@ quando roda no Windows:
    no workdir aplica `SYSTEM_MANDATORY_LABEL_ACE_TYPE` no SACL
    com policy `NO_WRITE_UP`. Um processo com
    `TokenIntegrityLevel=Low` (nosso child) **não** consegue
-   ler/escrever em paths com label Medium (default do
+   **escrever** em paths com label Medium (default do
    filesystem), incluindo o parent do workdir, `%LOCALAPPDATA%`,
-   `%APPDATA%`, `%TEMP%`, etc.
+   `%APPDATA%`, `%TEMP%`, etc. **Leitura continua passando** —
+   `NO_WRITE_UP` bloqueia só escrita; ver a lacuna 1 abaixo.
+   Dentro do workdir, que tem o mesmo rótulo do child, escrever
+   funciona: é essa a diferença entre bloquear a fuga e bloquear
+   tudo.
+
+   > **Esta camada esteve inerte entre 2026-08-10 e 2026-08-18**
+   > ([ADR-0047](docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
+   > O descritor de segurança era montado com `OffsetSacl = 0`,
+   > que o Windows lê como "SACL presente porém NULL": o
+   > `SetFileSecurityW` devolvia sucesso e não aplicava rótulo
+   > nenhum. O workdir ficava Medium e o child, Low, não escrevia
+   > em lugar algum — nem no próprio workdir. Parecia proteção
+   > mais forte; era ausência de proteção com o efeito colateral
+   > de tornar `exec.*` incapaz de produzir arquivo.
 2. **Job Object per-invocation** — `KILL_ON_JOB_CLOSE` + limites
    de memória. Quando o `SandboxedProcess` é droppado, o Job
    handle fecha e o Windows mata **toda a árvore** (filho +

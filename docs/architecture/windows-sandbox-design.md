@@ -1,6 +1,6 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-17
+Verificado contra o código em: 2026-08-18
 Fase correspondente: 7
 -->
 
@@ -152,6 +152,16 @@ impl Drop for SecurityJailResolver {
 | `web.fetch` / `web.search` | — | — | — | — | sim | nunca (tool de leitura, sem side-effect) |
 
 `files.write` e `files.edit` rodam **dentro do processo do app** (sem spawn, sem sandbox de processo) — ADR-0035 D7. O ganho de segurança do sandbox de processo **não se aplica** (não há execução de código arbitrário, só `std::fs::write` em Rust). A barreira é Jail + atomicidade + backup + audit.
+
+## Rótulo de integridade do workdir
+
+Implementado em `crates/security/src/windows/integrity_label.rs::set_low_integrity_label`, chamado no Step 1 do `spawn_windows` ([ADR-0047](../decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
+
+**O que a camada faz.** Aplica `Mandatory Label\Low` (S-1-16-4096) com policy `NO_WRITE_UP` no workdir. Como o child nasce com `TokenIntegrityLevel = Low`, os dois rótulos se igualam **dentro** do workdir e a escrita passa; **fora** dele os objetos ficam em Medium (o default do filesystem) e a escrita é negada pelo access check. Bloquear a fuga, não bloquear tudo.
+
+**O que a camada não faz.** Não bloqueia **leitura** — `NO_WRITE_UP` é só sobre escrita, e o child lê caminhos Medium normalmente. Essa é a lacuna 1 do `SECURITY.md`, sem mitigação nesta fase.
+
+**Armadilha que já mordeu uma vez.** O descritor de segurança precisa ser montado no formato **self-relative**: header de 20 bytes com `Revision`, `Sbz1`, `Control` (`u16`) e quatro **offsets `u32`** nos bytes 4/8/12/16. A struct `SECURITY_DESCRIPTOR` do crate `windows` modela a forma **absoluta** — 40 bytes, com os mesmos quatro campos como ponteiros de 8 bytes (`.Sacl` no offset 24). Escrever um pelo outro deixa `OffsetSacl = 0`, que com `SE_SACL_PRESENT` ligado significa "SACL presente porém NULL": `SetFileSecurityW` devolve **sucesso** e não aplica rótulo nenhum. Foi assim entre 2026-08-10 e 2026-08-18, sem que nada avisasse. O par de asserções do `child_cannot_write_outside_workspace` (escreve dentro, é barrado fora) existe para que isso não volte em silêncio.
 
 ## Wall clock (`SandboxConfig::wall_clock`)
 

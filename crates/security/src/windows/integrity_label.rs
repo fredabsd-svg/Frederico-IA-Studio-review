@@ -51,8 +51,7 @@ use windows::Win32::Security::SetFileSecurityW;
 use windows::Win32::Security::{
     AddMandatoryAce, AllocateAndInitializeSid, FreeSid, InitializeAcl, ACE_FLAGS, ACE_REVISION,
     ACL, LABEL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_MANDATORY_LABEL_AUTHORITY,
-    SID_IDENTIFIER_AUTHORITY,
+    SECURITY_MANDATORY_LABEL_AUTHORITY, SID_IDENTIFIER_AUTHORITY,
 };
 
 /// Erro ao aplicar Mandatory Label num path.
@@ -120,24 +119,31 @@ pub fn build_low_label_security_descriptor() -> Result<LabelSd, IntegrityLabelEr
         let _ = FreeSid(sid);
     }
 
-    // 3. Monta o SD self-relative. Header (20 bytes) + SACL data.
-    //    O SACL offset = 20 (logo após o header). Como só
-    //    temos o SACL, owner/group/dacl ficam com offset=0
-    //    (o OS sabe interpretar isso como "não setado",
-    //    porque o flag SE_*_PRESENT em Control não está
-    //    setado pra eles — só SE_SACL_PRESENT).
-    let mut buffer = vec![0u8; 20 + 256];
-    let sd_ptr = buffer.as_mut_ptr() as *mut SECURITY_DESCRIPTOR;
-    unsafe {
-        (*sd_ptr).Revision = 1;
-        (*sd_ptr).Sbz1 = 0;
-        // SE_SELF_RELATIVE (0x8000) + SE_SACL_PRESENT (0x10)
-        (*sd_ptr).Control = SECURITY_DESCRIPTOR_CONTROL(0x8000 | 0x10);
-        // SACL offset = 20 (em bytes, do início do buffer).
-        (*sd_ptr).Sacl = buffer.as_mut_ptr().add(20) as *mut _;
-        // Copia o SACL pro data area.
-        std::ptr::copy_nonoverlapping(acl_buf.as_ptr(), buffer.as_mut_ptr().add(20), 256);
-    }
+    // 3. Monta o SD **self-relative** escrevendo o header byte a
+    //    byte. Nao dá pra usar a struct `SECURITY_DESCRIPTOR` do
+    //    crate `windows` aqui: ela modela a forma **absoluta**,
+    //    em que Owner/Group/Sacl/Dacl sao ponteiros de 8 bytes
+    //    (a struct tem 40 bytes e `.Sacl` cai no offset 24). Na
+    //    forma self-relative os quatro campos sao **offsets u32**
+    //    nos bytes 4/8/12/16. Escrever pela struct punha o valor
+    //    no lugar errado -- e ainda por cima dentro da area de
+    //    dados que a copia do ACL sobrescrevia logo depois --,
+    //    deixando OffsetSacl = 0. Com `SE_SACL_PRESENT` ligado e
+    //    offset zero, o Windows le "SACL presente porem NULL":
+    //    `SetFileSecurityW` devolve sucesso e nao aplica rotulo
+    //    nenhum, em silencio.
+    let acl_size = unsafe { (*acl_ptr).AclSize } as usize;
+    let mut buffer = vec![0u8; 20 + acl_size];
+    buffer[0] = 1; // Revision
+    buffer[1] = 0; // Sbz1
+                   // SE_SELF_RELATIVE (0x8000) | SE_SACL_PRESENT (0x10)
+    buffer[2..4].copy_from_slice(&0x8010u16.to_le_bytes());
+    buffer[4..8].copy_from_slice(&0u32.to_le_bytes()); // OffsetOwner
+    buffer[8..12].copy_from_slice(&0u32.to_le_bytes()); // OffsetGroup
+    buffer[12..16].copy_from_slice(&20u32.to_le_bytes()); // OffsetSacl
+    buffer[16..20].copy_from_slice(&0u32.to_le_bytes()); // OffsetDacl
+    buffer[20..20 + acl_size].copy_from_slice(&acl_buf[..acl_size]);
+
     let sd = PSECURITY_DESCRIPTOR(buffer.as_mut_ptr() as *mut _);
     Ok(LabelSd { sd, buffer })
 }
