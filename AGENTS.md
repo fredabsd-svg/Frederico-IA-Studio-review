@@ -132,8 +132,8 @@ PR de referência e as colunas de E2E preenchidas. Fase não vira
   Tesseract, fontes e bibliotecas empacotadas; comunicação por named
   pipes, **sem** `localhost`.
 
-São **36 ADRs** hoje (`0001`–`0036`); o próximo a ser escrito é o
-`0037`. Além das quatro fundacionais acima, estas são as que mais
+São **47 ADRs** hoje (`0001`–`0047`); o próximo a ser escrito é o
+`0048`. Além das quatro fundacionais acima, estas são as que mais
 restringem trabalho novo:
 
 - **ADR-0022** — `JailResolver`: o jail de sistema de arquivos é
@@ -167,7 +167,7 @@ restringem trabalho novo:
 - **Workspace Cargo:** 20 membros (os 18 crates +
   `packages/shared-contracts` + `apps/desktop/src-tauri`).
 - **Documentação:** `docs/architecture/` (21 specs), `docs/decisions/`
-  (36 ADRs), `docs/modules/` (21 docs, 1 por crate/worker),
+  (47 ADRs), `docs/modules/` (21 docs, 1 por crate/worker),
   `docs/releases/` (narrativas por fase), `docs/status.md`.
 - **Divergência conhecida:** a REGRA §1.2 prevê `docs/testing/` e
   `docs/security/`, mas esses diretórios não existem. Na prática,
