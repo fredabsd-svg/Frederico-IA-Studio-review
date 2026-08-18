@@ -1,6 +1,6 @@
 <!--
 Estado: implementado
-Verificado contra o código em: 2026-08-14
+Verificado contra o código em: 2026-08-17
 Fase correspondente: 7
 -->
 
@@ -65,6 +65,7 @@ struct SandboxConfig {
     /// Args a passar para o executável (do tool_call, validado pelo `validate_tool_call`).
     args: Vec<String>,
     /// Timeout de wall-clock. Default 60s; configurável por tool.
+    /// Ver §"Wall clock" abaixo para o que esse limite garante.
     wall_clock: Duration,
     /// Limite de memória por processo (default 2 GB) e total (default 4 GB).
     memory_limits: MemoryLimits,
@@ -151,6 +152,16 @@ impl Drop for SecurityJailResolver {
 | `web.fetch` / `web.search` | — | — | — | — | sim | nunca (tool de leitura, sem side-effect) |
 
 `files.write` e `files.edit` rodam **dentro do processo do app** (sem spawn, sem sandbox de processo) — ADR-0035 D7. O ganho de segurança do sandbox de processo **não se aplica** (não há execução de código arbitrário, só `std::fs::write` em Rust). A barreira é Jail + atomicidade + backup + audit.
+
+## Wall clock (`SandboxConfig::wall_clock`)
+
+Implementado em `crates/security/src/raw_child.rs::RawChild::wait_with_timeout`, chamado pelo `collect_output` da `frederico-tool-registry` ([ADR-0046](../decisions/0046-wall-clock-do-sandbox-decidido-pelo-kernel.md)).
+
+**O que o limite garante.** Uma invocação que ultrapassa `wall_clock` é **sempre** recusada, e uma que cabe no orçamento **nunca** é recusada por engano — em qualquer condição de carga da máquina. A garantia não depende de quando as threads do app conseguem rodar: o veredito compara um deadline absoluto, fixado uma única vez no início da espera, com o `ExitTime` que o kernel carimbou para o processo (`GetProcessTimes`). Há um ponto único de decisão, com três ramos: vivo depois do deadline → `TerminateProcess` + `TimedOut`; encerrado dentro do orçamento → sucesso com o exit code real; encerrado depois do orçamento → `TimedOut`, mesmo que o `WaitForSingleObject` tenha devolvido `WAIT_OBJECT_0`.
+
+**O que o limite não garante.** A *latência* do encerramento. Matar o filho exige que uma thread do app rode; numa máquina saturada ele pode sobreviver alguns segundos além do orçamento até o `TerminateProcess` acontecer. Isso não tem como ser fechado com as primitivas do Windows: Job Object oferece `JOB_OBJECT_LIMIT_JOB_TIME` e `PerProcessUserTimeLimit`, que são tempo de **CPU** — um processo dormindo nunca os consome. O `timeout_at` e a espera limitada ao tempo restante do orçamento cobrem a prontidão no caso comum; a correção do resultado não depende deles.
+
+**Lacuna aberta.** O `collect_output` espera o `tokio::join!` inteiro, e os leitores de stdout/stderr só terminam quando o write end do pipe fecha. Um **neto** que herde esses handles e sobreviva ao filho segura os leitores além do wall clock, ainda que o veredito já esteja correto. Registrado nas pendências da Fase 7 em `docs/status.md`.
 
 ## Não-objetivos
 

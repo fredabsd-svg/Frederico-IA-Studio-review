@@ -1,6 +1,6 @@
 //! E2E — `exec.python` rodando sob `SecurityJailResolver`.
 //!
-//! **Escopo (Etapa 4 da Fase 7):** testa 3 contratos do sandbox
+//! **Escopo (Etapa 4 da Fase 7):** testa os contratos do sandbox
 //! que o `exec.python` precisa honrar:
 //!
 //! 1. **Path safety (I3):** o `workdir` é o jail root; scripts
@@ -8,12 +8,19 @@
 //!    teste prova que um script que tenta `open("..\..\evil.txt", "w")`
 //!    falha (PathNotFound ou PermissionError).
 //! 2. **Wall-clock enforcement:** `wait_with_timeout(wall_clock)`
-//!    dentro do `collect_output` mata processos que excedem. O
-//!    teste prova que um script que faz `time.sleep(10)` com
-//!    `max_wall_clock_ms=2000` retorna erro `"wall-clock excedido"`
-//!    em ~2s (não 10s).
-//! 3. **Sanity (caminho feliz):** um script Python simples
-//!    executa e retorna stdout — sem ele, os 2 testes de
+//!    dentro do `collect_output` recusa invocações que excedem o
+//!    orçamento. O teste prova que um script que faz
+//!    `time.sleep(60)` com `max_wall_clock_ms=2000` volta como
+//!    erro `"wall-clock excedido"`.
+//! 3. **O veredito do wall clock não depende de escalonamento**
+//!    ([ADR-0046](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0046-wall-clock-do-sandbox-decidido-pelo-kernel.md)):
+//!    o teste **constrói** a starvation (runtime de 1 worker e 1
+//!    thread de bloqueio, as duas ocupadas) e prova que um filho
+//!    que estourou o orçamento continua sendo recusado mesmo
+//!    quando só conseguimos olhar depois de ele já ter morrido
+//!    sozinho. É a regressão do fail-open medido em 2026-08-17.
+//! 4. **Sanity (caminho feliz):** um script Python simples
+//!    executa e retorna stdout — sem ele, os testes de
 //!    negação podem estar passando por bug (não por sandbox).
 //!
 //! **Env filter (I1):** os unit tests de
@@ -55,7 +62,7 @@ use std::time::Duration;
 
 use frederico_core::{ConversationId, MessageId, RunId};
 use frederico_runtimes::{RuntimeConfig, RuntimeId, RuntimeRegistry};
-use frederico_security::jail::{SecurityJailConfig, SecurityJailResolver};
+use frederico_security::jail::{SandboxConfig, SecurityJailConfig, SecurityJailResolver};
 use frederico_tool_registry::exec::build_default_exec_tools;
 use frederico_tool_registry::workspace::Jail;
 use frederico_tool_registry::{AuditSink, NoopAuditSink, Tool, ToolContext};
@@ -140,6 +147,19 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
     }
 
     Arc::new(registry)
+}
+
+/// Caminho do `python.exe` bootstrappado, para os testes que
+/// falam com o `SecurityJailResolver` direto (sem passar pelo
+/// `exec.python`). Mesma garantia de `build_registry`: hard-fail
+/// se o runtime não está disponível, nunca skip.
+async fn python_executable() -> std::path::PathBuf {
+    build_registry()
+        .await
+        .get(&RuntimeId::new("python-3.12.4"))
+        .expect("python-3.12.4 no registry")
+        .executable()
+        .to_path_buf()
 }
 
 /// Constrói o `Vec<Arc<dyn Tool>>` (Python + Node) com deps
@@ -320,13 +340,44 @@ except (FileNotFoundError, PermissionError, OSError) as e:
 /// o wall-clock nunca dispara. A Etapa 4 da Fase 7 conserta
 /// com `wait_with_timeout` real (dentro do `tokio::join!`).
 ///
-/// **\`#[ignore]\` (Etapa 4 v1):** ver doc do
-/// \`child_cannot_write_outside_workspace\` — o test precisa
-/// de path safety enforcement real no sandbox, que vem em
-/// Etapa 5+. Hoje o sandbox NAO bloqueia escrita fora do
-/// workdir, e o python script pode ate ser bloqueado pelo
-/// wall-clock ANTES de escapar, mas o caminho de execucao
-/// em si (process spawn + cwd) nao tem path safety.
+/// ## O que cada asserção vale (revisto em 2026-08-17)
+///
+/// A v1 tinha três asserções e tratava as três como se fossem o
+/// mesmo contrato. Não são, e foi essa confusão que produziu o
+/// flake:
+///
+/// - **`!ok` + erro com "wall-clock"** — este é o contrato. Diz
+///   que a ferramenta **recusa** um run que estourou o orçamento.
+///   Depois da correção do `RawChild::wait_with_timeout`
+///   (ADR-0046), o veredito sai do `ExitTime` que o kernel
+///   carimbou comparado a um deadline absoluto, então esta parte
+///   é determinística: não depende de carga, de quantas worker
+///   threads o runtime tem, nem de quando conseguimos olhar.
+/// - **`elapsed < 5s`** — esta **não** era o contrato, e era a
+///   metade instável. O intervalo cronometrado não é o wall
+///   clock: inclui `start_network_proxy` +
+///   `SecurityJailResolver::spawn` (`CreateProcessAsUserW`,
+///   rotulagem de integridade do workdir, token restrito) +
+///   teardown. Medido em 2026-08-17 com carga artificial de CPU,
+///   só o `spawn` custou de 2,0 s a 7,0 s — a asserção passou a
+///   medir a folga da máquina.
+///
+/// A v2 mantém o contrato intacto e troca a asserção de tempo por
+/// uma **guarda de latência** honesta sobre o que ela pode
+/// prometer. Matar o filho exige que uma thread nossa rode; sob
+/// starvation isso atrasa, e nenhum desenho evita isso (o Windows
+/// não oferece limite de wall clock em Job Object — só de tempo
+/// de CPU, que um processo dormindo nunca consome). Então o
+/// limite é posto uma ordem de grandeza acima do orçamento, e o
+/// trabalho do filho sobe de 10 s para 60 s para que a guarda
+/// continue discriminando com folga maior que a da v1: a v1
+/// separava 5 s de 10 s (fator 2), a v2 separa 20 s de 60 s
+/// (fator 3).
+///
+/// A prova fina de que o mecanismo não pode ser enganado por
+/// escalonamento está em
+/// `wall_clock_verdict_survives_starved_runtime`, que constrói a
+/// starvation em vez de torcer por ela.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wall_clock_kills_long_running_process() {
     let tools = build_exec_tools().await;
@@ -335,11 +386,15 @@ async fn wall_clock_kills_long_running_process() {
     let workspace = TempDir::new().expect("tempdir workspace");
     let ctx = make_ctx(workspace.path());
 
+    // 60 s de trabalho para um orçamento de 2 s. Sob a v1 do bug
+    // ("wall_clock apenas informativo") o filho completaria os
+    // 60 s inteiros; nenhum atraso de escalonamento plausível
+    // confunde 60 s com 20 s.
     let code = r#"
 import time
 print("starting sleep", flush=True)
-time.sleep(10)
-print("slept 10s", flush=True)
+time.sleep(60)
+print("slept 60s", flush=True)
 "#;
 
     let start = std::time::Instant::now();
@@ -352,27 +407,123 @@ print("slept 10s", flush=True)
         "[e2e_exec_python/wall-clock] elapsed={:?} ok={} err={:?}",
         elapsed, result.ok, result.error_message
     );
+
+    // --- Contrato: determinístico, independente de carga ---
     assert!(
         !result.ok,
-        "Esperava erro (wall-clock excedido), mas tool retornou ok"
+        "Esperava erro (wall-clock excedido), mas tool retornou ok. \
+         elapsed={elapsed:?}"
     );
     let err = result.error_message.unwrap_or_default();
     assert!(
         err.contains("wall-clock"),
         "Esperava erro contendo 'wall-clock', veio: {err:?}"
     );
-    // Margem generosa: o wall-clock é 2s, o overhead de spawn
-    // + cleanup pode adicionar ~1s. Se passou de 5s, o
-    // `wait_with_timeout` não está funcionando.
+
+    // --- Guarda de latência: não é o contrato, ver doc acima ---
     assert!(
-        elapsed < Duration::from_secs(5),
-        "wall-clock enforcement não funcionou: elapsed={:?} > 5s (esperado < 3s)",
-        elapsed
+        elapsed < Duration::from_secs(20),
+        "o filho não foi morto: elapsed={elapsed:?} para um orçamento de 2s \
+         (o script dorme 60s; a v1 do bug deixava ele terminar)"
     );
-    eprintln!(
-        "[e2e_exec_python/wall-clock] OK: processo morto em {:?} (< 5s, wall-clock=2s)",
-        elapsed
-    );
+    eprintln!("[e2e_exec_python/wall-clock] OK: run de 60s recusado em {elapsed:?} (orçamento 2s)");
+}
+
+/// **Regressão do fail-open medido em 2026-08-17.** Prova que o
+/// veredito do wall clock não depende de quando as *nossas*
+/// threads conseguem rodar.
+///
+/// ## O defeito que este teste tranca
+///
+/// A v1 do `RawChild::wait_with_timeout` decidia pelo que
+/// observasse primeiro: `WaitForSingleObject(h, wall_clock)`
+/// dentro de um `spawn_blocking`, envolto por um
+/// `tokio::time::timeout`. Se o runtime ficasse sem CPU tempo
+/// bastante, o `spawn_blocking` só rodava depois de o filho já
+/// ter terminado sozinho — e aí o `WaitForSingleObject` devolvia
+/// `WAIT_OBJECT_0` com exit code 0. A ferramenta reportava
+/// **sucesso** para um run que estourou o orçamento em 5×. Foi o
+/// que o `wall_clock_kills_long_running_process` capturou sob
+/// carga: `elapsed=13.4s ok=true` com `max_wall_clock_ms=2000`.
+///
+/// ## Como a starvation vira determinística aqui
+///
+/// Em vez de gerar carga (que não reproduz de forma confiável), o
+/// teste **constrói** a starvation com um runtime de 1 worker e 1
+/// thread de bloqueio, e ocupa as duas:
+///
+/// - `spawn_blocking` de 8 s toma a única thread de bloqueio, de
+///   modo que o wait do `wait_with_timeout` só é despachado
+///   **depois** de o filho (4 s) já ter morrido sozinho;
+/// - `std::thread::sleep(9s)` dentro do `join!` toma a única
+///   worker thread, de modo que o timer de 2 s existe mas
+///   ninguém pode observá-lo.
+///
+/// Resultado: quando finalmente olhamos, o processo está
+/// encerrado com exit code 0. A v1 chamava isso de sucesso; a v2
+/// pergunta ao kernel **quando** ele saiu (`GetProcessTimes`),
+/// compara com o deadline absoluto, e devolve `TimedOut`.
+///
+/// Runtime construído à mão (não `#[tokio::test]`) porque
+/// `max_blocking_threads` não é configurável pela macro.
+#[test]
+fn wall_clock_verdict_survives_starved_runtime() {
+    // Bootstrap do python num runtime normal: com o pool de
+    // bloqueio limitado a 1 thread, o download/extração do
+    // embeddable não teria como progredir.
+    let exe = tokio::runtime::Runtime::new()
+        .expect("runtime de bootstrap")
+        .block_on(async { python_executable().await });
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime faminto");
+
+    rt.block_on(async move {
+        let workspace = TempDir::new().expect("tempdir workspace");
+        let resolver = SecurityJailResolver::new(SecurityJailConfig::secure_default())
+            .expect("SecurityJailResolver::new");
+
+        // Filho morre sozinho aos ~4 s — bem depois do orçamento
+        // de 2 s, e bem antes de conseguirmos olhar.
+        let config = SandboxConfig::new(
+            exe,
+            vec!["-c".to_string(), "import time; time.sleep(4)".to_string()],
+            workspace.path().to_path_buf(),
+        );
+        let mut process = resolver.spawn(config).expect("spawn");
+
+        // Ocupa a única thread de bloqueio por 8 s.
+        tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_secs(8)));
+        // Dá tempo de o `spawn_blocking` acima de fato tomar a
+        // thread antes de o wait tentar enfileirar o dele.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let (resultado, ()) =
+            tokio::join!(process.wait_with_timeout(Duration::from_secs(2)), async {
+                // Toma a única worker thread por 9 s: o timer de 2 s
+                // dispara, mas não há quem o observe.
+                std::thread::sleep(Duration::from_secs(9));
+            });
+
+        let erro = resultado.expect_err(
+            "FAIL-OPEN: o filho viveu ~4s com orçamento de 2s e o \
+             wait devolveu sucesso — é exatamente o defeito de \
+             2026-08-17 (o veredito voltou a depender de quando \
+             nossas threads rodam)",
+        );
+        assert_eq!(
+            erro.kind(),
+            std::io::ErrorKind::TimedOut,
+            "esperava TimedOut, veio: {erro:?}"
+        );
+        eprintln!(
+            "[e2e_exec_python/veredito] OK: estouro reconhecido mesmo observado tarde ({erro})"
+        );
+    });
 }
 
 // ============================================================================
