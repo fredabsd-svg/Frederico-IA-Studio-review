@@ -30,8 +30,8 @@ use frederico_model_catalog::{
     SpecialistDefinition, SpecialistId, SpecialistRegistry, SpecialistSummary,
 };
 use frederico_tool_registry::{
-    DocumentPermission, FileReadPermission, PermissionSet, RuntimePermission, TerminalMode, Tool,
-    ToolRegistry,
+    DocumentPermission, FileReadPermission, GitPermission, PermissionSet, RuntimePermission,
+    TerminalMode, Tool, ToolRegistry,
 };
 
 // ============================================================================
@@ -443,6 +443,20 @@ pub fn initial_permission_set() -> PermissionSet {
         // pra DocumentPermission::Full entra no commit da Etapa 2
         // que registra docs.generate + docs.inspect.
         documents: DocumentPermission::None,
+        // Etapa 3 da Fase 8: `git: None → Local` — **bump atômico**
+        // (ADR-0020 §3 D3), junto com o registro das 5 `git.*` no
+        // `build_default_tools` e com os 5 ids na allowlist de run.
+        // `Local` e não `Full`: o crate faz status/diff/log/branch/
+        // commit e **não** faz push nem reescrita de histórico;
+        // declarar `Full` anunciaria capacidade que não existe.
+        //
+        // O campo é **declaração, não portão**: o `validate_tool_call`
+        // Passo 5 só aplica `file_read` e a invariante de subagente —
+        // permissão por categoria (`python`, `terminal`, `documents`,
+        // `git`) ainda não é lida por ele. A mesma lacuna está
+        // nomeada no `exec/shell.rs`. Manter o campo verdadeiro é o
+        // que impede que ele minta quando o portão existir.
+        git: GitPermission::Local,
         // Demais campos idênticos ao `Default::default()` —
         // explicitados para tornar a decisão auditável.
         ..PermissionSet::default()
@@ -471,6 +485,10 @@ pub fn initial_permission_set_for_capable_launcher() -> PermissionSet {
         // junto com o registro de docs.generate + docs.inspect
         // no `build_default_tools`). ADR-0020 §3 D3.
         documents: DocumentPermission::Full,
+        // Etapa 3 da Fase 8: `git: None → Local` (bump atômico,
+        // ADR-0020 §3 D3). Ver a nota longa em
+        // `initial_permission_set`.
+        git: GitPermission::Local,
         ..PermissionSet::default()
     }
 }
@@ -517,6 +535,10 @@ pub fn initial_permission_set_for_exec() -> PermissionSet {
         // descreve o que o código faz: uma lista fechada de 11
         // programas, tudo fora dela recusado.
         terminal: TerminalMode::Allowlist,
+        // Etapa 3 da Fase 8: `git: None → Local` (bump atômico,
+        // ADR-0020 §3 D3). Ver a nota longa em
+        // `initial_permission_set`.
+        git: GitPermission::Local,
         ..PermissionSet::default()
     }
 }
@@ -549,6 +571,10 @@ pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
         // `terminal: Allowlist` (Etapa 2b da Fase 8, ADR-0044) —
         // ver comentário em `initial_permission_set_for_exec`.
         terminal: TerminalMode::Allowlist,
+        // Etapa 3 da Fase 8: `git: None → Local` (bump atômico,
+        // ADR-0020 §3 D3). Ver a nota longa em
+        // `initial_permission_set`.
+        git: GitPermission::Local,
         ..PermissionSet::default()
     }
 }
@@ -735,6 +761,26 @@ pub fn build_default_tools(
         // `find` na linha. Sempre disponível — não depende de
         // runtime/invoker.
         Arc::new(frederico_tool_registry::FilesEditTool::new()),
+        // --- Git local (Etapa 3 da Fase 8, ADR-0040 + ADR-0047) ---
+        //
+        // As cinco entram **sempre**, sem depender de invoker nem de
+        // `ExecDeps`: o `git-engine` é in-process e a biblioteca está
+        // linkada no binário. Não há runtime a baixar, ao contrário
+        // de `exec.python`/`exec.node`, e não há processo externo —
+        // que é justamente o que o ADR-0040 §D1 proíbe.
+        //
+        // O repositório é sempre `ctx.jail.root()`. Nenhuma das cinco
+        // aceita caminho de repositório no schema, então não existe
+        // argumento que leve a operação para fora do workspace da
+        // conversa (ADR-0040 §D3).
+        Arc::new(frederico_tool_registry::GitStatusTool::new()),
+        Arc::new(frederico_tool_registry::GitDiffTool::new()),
+        Arc::new(frederico_tool_registry::GitLogTool::new()),
+        // `git.branch` e `git.commit` pedem aprovação por invocação
+        // (ADR-0034); leitura não. Mesma assimetria de
+        // `files.read` vs. `files.write`.
+        Arc::new(frederico_tool_registry::GitBranchTool::new()),
+        Arc::new(frederico_tool_registry::GitCommitTool::new()),
     ];
 
     // --- Subsistema documentos (Etapa 2.A) ------------------------
@@ -862,6 +908,16 @@ pub fn build_default_allowed_for_run(
         // `files.write` (aprovação por invocação, allowlist
         // sempre inclui).
         frederico_core::ToolId::new("files.edit"),
+        // Git local (Etapa 3 da Fase 8): as cinco entram junto com o
+        // `build_default_tools` — bump atômico (ADR-0020 §3 D3). Sem
+        // o id na allowlist, o `RunExecutor` recusa a invocação mesmo
+        // com a ferramenta registrada, que é a defesa em profundidade
+        // contra prompt injection.
+        frederico_core::ToolId::new("git.status"),
+        frederico_core::ToolId::new("git.diff"),
+        frederico_core::ToolId::new("git.log"),
+        frederico_core::ToolId::new("git.branch"),
+        frederico_core::ToolId::new("git.commit"),
     ];
 
     if invoker.is_some() {
@@ -1169,13 +1225,28 @@ mod tests {
         // entram — o modelo não as vê. Mesma regra do exec:
         // sem `exec_deps`, `exec.*` não entram.
         let tools = build_default_tools(None, None);
-        assert_eq!(tools.len(), 4);
+        // 4 de arquivo + 5 de Git (Etapa 3 da Fase 8). As de Git
+        // entram sempre: são in-process, com a biblioteca linkada,
+        // sem runtime a baixar nem processo a lançar.
+        assert_eq!(tools.len(), 9);
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&frederico_core::ToolId::new("files.read")));
         assert!(ids.contains(&frederico_core::ToolId::new("files.list")));
         assert!(ids.contains(&frederico_core::ToolId::new("files.write")));
         assert!(ids.contains(&frederico_core::ToolId::new("files.edit")));
+        for git in [
+            "git.status",
+            "git.diff",
+            "git.log",
+            "git.branch",
+            "git.commit",
+        ] {
+            assert!(
+                ids.contains(&frederico_core::ToolId::new(git)),
+                "{git} tem que estar disponível sem runtime nenhum"
+            );
+        }
         // Sem exec_deps, `exec.*` NÃO aparecem.
         assert!(!ids.contains(&frederico_core::ToolId::new("exec.python")));
         assert!(!ids.contains(&frederico_core::ToolId::new("exec.node")));
@@ -1201,8 +1272,8 @@ mod tests {
         let tools = build_default_tools(Some(invoker), None);
         assert_eq!(
             tools.len(),
-            6,
-            "Esperado 6 tools: FilesReadTool + FilesListTool + FilesWriteTool + FilesEditTool + DocsGenerateTool + DocsInspectTool"
+            11,
+            "Esperado 11 tools: 4 de arquivo + 5 de Git + DocsGenerateTool + DocsInspectTool"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
@@ -1268,8 +1339,8 @@ mod tests {
         let tools = build_default_tools(None, Some(exec_deps));
         assert_eq!(
             tools.len(),
-            7,
-            "Esperado 7 tools: files.read + files.list + files.write + files.edit + exec.python + exec.node + exec.shell"
+            12,
+            "Esperado 12 tools: 4 de arquivo + 5 de Git + exec.python + exec.node + exec.shell"
         );
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
@@ -1306,6 +1377,16 @@ mod tests {
                 frederico_core::ToolId::new("files.list"),
                 frederico_core::ToolId::new("files.write"),
                 frederico_core::ToolId::new("files.edit"),
+                // Git local (Etapa 3 da Fase 8) entra sem condição —
+                // a igualdade exata é deliberada: se alguém registrar
+                // uma ferramenta em `build_default_tools` e esquecer
+                // da allowlist, este teste quebra. É o par que
+                // sustenta o bump atômico do ADR-0020 §3 D3.
+                frederico_core::ToolId::new("git.status"),
+                frederico_core::ToolId::new("git.diff"),
+                frederico_core::ToolId::new("git.log"),
+                frederico_core::ToolId::new("git.branch"),
+                frederico_core::ToolId::new("git.commit"),
             ]
         );
     }
@@ -1340,6 +1421,80 @@ mod tests {
     /// anunciar `terminal: Allowlist` sem tool de terminal é
     /// relatar capacidade inexistente. Nenhuma das duas falhas
     /// aparece em teste que olhe uma peça só.
+    /// **Bump atômico das 5 `git.*`** (ADR-0020 §3 D3), no mesmo
+    /// formato do `exec_shell_returns_atomically_with_allowlist_and_permission`.
+    ///
+    /// As três peças precisam se mover juntas: catálogo, allowlist de
+    /// run e `PermissionSet::git`. Registrar sem allowlist deixa a
+    /// ferramenta visível e ininvocável; declarar permissão sem
+    /// registrar anuncia capacidade inexistente. Foi essa regra que
+    /// tirou `exec.shell` inteiro do catálogo em agosto, e é a mesma
+    /// que sustenta este registro.
+    ///
+    /// Diferente do exec: as `git.*` **não dependem de `ExecDeps` nem
+    /// de invoker**, então a asserção vale nos quatro construtores de
+    /// `PermissionSet` que a casca usa — não há configuração em que o
+    /// Git apareça pela metade.
+    #[test]
+    fn git_entra_atomicamente_no_catalogo_na_allowlist_e_na_permissao() {
+        let esperadas: Vec<frederico_core::ToolId> = [
+            "git.status",
+            "git.diff",
+            "git.log",
+            "git.branch",
+            "git.commit",
+        ]
+        .iter()
+        .map(|s| frederico_core::ToolId::new(*s))
+        .collect();
+
+        // Peça 1 — catálogo, na configuração mais pobre possível
+        // (sem runtime, sem invoker).
+        let tools = build_default_tools(None, None);
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        for id in &esperadas {
+            assert!(ids.contains(id), "{id:?} fora do catálogo: {ids:?}");
+        }
+
+        // Peça 2 — allowlist da run.
+        let allowed = build_default_allowed_for_run(None, None);
+        for id in &esperadas {
+            assert!(
+                allowed.contains(id),
+                "{id:?} fora da allowlist: {allowed:?}"
+            );
+        }
+
+        // Peça 3 — `PermissionSet::git` nos quatro construtores.
+        for (nome, ps) in [
+            ("initial_permission_set", initial_permission_set()),
+            (
+                "initial_permission_set_for_capable_launcher",
+                initial_permission_set_for_capable_launcher(),
+            ),
+            (
+                "initial_permission_set_for_exec",
+                initial_permission_set_for_exec(),
+            ),
+            (
+                "initial_permission_set_for_capable_launcher_and_exec",
+                initial_permission_set_for_capable_launcher_and_exec(),
+            ),
+        ] {
+            assert_eq!(
+                ps.git,
+                GitPermission::Local,
+                "{nome} não declara git: Local"
+            );
+        }
+
+        // Controle negativo: `Full` incluiria push, que este crate
+        // não faz — é `github-engine` (ADR-0041). Declarar `Full`
+        // anunciaria capacidade inexistente.
+        assert_ne!(initial_permission_set().git, GitPermission::Full);
+    }
+
     #[test]
     fn exec_shell_returns_atomically_with_allowlist_and_permission() {
         let tmp = tempfile::TempDir::new().expect("tempdir");

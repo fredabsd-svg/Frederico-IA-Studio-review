@@ -104,6 +104,10 @@ impl FromStr for RiskLevel {
 pub enum ToolCategory {
     Files,
     Exec,
+    /// Git **local** (Etapa 3 da Fase 8). Separada de `GitHub`
+    /// porque as duas têm fronteiras diferentes: local não faz rede
+    /// e vive dentro do Jail; GitHub autentica e sai para fora.
+    Git,
     Web,
     GitHub,
     Memory,
@@ -116,6 +120,7 @@ impl ToolCategory {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Files => "files",
+            Self::Git => "git",
             Self::Exec => "exec",
             Self::Web => "web",
             Self::GitHub => "github",

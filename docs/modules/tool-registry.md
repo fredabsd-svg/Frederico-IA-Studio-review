@@ -102,7 +102,10 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 - `ToolManifest`, `ToolManifestBuilder`, `JsonSchema`.
 - `RiskLevel` (Safe / Moderate / High / Critical).
-- `ToolCategory` (Files / Exec / Web / GitHub / Memory / Docs / Brasil).
+- `ToolCategory` (Files / Exec / **Git** / Web / GitHub / Memory / Docs / Brasil).
+  `Git` entrou na Etapa 3 da Fase 8 e é separada de `GitHub` de
+  propósito: Git local não faz rede e vive dentro do Jail; GitHub
+  autentica e sai para fora.
 - `ProviderMode` (NativeTools / TextEmulation).
 - `Platform` (Windows / Macos / Linux).
 - `Availability` (Available / Disabled / Missing / Unhealthy).
@@ -121,6 +124,25 @@ interseção com o Passo 5 do `validate_tool_call`.
 
 - `ToolRegistry` com `new`, `register`, `get`, `all`, `len`,
   `is_empty`, `set_health`, `health`, `effective_tools`.
+
+**Ferramentas de Git local (Etapa 3 da Fase 8):**
+
+- `GitStatusTool`, `GitDiffTool`, `GitLogTool` — `Safe`, sem aprovação.
+- `GitBranchTool` (`Moderate`), `GitCommitTool` (`High`) — aprovação
+  por invocação (ADR-0034).
+
+Todas delegam ao `frederico-git-engine` e abrem `ctx.jail.root()`.
+**Nenhuma aceita caminho de repositório**: o schema é fechado e não
+tem propriedade de caminho, então a fronteira do Jail é garantida pela
+ausência do parâmetro (ADR-0040 §D3). O teste
+`nenhuma_ferramenta_de_git_aceita_caminho_de_repositorio` quebra se
+alguém acrescentar `path`, `repo` ou `cwd` a qualquer um dos cinco.
+
+O `PermissionSet::git` foi bumpado para `Local` no mesmo commit
+(ADR-0020 §3 D3). Como `python`, `terminal` e `documents`, ele é
+**declaração e não portão** — o `validate_tool_call` Passo 5 só aplica
+`file_read` e a invariante de subagente. A lacuna é a mesma nomeada em
+`exec/shell.rs`.
 
 **Workspace + Jail (Etapa 2):**
 

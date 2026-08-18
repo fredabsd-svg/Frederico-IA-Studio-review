@@ -1,12 +1,12 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-17
+Verificado contra o código em: 2026-08-18
 Fase correspondente: 8
 -->
 
 # Integração com Git (`git-engine`)
 
-**O `crates/git-engine/` existe desde 2026-08-17, e cobre uma fatia estreita.** O PR de spike da Etapa 3 entregou `iniciar`, `abrir`, `commitar` e `historico`; `status`, `diff` e `branch` continuam sendo descrição do que não existe, e **nenhuma** das ferramentas da tabela abaixo está registrada no Tool Registry. A fonte da verdade do que está pronto é o [`docs/status.md`](../status.md); o as-built do crate é [`docs/modules/git-engine.md`](../modules/git-engine.md).
+**As cinco operações existem e as cinco ferramentas estão registradas** desde 2026-08-18 (PR de implementação da Etapa 3). O que este spec ainda descreve como futuro é a UI: o diff viewer é a Etapa 6, e nada do que está aqui aparece em tela hoje. A fonte da verdade do que está pronto é o [`docs/status.md`](../status.md); o as-built do crate é [`docs/modules/git-engine.md`](../modules/git-engine.md).
 
 Decisões que governam este spec: [ADR-0039](../decisions/0039-fase-8-escopo-e-etapas.md) (escopo da fase) e [ADR-0040](../decisions/0040-git-engine-biblioteca-e-fronteira.md) (biblioteca e fronteira).
 
@@ -61,14 +61,17 @@ Fica a regra que o ADR-0047 §D3 tirou disso: **spike de escrita não fecha lend
 
 Cada etapa entrega ao menos um **teste de negação**, regra herdada da Fase 7 (foi um deles que expôs o escape de path do sandbox na Etapa 4 daquela fase):
 
-| Teste | Prova |
-|---|---|
-| `git_status_reads_real_repo` | Caminho feliz sobre repositório temporário |
-| `git_commit_then_log_roundtrip` | Escrita real, lida de volta (critério do spike) |
-| `git_rejects_path_outside_workspace` | **Negação** — caminho fora do Jail é recusado |
-| `git_has_no_process_spawn` | **Negação** — o crate não spawna processo; falha se alguém reintroduzir `Command` |
+| Teste | Prova | Estado |
+|---|---|---|
+| `git_status_distingue_rastreado_de_nao_rastreado` | Caminho feliz sobre repositório temporário | entregue |
+| `git_commit_then_log_roundtrip` | Escrita real, lida de volta (critério do spike) | entregue |
+| `git_rejects_path_outside_workspace` | **Negação** — `abrir` não sobe diretório atrás de `.git`; visto falhando contra `Repository::discover` | entregue |
+| `git_has_no_process_spawn` | **Negação** — o crate não spawna processo; falha se alguém reintroduzir `Command` | entregue |
+| `nenhuma_ferramenta_de_git_aceita_caminho_de_repositorio` | **Negação estrutural** — nenhum dos 5 schemas aceita `path`, `repo` ou `cwd` | entregue |
 
-O último é o que impede a erosão da decisão do ADR-0040 §D1. Regra que só vive em prosa é regra que volta na primeira urgência.
+Os dois últimos impedem a erosão das decisões do ADR-0040 §D1 e §D3. Regra que só vive em prosa é regra que volta na primeira urgência.
+
+O inventário completo está em [`docs/modules/git-engine.md`](../modules/git-engine.md) §5: 12 testes no crate e 8 nas ferramentas.
 
 ## Referências
 

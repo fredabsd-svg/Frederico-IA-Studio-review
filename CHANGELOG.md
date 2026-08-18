@@ -1,5 +1,14 @@
 ## [Não publicado]
 
+### Adicionado — Fase 8, Etapa 3: a IA passa a enxergar e versionar o próprio trabalho (2026-08-18)
+
+- **O assistente ganha Git dentro da conversa.** Ele consegue perguntar o que mudou no workspace (`git.status`), ver o patch linha a linha (`git.diff`), consultar o histórico (`git.log`), criar e trocar de branch (`git.branch`) e commitar (`git.commit`). Na prática: dá para pedir "veja o que você alterou e commite com uma mensagem que explique o efeito" e acompanhar cada passo — sem tela ainda, o diff viewer é a Etapa 6.
+- **Ler é livre; mudar pede sua autorização, uma por vez.** Status, diff e log não interrompem. Criar branch e commitar param e esperam o seu "pode" a cada invocação, com a mensagem e a lista de arquivos à vista. É a mesma regra que separa ler arquivo de escrever arquivo.
+- **O commit não sai no seu nome.** O autor é fixo, `Frederico IA Studio`. Não é detalhe de implementação: se a IA pudesse escolher o autor, o histórico do Git — que é justamente o registro de quem fez o quê — passaria a aceitar qualquer atribuição. Sua identidade real entra quando o GitHub entrar (Etapa 5).
+- **Nenhuma das cinco ferramentas aceita endereço de repositório.** Elas operam sempre na pasta da conversa, e não por checagem de caminho: o parâmetro simplesmente não existe. Somado a isso, o motor não procura repositório nas pastas acima — então uma conversa criada dentro de um projeto maior não passa a mexer no repositório de fora.
+- **O que a ferramenta não faz, e não vai fingir que faz:** não apaga branch, não reescreve histórico (sem amend, sem rebase, sem reset), não faz push nem qualquer acesso à rede, e não resolve conflito de merge — detecta e mostra. Trocar de branch por cima de mudança não commitada é recusado, para não descartar trabalho seu.
+- **Testes:** 20 no total — 12 no motor (`crates/git-engine/tests/`) e 8 nas ferramentas (`crates/tool-registry/src/git/`), sendo 8 deles de negação. O teste que impede o motor de subir diretórios atrás de um repositório foi **visto falhando** contra a reintrodução deliberada do comportamento errado, antes de passar.
+
 ### Adicionado — Fase 8, Etapa 3 (spike): o app passa a saber fazer commit (2026-08-17)
 
 - **O Frederico ganha a primeira metade do Git próprio: criar repositório, commitar o que mudou no workspace da conversa e ler o histórico de volta.** Ainda não há tela nem ferramenta disponível para a IA — o que existe é o motor, e ele existe porque a metade arriscada do trabalho é a escrita, não a leitura.

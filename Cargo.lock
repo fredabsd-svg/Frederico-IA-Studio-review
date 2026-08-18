@@ -1413,6 +1413,7 @@ dependencies = [
  "chrono",
  "directories",
  "frederico-core",
+ "frederico-git-engine",
  "frederico-process-architecture",
  "frederico-runtimes",
  "frederico-security",
