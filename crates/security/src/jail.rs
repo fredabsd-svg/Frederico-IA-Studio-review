@@ -704,22 +704,21 @@ fn spawn_windows(
 
     // ---------- Step 3: Create pipes (CreatePipe, inheritable) ----------
     //
-    // **Label nos pipes:** idealmente, stdout/stderr deveriam
-    // nascer com `Mandatory Label\Low` (via SECURITY_DESCRIPTOR
-    // no `SECURITY_ATTRIBUTES`) — sem isso, o child (Low) não
-    // consegue escrever neles. **Mas** o `CreatePipe` falha
-    // com `ERROR_PRIVILEGE_NOT_HELD` (0x80070522) quando o SD
-    // tem SACL: criar kernel objects com SACL exige
-    // `SeSecurityPrivilege` que o processo do user comum não
-    // tem (split-token UAC). Workaround: criar os pipes SEM
-    // label. O child ainda pode escrever no workdir (que tem
-    // o label Low aplicado via `SetFileSecurityW` no step 1),
-    // mas falha ao escrever nos pipes. O test do `print()`
-    // (`hello world`) e do wall-clock falham com IOError
-    // porque o `print` é bloqueado. **A Etapa 5+ cobre
-    // path safety (writes no workdir) — output capture é
-    // limitação conhecida**, registrada como pendência da
-    // Fase 8.
+    // **Label nos pipes:** os pipes nascem **sem**
+    // `Mandatory Label\Low`. O `CreatePipe` falha com
+    // `ERROR_PRIVILEGE_NOT_HELD` (0x80070522) quando o SD tem
+    // SACL, porque criar kernel object com SACL exige
+    // `SeSecurityPrivilege`, que o processo do user comum não
+    // tem (split-token UAC).
+    //
+    // **Isso não impede o child de escrever neles**, ao
+    // contrário do que este comentário afirmou até 2026-08-18
+    // (ADR-0047). O check obrigatório do pipe acontece na
+    // **abertura** do handle — feita aqui, no processo pai, em
+    // integridade Medium — e não a cada escrita. O child herda
+    // um handle já aberto e escreve normalmente; o `print()`
+    // do `exec_python_simple_hello_world` chega ao stdout, e
+    // sempre chegou.
     //
     // **Por que o workdir usa SetFileSecurityW e o pipe não:**
     // o workdir é um **file object** — files podem ter SACL
