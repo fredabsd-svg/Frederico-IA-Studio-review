@@ -1,5 +1,14 @@
 ## [Não publicado]
 
+### Adicionado — Fase 8, Etapa 5: GitHub, com autorização que nega por padrão (2026-08-18)
+
+- **O app ganha o motor de `push` e de abrir pull request.** Ainda não está nas mãos do assistente nem em tela — o que entrou é a base, e com ela a decisão de quem pode fazer o quê.
+- **Autorizar GitHub deixou de ser um "sim ou não".** É uma matriz de três eixos: em quais repositórios, em quais branches, e para quais operações. Sem entrada, nada funciona. A diferença importa porque "pode usar GitHub" autorizaria tanto ler um repositório público quanto empurrar para a branch principal de produção — e o estrago dos dois não se compara.
+- **Curinga não alcança `main` nem `master`.** Se você liberar `*` para suas branches de trabalho, a branch principal continua fora. Para empurrar nela, é preciso escrever o nome dela — e escrever é o consentimento. Sem essa regra, um atalho digitado para outra finalidade passaria a cobrir produção sem ninguém perceber.
+- **O app não faz `push --force`, e não é uma opção desligada: é uma capacidade que não existe.** Não há botão, não há parâmetro, não há aprovação que a libere. Quem precisa continua tendo o terminal, onde o comando aparece na tela antes de rodar. A diferença é que ali é você lendo o comando, e aqui seria o assistente decidindo sozinho — e um force errado altera o repositório de outras pessoas, sem desfazer.
+- **Esta é a primeira coisa que o app faz que não tem como voltar atrás.** Escrever arquivo tem cópia de segurança; rodar código acontece numa caixa que é destruída no fim. Um PR criado por engano notifica revisores e fica no histórico mesmo depois de fechado. Todo o desenho vem daí.
+- **Testes:** 12 rodam em todo PR — incluindo um que fala com um servidor local que imita a API do GitHub, pelo mesmo caminho de código que fala com o GitHub de verdade — e 1 roda de madrugada, criando um PR real. O teste do caminho local não é opcional: a regra do projeto proíbe declarar uma fase pronta quando a única cobertura é a de madrugada.
+
 ### Adicionado — Fase 8, Etapa 4: projetos e marcos, com a garantia de que nada se perde (2026-08-18)
 
 - **O app passa a ter projetos.** Uma pasta de trabalho que você nomeia, com a lista dos seus projetos ordenada pelo que você abriu por último. Não há formato proprietário, importação nem conversão: um projeto **é** o diretório, e fechar o app não prende seus arquivos em lugar nenhum.

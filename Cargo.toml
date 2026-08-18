@@ -14,6 +14,7 @@ members = [
     "crates/memory",
     "crates/git-engine",
     "crates/project-engine",
+    "crates/github-engine",
     "crates/document-engine",
     "crates/document-kits",
     "crates/process-architecture",
@@ -47,6 +48,7 @@ frederico-execution-engine = { path = "crates/execution-engine" }
 frederico-memory = { path = "crates/memory" }
 frederico-git-engine = { path = "crates/git-engine" }
 frederico-project-engine = { path = "crates/project-engine" }
+frederico-github-engine = { path = "crates/github-engine" }
 frederico-document-engine = { path = "crates/document-engine" }
 frederico-document-kits = { path = "crates/document-kits" }
 frederico-process-architecture = { path = "crates/process-architecture" }

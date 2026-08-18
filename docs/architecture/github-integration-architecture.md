@@ -1,12 +1,12 @@
 <!--
-Estado: especificado
-Verificado contra o código em: —
+Estado: parcialmente implementado
+Verificado contra o código em: 2026-08-18
 Fase correspondente: 8
 -->
 
 # Integração com GitHub (`github-engine`)
 
-**Este documento descreve o que ainda não existe.** Nenhuma linha do `crates/github-engine/` foi escrita. Estado `especificado` conforme §1.13 e [ADR-0038](../decisions/0038-etapa-1-de-planejamento-nao-inicia-a-trava-1-13.md). O real está em [`docs/status.md`](../status.md).
+**O `crates/github-engine/` existe desde 2026-08-18** (Etapa 5): matriz de autorização, `criar_pr` e `push`, com o twin determinístico rodando em todo PR. O que **não** existe: ferramenta registrada no Tool Registry (o agente não alcança nada disto), o eixo estruturado no `PermissionSet` — que continua sendo o enum escalar da Fase 3 — e a auditoria própria. O as-built está em [`docs/modules/github-engine.md`](../modules/github-engine.md); o real, em [`docs/status.md`](../status.md).
 
 Decisão que governa este spec: [ADR-0041](../decisions/0041-github-auth-e-matriz-de-autorizacao.md).
 
@@ -55,12 +55,16 @@ Cada operação grava repositório, branch, decisão e resultado, no espírito d
 
 O E2E que cria PR de verdade precisa de rede, secret e serviço externo: `#[ignore]`, noturno, pela REGRA §3.3. E a REGRA §3.3 proíbe promover fase com cobertura só-noturna sem twin determinístico.
 
-| Teste | Onde | Prova |
-|---|---|---|
-| `github_create_pr_against_real_service` | noturno | Caminho completo contra o GitHub |
-| `github_create_pr_against_local_stub` | **todo PR** | Twin: caminho de produção contra servidor HTTP local |
-| `github_rejects_repo_outside_matrix` | todo PR | **Negação** — repositório fora da matriz é recusado |
-| `github_has_no_force_push_api` | todo PR | **Negação** — a API não expõe force; falha se alguém a acrescentar |
+| Teste | Onde | Prova | Estado |
+|---|---|---|---|
+| `github_create_pr_against_real_service` | noturno | Caminho completo contra o GitHub | entregue (`#[ignore]`; exige `GITHUB_TOKEN_E2E` e `GITHUB_REPO_E2E`) |
+| `github_create_pr_against_local_stub` | **todo PR** | Twin: caminho de produção contra servidor HTTP local | entregue |
+| `github_rejects_repo_outside_matrix` | todo PR | **Negação** — repositório fora da matriz é recusado | entregue |
+| `github_has_no_force_push_api` | todo PR | **Negação** — a API não expõe force; falha se alguém a acrescentar | entregue |
+
+Mais 9 em todo PR (curinga vs. branch protegida, matriz vazia, operação ausente, `owner/repo` mal formado, interseção fail-closed, recusa do serviço, e três do `push`). Inventário em [`docs/modules/github-engine.md`](../modules/github-engine.md) §6.
+
+**O twin do `push` não cobre o callback de credencial.** Ele empurra para um repositório bare local, cujo transporte não autentica — o que ele prova é a autorização, o refspec e a chegada do commit. Quem exercita o callback é o noturno. Declarado em vez de contornado.
 
 **Pré-condição de fechamento da fase (ADR-0039 §D2):** o `CI Nightly` precisa de ao menos um run verde citado no `status.md`. Em 2026-08-16 ele acumulava 12 falhas consecutivas desde 2026-08-05, todas por secret ausente — a cobertura noturna que o [ADR-0026](../decisions/0026-e2e-coverage-gate.md) §D2 classifica como "mais fraca por natureza" era, na prática, inexistente. Um E2E noturno num pipeline que nunca completa não é cobertura fraca: é cobertura nenhuma com aparência de cobertura.
 
