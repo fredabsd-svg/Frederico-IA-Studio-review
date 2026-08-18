@@ -849,4 +849,72 @@ mod tests {
         let result = classifier.classify(ctx).await;
         assert!(matches!(result, Err(ClassifierError::QuotaExceeded)));
     }
+    /// **O contrato entre o prompt e o parser, fixado.**
+    ///
+    /// O system prompt manda o modelo emitir o campo como `type`
+    /// (`type` é o nome natural em JSON; `type_` existe só porque
+    /// `type` é palavra reservada em Rust). Antes do `alias` no
+    /// `NewMemory`, o modelo obedecia ao prompt e o parse falhava
+    /// com `missing field type_` — o caminho real quebrava enquanto
+    /// os testes passavam, porque os fixtures deles usam `type_`.
+    ///
+    /// Este teste usa a grafia que o **prompt** pede, não a que o
+    /// campo Rust tem. Se alguém remover o alias, ele fica vermelho.
+    #[tokio::test]
+    async fn classificador_aceita_o_campo_type_como_o_prompt_pede() {
+        struct MockProvider(String);
+        #[async_trait::async_trait]
+        impl CompletionProvider for MockProvider {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<String, ClassifierError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        // Controle: o prompt de fato documenta `type`, e não `type_`.
+        // Se o prompt mudar de grafia, este teste avisa antes do
+        // noturno.
+        let prompt = build_system_prompt();
+        assert!(
+            prompt.contains("- type:"),
+            "o system prompt deixou de documentar o campo como `type`"
+        );
+
+        let json = r#"{
+            "record": {
+                "scope_type": "preference",
+                "scope_id": "",
+                "type": "preference",
+                "content": "prefere relatorios em PDF",
+                "origin": "user",
+                "source_type": "user_message",
+                "source_id": null,
+                "confidence": 0.9,
+                "importance": 0.8,
+                "expires_at": null
+            },
+            "scope": "preference",
+            "importance": 0.8,
+            "reason": "preferencia explicita do usuario"
+        }"#;
+        let classifier = LlmMemoryClassifier::new(Arc::new(MockProvider(json.into())));
+        let ctx = ClassificationContext {
+            run_id: "run-type-alias".into(),
+            conversation_id: "conv-1".into(),
+            messages: vec![ConversationMessage {
+                role: "user".into(),
+                content: "Prefiro receber todos os relatorios em PDF.".into(),
+                source: frederico_core::MemorySourceType::new("user_message"),
+            }],
+        };
+
+        let out = classifier.classify(ctx).await.expect("deve parsear");
+        let record = out.record.expect("record deve existir");
+        assert_eq!(record.type_, frederico_core::MemoryType::Preference);
+    }
 }
