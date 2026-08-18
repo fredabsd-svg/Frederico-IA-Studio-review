@@ -16,6 +16,10 @@ frederico-process-architecture = { workspace = true }
 # `SecurityJailResolver` (Etapa 2) e `RuntimeRegistry` (Etapa 3).
 frederico-security = { workspace = true }
 frederico-runtimes = { workspace = true }
+# Etapa 3 da Fase 8: as 5 ferramentas `git.*` delegam ao
+# `git-engine`, que é puro e não conhece o Jail — quem entrega o
+# workspace resolvido é este crate (ADR-0040 §D3).
+frederico-git-engine = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

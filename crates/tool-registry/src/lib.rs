@@ -58,6 +58,7 @@ pub mod approval;
 pub mod audit;
 pub mod error;
 pub mod exec;
+pub mod git;
 pub mod jail_resolver;
 pub mod manifest;
 pub mod permission;
@@ -85,6 +86,7 @@ pub use tools::ToolContext;
 pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalScope};
 pub use audit::{AuditEntry, AuditSink, NoopAuditSink};
 pub use error::{ToolError, ToolErrorCode};
+pub use git::{GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};
 pub use manifest::{
     Availability, JsonSchema, Platform, ProviderMode, RiskLevel, ToolCategory, ToolManifest,
     ToolManifestBuilder, WorkerHealth,
