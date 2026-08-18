@@ -1,5 +1,15 @@
 ## [Não publicado]
 
+### Segurança — o sandbox bloqueava tudo em vez de bloquear a fuga (2026-08-18)
+
+- **As ferramentas de execução não conseguiam gravar um único arquivo — nem na pasta que receberam para trabalhar.** Quem pedisse ao app para gerar uma planilha, um gráfico ou qualquer saída em arquivo por `exec.python`, `exec.node` ou `exec.shell` recebia “permissão negada”. Ler funcionava; escrever, em lugar nenhum.
+- **A causa era uma proteção que dizia estar ligada e nunca esteve.** Desde 2026-08-10 o app marcava a pasta de trabalho com um rótulo de integridade baixa — o mecanismo que deixa o processo isolado escrever ali dentro e só ali. A marcação era montada num formato errado que o Windows aceita em silêncio como “sem rótulo”: o sistema respondia sucesso e não marcava nada. Sem a marca, a pasta ficava num nível acima do processo, e aí nada podia ser escrito.
+- **Agora o rótulo é aplicado de fato** — o `icacls` na pasta passa a mostrar `Rótulo Obrigatório\Nível Obrigatório Baixo:(NW)` — e o comportamento é o desenhado: escrever **dentro** da pasta da conversa funciona, escrever **fora** dela continua sendo recusado.
+- **Isto afrouxa o que existia na prática, e o registro fica.** Até aqui nada era gravável, o que parecia proteção mais forte. Não era garantia — era defeito com aparência de proteção —, mas quem observasse só o comportamento poderia ter tomado por garantia.
+- **O teste que deveria ter pego isso passava verde.** Ele afirmava provar que o processo isolado não escapa da pasta; como o processo não escrevia em canto nenhum, o teste não distinguia “não escapou” de “não escreve nada”. Passou a exigir as duas metades na mesma execução: gravar dentro tem de funcionar, gravar fora tem de falhar.
+- **Um teste instável foi fechado junto.** As provas do sandbox de Python baixavam também o runtime de Node, que elas não usam, e uma falha de rede nesse download reprovava a prova de Python — com quatro delas em paralelo, a que falhava mudava a cada rodada. Agora cada prova baixa só o que usa: o arquivo ficou estável e quatro vezes mais rápido.
+- **O que continua sem proteção, dito com todas as letras:** o processo isolado ainda **lê** arquivos fora da pasta se receber o caminho completo. Isso não mudou e está no `SECURITY.md`, junto das outras duas lacunas nomeadas. Ver [ADR-0047](docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
+
 ### Adicionado — Fase 8, Etapa 3 (spike): o app passa a saber fazer commit (2026-08-17)
 
 - **O Frederico ganha a primeira metade do Git próprio: criar repositório, commitar o que mudou no workspace da conversa e ler o histórico de volta.** Ainda não há tela nem ferramenta disponível para a IA — o que existe é o motor, e ele existe porque a metade arriscada do trabalho é a escrita, não a leitura.

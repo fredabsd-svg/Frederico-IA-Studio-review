@@ -111,37 +111,39 @@ async fn build_registry() -> Arc<RuntimeRegistry> {
         download_timeout: Duration::from_secs(300),
     };
     let registry = RuntimeRegistry::new(cfg).expect("RuntimeRegistry::new");
-    let report = registry
-        .bootstrap_all()
-        .await
-        .expect("RuntimeRegistry::bootstrap_all falhou");
+
+    // **Bootstrap só do python (2026-08-18).** Antes daqui isto
+    // chamava `bootstrap_all()`, que baixa **também** o
+    // `node-20.16.0` (~30 MB de nodejs.org) — runtime que este
+    // arquivo não usa — e o hard-fail olhava o `report.failed`
+    // inteiro. Resultado: uma falha de download do node reprovava
+    // um teste de Python. Com 4 provas rodando em paralelo, cada
+    // uma baixando os dois runtimes por conta própria, o arquivo
+    // ficou instável por rede: a vítima variava de rodada para
+    // rodada. Medido em 2026-08-18:
+    // `DownloadFailed { id: RuntimeId("node-20.16.0"), attempts: 3,
+    // message: "read body: request or response body error" }`.
+    // Baixar só o que o teste usa tira o node do caminho e corta
+    // o volume por prova de ~41 MB para ~11 MB.
+    let py_id = RuntimeId::new("python-3.12.4");
+    let runtime = registry
+        .get(&py_id)
+        .expect("python-3.12.4 no registry (hard-coded na Etapa 3)");
 
     // Hard-fail se python não bootstrappou. Teste de segurança
     // que pula por ausência do runtime é fail-open.
-    if !report.failed.is_empty() {
-        for (id, err) in &report.failed {
-            eprintln!("[e2e_exec_python/setup] {} bootstrap falhou: {:?}", id, err);
-        }
+    if let Err(e) = runtime.bootstrap_if_needed() {
         panic!(
-            "runtime python-3.12.4 indisponível: bootstrap falhou. \
-             Teste de segurança não pode pular — pular por \
-             ausência do runtime é fail-open (mesma decisão do \
-             memory_real_providers_or_fail da Fase de Ligação). \
-             Verifique a rede ou pre-popule o cache em {}",
+            "runtime python-3.12.4 indisponível: {e:?}.              Teste de segurança não pode pular — pular por              ausência do runtime é fail-open (mesma decisão do              memory_real_providers_or_fail da Fase de Ligação).              Verifique a rede ou pre-popule o cache em {}",
             tmp.path().display()
         );
     }
 
     // Validação extra: o python.exe existe onde o runtime diz.
-    let py_id = RuntimeId::new("python-3.12.4");
-    let runtime = registry
-        .get(&py_id)
-        .expect("python-3.12.4 no registry (hard-coded na Etapa 3)");
     let exe = runtime.executable();
     if !exe.exists() {
         panic!(
-            "python-3.12.4 bootstrapped (report OK) mas exe não existe em {}. \
-             Bug do bootstrap — abrir issue.",
+            "python-3.12.4 bootstrapped (sem erro) mas exe não existe em {}.              Bug do bootstrap — abrir issue.",
             exe.display()
         );
     }
@@ -211,87 +213,58 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 // Testes
 // ============================================================================
 
-/// **I3 — path safety.** Script Python tenta criar arquivo
-/// fora do workdir (jail). O sandbox **bloqueia** (path
-/// inválido sob `current_dir`).
+/// **I3 — path safety.** O sandbox precisa bloquear a **fuga**
+/// do workdir, e só ela. O teste faz as duas metades numa
+/// invocação só:
 ///
-/// **Por que isso prova o contrato:** o `SandboxConfig::workdir`
-/// é o `jail.root()` (= workspace da conversa). O
-/// `tokio::process::Command::current_dir(workdir)` define o
-/// cwd do filho. O Python `open("..\..\evil.txt", "w")` resolve
-/// **Reativado em Etapa 5+ do Phase 7 (2026-08-10):** este test
-/// foi marcado `#[ignore]` na Etapa 4 v1 (PR #44) porque o
-/// sandbox da época **não** tinha path safety enforcement real
-/// — o `SecurityJailResolver` combinava Job Object (tree-kill) +
-/// Restricted Token (drop 6 privilégios) + EnvFilter, mas
-/// **nenhuma camada bloqueava escrita por path**. O Python
-/// `open("..\evil.txt", "w")` resolvia para um arquivo no
-/// parent do workdir, fora do `jail.root()`. A Etapa 5+ do
-/// Phase 7 fecha isso com `RestrictedToken` aplicado via raw
-/// `CreateProcessW` + ACL deny no workdir (AppContainer
-/// descartado em decisão anterior).
+/// 1. **Controle positivo** — o script escreve `dentro.txt` no
+///    próprio workdir e isso **tem** de funcionar.
+/// 2. **Negação** — o mesmo script tenta `..\evil.txt` e isso
+///    **tem** de falhar, sem deixar arquivo no parent.
 ///
-/// **TDD — passo 1 (este commit):** tirei o `#[ignore]`. O test
-/// **deve falhar** nesta fase (regra cross-project: "teste de
-/// negação que nunca foi visto falhando não prova nada"). A
-/// falha esperada: o Python escapa, `evil.txt` é criado no
-/// parent, o `assert!(!escaped, ...)` estoura, o
-/// `assert!(!evil_path.exists(), ...)` estoura.
+/// ## Por que o controle positivo não é opcional (2026-08-18)
 ///
-/// **Passo 2 (próximo commit):** implementar `RestrictedToken`
-/// aplicado via raw `CreateProcessW` + ACL deny no workdir até
-/// que este test passe. Os outros 2 tests do arquivo
-/// (`wall_clock_kills_long_running_process` + `exec_python_simple_hello_world`)
-/// permanecem `#[ignore]` até que a Etapa 5+ prove wall-clock
-/// enforcement real e caminho feliz — a reativação deles vem
-/// **depois** que este aqui estiver verde.
+/// Sem ele o teste não distingue "não escapou" de "não escreve
+/// em lugar nenhum" — e foi exatamente essa a situação real até
+/// [ADR-0047](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
+/// O `set_low_integrity_label` montava um descritor de segurança
+/// self-relative com `OffsetSacl = 0`, o que o Windows lê como
+/// "SACL presente porém NULL": o `SetFileSecurityW` devolvia
+/// sucesso e não aplicava rótulo nenhum. O workdir ficava em
+/// integridade Medium, o filho rodava em Low, e o `NO_WRITE_UP`
+/// barrava **toda** escrita — inclusive a que devia passar.
+/// Este teste passava assim mesmo, verde, provando bem menos do
+/// que o nome dele diz.
 ///
-/// **Cobertura equivalente ja garantida (CI):**
-/// - \`crates/security/tests/tree_kill.rs\` (Job Object +
-///   KILL_ON_JOB_CLOSE mata a arvore)
-/// - \`crates/security/tests/jobs_test.rs\` (Restricted
-///   Token drop privilegios)
-/// - \`crates/security/tests/env_filter.rs\` (Env filter)
-/// - \`crates/e2e/tests/e2e_approval_display.rs\` (Passo 9
-///   do validate_tool_call honrado)
-/// - \`crates/e2e/tests/e2e_exec_node_under_sandbox.rs\`
-///   (Etapa 5+ — Node espelha Python)
-///
-/// **O que este test prova (sera reabilitado):** o sandbox
-/// BLOCKS python de escrever arquivos fora do \`workdir\`
-/// (cwd = workdir, mas \`open("..\\evil.txt")\` nao pode
-/// escapar). Hoje a Etapa 4 NAO bloqueia — Etapa 5+ vai
-/// adicionar.
+/// O par também cobre o erro simétrico: um sandbox que largasse
+/// o rótulo de lado passaria no controle positivo e falharia na
+/// negação.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_cannot_write_outside_workspace() {
-    // **Etapa 5+ da Fase 7 (2026-08-10):** este test foi
-    // **visto falhando** em 2026-08-10 (TDD Etapa 5+ — python
-    // escapou e criou arquivo no parent do workdir, provando
-    // ausência de path safety no sandbox). Foi reativado
-    // temporariamente, depois recolocado em `#[ignore]` porque
-    // a Etapa 5+ ainda não implementou a fix (caminho correto é
-    // RestrictedToken com SID restritivo próprio, em vez de
-    // DACL deny no parent do workdir — abordagem escalável).
-    //
-    // Reativar este test quando a Etapa 5+ fechar
-    // (regra: 3 `#[ignore]` saem e ficam verdes, com cada um
-    // tendo sido visto vermelho antes).
     let tools = build_exec_tools().await;
     let tool = find_python_tool(&tools);
 
     let workspace = TempDir::new().expect("tempdir workspace");
     let evil_path = workspace.path().parent().unwrap().join("evil.txt");
+    let inocente_path = workspace.path().join("dentro.txt");
     // Garante que `evil.txt` NÃO existe antes do teste.
     let _ = std::fs::remove_file(&evil_path);
 
-    // Python script: tenta escrever em `..\evil.txt` (acima do workdir).
     let code = r#"
-import os
+# Controle positivo: escrever DENTRO do workdir tem de funcionar.
+try:
+    with open("dentro.txt", "w") as f:
+        f.write("ok")
+    print("DENTRO_OK", flush=True)
+except OSError as e:
+    print("DENTRO_FALHOU", type(e).__name__, str(e), flush=True)
+
+# Negacao: escrever FORA do workdir tem de falhar.
 try:
     with open(r"..\evil.txt", "w") as f:
         f.write("PWNED")
     print("ESCAPED", flush=True)
-except (FileNotFoundError, PermissionError, OSError) as e:
+except OSError as e:
     print("BLOCKED", type(e).__name__, str(e), flush=True)
 "#;
 
@@ -300,29 +273,39 @@ except (FileNotFoundError, PermissionError, OSError) as e:
     let result = tool
         .execute(&ctx, &json!({ "code": code, "max_wall_clock_ms": 10_000 }))
         .await;
-    eprintln!(
-        "[e2e_exec_python/path-safety] result: ok={} err={:?}",
-        result.ok, result.error_message
-    );
-
-    // O test passa se: o script reportou "BLOCKED" (não "ESCAPED")
-    // E o arquivo evil.txt NÃO foi criado.
-    let escaped = result
+    let stdout = result
         .output
         .get("stdout")
         .and_then(|v| v.as_str())
-        .map(|s| s.contains("ESCAPED"))
-        .unwrap_or(false);
+        .unwrap_or("")
+        .to_string();
+    eprintln!(
+        "[e2e_exec_python/path-safety] ok={} err={:?} stdout={stdout:?}",
+        result.ok, result.error_message
+    );
+
+    // --- Controle positivo: o workdir é utilizável ---
     assert!(
-        !escaped,
+        stdout.contains("DENTRO_OK"),
+        "o filho não conseguiu escrever no próprio workdir; o teste de \
+         negação abaixo passaria por não escrever em lugar nenhum, não \
+         por o sandbox ter bloqueado a fuga (ver ADR-0047). stdout={stdout:?}"
+    );
+    assert!(
+        inocente_path.exists(),
+        "o script disse DENTRO_OK mas {inocente_path:?} não existe"
+    );
+
+    // --- Negação: a fuga é bloqueada ---
+    assert!(
+        !stdout.contains("ESCAPED"),
         "FALHA DE SANDBOX: Python escapou do workdir e criou arquivo fora do jail"
     );
     assert!(
         !evil_path.exists(),
-        "FALHA DE SANDBOX: evil.txt foi criado em {:?}",
-        evil_path
+        "FALHA DE SANDBOX: evil.txt foi criado em {evil_path:?}"
     );
-    eprintln!("[e2e_exec_python/path-safety] OK: sandbox bloqueou escrita fora do workdir");
+    eprintln!("[e2e_exec_python/path-safety] OK: escreveu dentro do workdir e foi bloqueado fora");
 }
 
 /// **Wall-clock enforcement.** Script Python tenta `time.sleep(10)`;
