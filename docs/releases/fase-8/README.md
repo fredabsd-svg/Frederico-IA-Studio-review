@@ -3,7 +3,7 @@
 <!--
 Estado: especificado
 Verificado contra o código em: —
-Fase correspondente: 8 (Etapas 1, 2, 2b, 3 e 4 fechadas; Etapa 5 em andamento; Etapas 5b, 6 e 7 não iniciadas)
+Fase correspondente: 8 (Etapas 1, 2, 2b, 3 e 4 fechadas; Etapas 5 e 5b em andamento; Etapas 6 e 7 não iniciadas)
 -->
 
 Índice das narrativas de processo da **Fase 8** — Git local portátil, GitHub, projetos, marcos e diff viewer. O escopo veio do [ADR-0032](../../decisions/0032-fase-7-scope-reduction.md) §D2, quando a Fase 7 ficou restrita à execução isolada, e foi cortado pelo [ADR-0039](../../decisions/0039-fase-8-escopo-e-etapas.md).
@@ -20,7 +20,7 @@ Fase correspondente: 8 (Etapas 1, 2, 2b, 3 e 4 fechadas; Etapa 5 em andamento; E
 | 3 — `git-engine` | (a ser escrito) | Spike de biblioteca + crate local (status, diff, log, branch, commit). **PR de spike fechado em 2026-08-17: `git2` escolhida contra a preferência do ADR-0040 §D2 — ver [ADR-0047](../../decisions/0047-git-engine-usa-git2-medido-por-spike.md).** **Fechada em 2026-08-18 pelo PR de implementação:** `status`, `diff` e `branch` no crate, as 5 ferramentas registradas no Tool Registry e na allowlist, 20 testes na etapa (8 de negação). |
 | 4 — Projetos e marcos | (a ser escrito) | `crates/project-engine/` + marcos nomeados sobre o `git-engine`. **Crate e migração `0032` entregues em 2026-08-18**, com 20 testes; restaurar cria marco automático antes e nunca reescreve histórico. Falta expor ao agente. |
 | 5 — `github-engine` | (a ser escrito) | Auth, push, `create_pr`, matriz de autorização. Noturno + twin. **Motor entregue em 2026-08-18** com 12 testes em todo PR + 1 noturno; force-push ausente por construção. Falta ferramenta no Tool Registry, eixo no `PermissionSet` e auditoria. |
-| 5b — Identidade visual e acessibilidade | (a ser escrito) | Tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas. [ADR-0045](../../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). |
+| 5b — Identidade visual e acessibilidade | (a ser escrito) | Tokens, estados de foco, WCAG 2.1 AA automatizável, sugestões estáticas. [ADR-0045](../../decisions/0045-fase-8-etapa-5b-identidade-visual-acessibilidade-e-sugestoes.md). **Em andamento desde 2026-08-19:** sistema de tokens, tema claro completado, foco visível e 2 das 4 portas no CI. |
 | 6 — Diff viewer + UI de projeto | (a ser escrito) | Frontend consumindo os dois crates. |
 | 7 — Fechamento | (a ser escrito) | Pendências herdadas da Fase 7 + catálogo dinâmico (ADR-0043) + promoção. |
 
