@@ -37,14 +37,14 @@ O critério de aceite é **mecânico** (§D2). Uma etapa chamada "melhorar o lay
 
 | Porta | Script | Estado |
 |---|---|---|
-| 1 — Contraste, nos dois temas | `scripts/check-ui-contrast.mjs` | **entregue** (entra no `ci.yml` em PR separada) |
+| 1 — Contraste, nos dois temas | `scripts/check-ui-contrast.mjs` | **entregue e no CI** |
 | 2 — Foco visível + AA automatizável | — | CSS entregue; o gate `axe` precisa de runner |
-| 3 — Zero literal visual fora do `:root` | `scripts/check-ui-tokens.mjs` | **entregue** (entra no `ci.yml` em PR separada) |
+| 3 — Zero literal visual fora do `:root` | `scripts/check-ui-tokens.mjs` | **entregue e no CI** |
 | 4 — Travessia por teclado | — | precisa de runner |
 
 **O que explicitamente não é critério:** parecer bonito. A avaliação estética é do revisor humano, acontece na revisão do PR e **não bloqueia**. As portas bloqueiam.
 
-**Por que os scripts não entram no CI neste mesmo PR:** alterar arquivo em `.github/workflows/` impede o `ci.yml` de rodar na PR que o altera, neste repositório — medido em 2026-08-17, e foi o que obrigou a separar o conserto do noturno na Etapa 2. Ligá-los aqui deixaria este PR sem nenhuma verificação.
+**Os scripts entraram no `ci.yml` em PR separada (#78), e não precisavam.** A separação seguiu uma nota do `status.md` que dizia que alterar `.github/workflows/` impede o `ci.yml` de rodar na PR que o altera. **A nota é falsa** — o PR #78 alterou o `ci.yml` e a CI rodou nele, com as duas portas executando; e o PR #63, que originou a afirmação, também teve CI verde alterando um workflow. A errata está no `status.md`. Fica como lembrete de que documentação errada custa trabalho mesmo quando o erro é inofensivo.
 
 As portas 2 e 4 exigem `vitest` + `jsdom` + `axe-core`, que o `apps/desktop` não tem — hoje ele só tem `vite` e `tsc`. Acrescentar runner de teste ao frontend é decisão com peso próprio e entra em PR separado, não como linha solta no meio deste.
 
