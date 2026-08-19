@@ -27,9 +27,11 @@ use std::sync::OnceLock;
 use frederico_core::{ModelId, ProviderId};
 use serde::{Deserialize, Serialize};
 
+pub mod fusao;
 pub mod registry;
 pub mod specialist;
 
+pub use fusao::{fundir, ModeloEfetivo, ModeloRemotoNormalizado, Origem, RespostaDoProvedor};
 pub use registry::{DefaultSpecialistRegistry, RegistryError, SpecialistRegistry};
 pub use specialist::{
     parse_specialists_toml, SpecialistDefinition, SpecialistId, SpecialistMaxSteps,
@@ -90,8 +92,23 @@ impl CapabilitySet {
     }
 }
 
-/// Preço por **mil tokens**, em microcents (`u64`). Sem ponto flutuante
-/// no banco (regra do [ADR-0006](../decisions/0006-model-catalog-crate.md)).
+/// Preço por **milhão** de tokens. Sem ponto flutuante no banco
+/// (regra do [ADR-0006](../decisions/0006-model-catalog-crate.md)).
+///
+/// **O nome do campo mente sobre a unidade, e o comentário anterior
+/// mentia sobre a base.** Ele dizia "por mil tokens", enquanto o
+/// `cost_microcents` divide por `1_000_000` e o campo do JSON se
+/// chama `pricing_per_million` — é por milhão. E a unidade não é
+/// microcent (10⁻⁶ de centavo): é **10⁻⁵ de dólar**, ou seja
+/// milicentavo. Conferido contra seis entradas do catálogo cujo
+/// preço público se conhece — GPT-4o mini a US$ 0,15/1M gravado como
+/// `15000`, Claude 3.5 Haiku a US$ 0,80/1M como `80000`.
+///
+/// O nome fica como está porque renomeá-lo toca schema, JSON, banco
+/// e migração — trabalho com risco próprio, que não cabe junto de
+/// uma atualização de catálogo. Fica registrado para quem for
+/// calcular preço a partir daqui não errar por três ordens de
+/// grandeza.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PriceTable {
     pub input_microcents: u64,
@@ -286,14 +303,41 @@ mod tests {
     #[test]
     fn find_model_returns_known_entry() {
         let cat = Catalog::load();
+
+        // **Não fixa um modelo de mercado.** A versão anterior deste
+        // teste pinava `openai/gpt-4o`, e quebrou na primeira
+        // atualização do catálogo — que é uma operação de rotina, não
+        // uma mudança de contrato. Teste que quebra quando o dado é
+        // atualizado corretamente mede a data do arquivo, não o
+        // código.
+        //
+        // `simulated/fake-model-v1` é a única entrada que o produto
+        // controla: existe para os testes e não sai do catálogo por
+        // decisão de nenhum provedor.
         let m = cat
-            .find_model(&ProviderId::new("openai"), &ModelId::new("gpt-4o"))
-            .expect("gpt-4o deve estar no catálogo");
-        assert_eq!(m.context_window, 128_000);
+            .find_model(
+                &ProviderId::new("simulated"),
+                &ModelId::new("fake-model-v1"),
+            )
+            .expect("o modelo simulado deve estar no catálogo");
+        assert!(m.context_window > 0);
         assert!(m.modalities.has_input(Modality::Text));
-        assert!(m.modalities.has_input(Modality::Image));
         assert!(m.capabilities.has(Capability::Tools));
-        assert!(m.capabilities.has(Capability::Vision));
+
+        // Controle positivo do `find_model`: id que não existe
+        // devolve `None`, e não a primeira entrada.
+        assert!(cat
+            .find_model(&ProviderId::new("simulated"), &ModelId::new("nao-existe"))
+            .is_none());
+
+        // E o catálogo tem entrada multimodal — sem prender a qual.
+        assert!(
+            cat.models()
+                .iter()
+                .any(|m| m.modalities.has_input(Modality::Image)
+                    && m.capabilities.has(Capability::Vision)),
+            "o catálogo perdeu toda entrada com visão"
+        );
     }
 
     #[test]

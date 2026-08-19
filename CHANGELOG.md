@@ -1,5 +1,19 @@
 ## [Não publicado]
 
+### Adicionado — a lista de modelos deixa de envelhecer (2026-08-19)
+
+- **O app passa a perguntar aos provedores quais modelos existem, toda vez que abre.** Antes a lista era fixa, escrita no dia em que o app foi compilado — e estava parada em 2024: nenhum modelo lançado desde então aparecia, e a única forma de acrescentar um era recompilar o programa.
+- **Modelo que o provedor aposentou some da lista.** Antes ele continuava lá para sempre, e escolhê-lo dava erro do provedor no meio da conversa — um erro que parecia do app.
+- **A busca não atrasa a abertura.** O app abre imediatamente, com a lista de sempre, e a atualização chega depois, sozinha. Sem internet, sem chave configurada ou com o provedor fora do ar, nada acontece: a lista de sempre continua lá, sem erro na tela.
+- **O preço continua vindo de dentro do app**, e não do provedor. O motivo é concreto: a listagem da OpenAI devolve só os nomes dos modelos, sem preço. Se o app confiasse nela para tudo, ficaria sem preço nenhum e nenhum modelo da OpenAI rodaria.
+- **Modelo novo que o app não conhece aparece marcado e não roda até você informar o preço.** É a mesma regra de sempre: custo silenciosamente errado é pior que uma recusa explicada.
+
+### Corrigido — a lista de modelos estava parada em 2024 (2026-08-19)
+
+- **O catálogo embutido foi atualizado**, com preço e janela de contexto conferidos na fonte de cada provedor: Anthropic, OpenAI, OpenRouter e DeepSeek. Passou de 13 para 18 modelos.
+- **Os oito especialistas apontavam para um modelo que não existe mais.** Como modelo sem preço interrompe a execução antes de começar, eles teriam parado de funcionar. Agora um teste garante que todo especialista aponte para um modelo que o app conhece.
+- **A Mistral ficou como estava**, porque não encontrei fonte que pudesse citar para o preço dela. Trocar preço por memória é justamente o que a regra nova sobre evidência proíbe.
+
 ### Corrigido — o app deixa de ser ilegível para quem usa o Windows em modo claro (2026-08-19)
 
 - **A cor de destaque do tema claro estava abaixo do mínimo legível, e nada avisava.** O latão que dá identidade ao app foi escrito para o fundo escuro e nunca ganhou versão para o fundo claro — quem usa o Windows em modo claro via um destaque com menos da metade do contraste exigido. Agora o tema claro está completo, e uma verificação automática mede os dois temas a cada mudança, para não acontecer de novo.

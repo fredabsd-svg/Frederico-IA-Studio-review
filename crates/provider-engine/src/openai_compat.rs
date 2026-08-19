@@ -134,6 +134,88 @@ impl OpenAiCompatAdapter {
     }
 }
 
+/// Um modelo como o provedor o descreve no `/models`.
+///
+/// **Campos opcionais porque os provedores discordam.** Medido em
+/// 2026-08-19: o `/models` do OpenRouter devolve preço e janela de
+/// contexto por modelo; o da OpenAI devolve só a lista de ids. É por
+/// isso que o [ADR-0052] §D3 mantém o preço vindo do catálogo
+/// embutido — se o remoto mandasse em tudo, um refresh da OpenAI
+/// apagaria todos os preços e nenhum modelo dela rodaria.
+///
+/// [ADR-0052]: ../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeloRemoto {
+    pub id: String,
+    pub nome: Option<String>,
+    pub janela_de_contexto: Option<u32>,
+    /// Preço por 1M de tokens, na unidade do catálogo (dólar × 10⁵).
+    /// `None` quando o provedor não informa — o caso da OpenAI.
+    pub entrada: Option<u64>,
+    pub saida: Option<u64>,
+}
+
+impl OpenAiCompatAdapter {
+    pub(crate) fn models_url(&self) -> String {
+        format!("{}/models", self.base_url.trim_end_matches('/'))
+    }
+}
+
+/// Converte a resposta do `/models` na lista tipada.
+///
+/// Separada da chamada de rede para poder ser testada contra as
+/// formas reais das duas famílias de resposta, sem socket.
+///
+/// **Entrada malformada não derruba a lista inteira**: item sem `id`
+/// é pulado, e campo extra ilegível vira `None`. Um provedor que
+/// muda o formato de um campo não pode custar ao usuário o acesso a
+/// todos os modelos dele.
+pub fn parse_lista_de_modelos(json: &serde_json::Value) -> Vec<ModeloRemoto> {
+    let Some(itens) = json.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    itens
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?.to_string();
+            if id.trim().is_empty() {
+                return None;
+            }
+            let nome = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let janela = item
+                .get("context_length")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok());
+            // O OpenRouter dá preço **por token**, em string decimal.
+            // A unidade do catálogo é dólar × 10⁵ por 1M de tokens,
+            // então o fator é 10¹¹ — conferido contra o Claude Opus 5,
+            // que sai por `0.000005`/token e vale `500000` na tabela.
+            let preco = |campo: &str| -> Option<u64> {
+                let bruto = item.get("pricing")?.get(campo)?;
+                let por_token: f64 = match bruto {
+                    serde_json::Value::String(s) => s.parse().ok()?,
+                    serde_json::Value::Number(n) => n.as_f64()?,
+                    _ => return None,
+                };
+                if !por_token.is_finite() || por_token < 0.0 {
+                    return None;
+                }
+                Some((por_token * 1e11).round() as u64)
+            };
+            Some(ModeloRemoto {
+                id,
+                nome,
+                janela_de_contexto: janela,
+                entrada: preco("prompt"),
+                saida: preco("completion"),
+            })
+        })
+        .collect()
+}
+
 fn provider_security_error(e: SecurityError) -> ProviderError {
     ProviderError {
         kind: ProviderErrorKind::Unknown,
@@ -163,6 +245,38 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         CostModel::default()
     }
 
+    /// Lista os modelos que o provedor declara ter.
+    ///
+    /// Formato OpenAI-compat: `{"data": [{"id": "..."}]}`. O
+    /// OpenRouter acrescenta `context_length` e `pricing`, e os
+    /// campos extras são aproveitados quando existem.
+    ///
+    /// **Erro é do chamador, não um panic.** Esta chamada roda em
+    /// tarefa de fundo no boot ([ADR-0052] §D1): sem rede, sem
+    /// credencial ou com erro do provedor, quem chama registra e
+    /// segue com o catálogo embutido.
+    ///
+    /// [ADR-0052]: ../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    async fn listar_modelos(&self) -> Result<Vec<ModeloRemoto>, ProviderError> {
+        let secret = self.fetch_credential().await?;
+        let auth_headers = (self.auth_header)(&secret);
+
+        let mut req = self.http.get(self.models_url());
+        for (k, v) in &auth_headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        let response = req.send().await.map_err(network_error)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(map_http_status(status, response).await);
+        }
+        let bytes = response.bytes().await.map_err(network_error)?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| ProviderError::network(format!("resposta não-JSON: {e}")))?;
+
+        Ok(parse_lista_de_modelos(&json))
+    }
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let secret = self.fetch_credential().await?;
         let auth_headers = (self.auth_header)(&secret);

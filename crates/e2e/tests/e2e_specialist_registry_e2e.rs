@@ -104,9 +104,9 @@ fn registry_loads_specialists_from_catalog() {
     }
 
     // Capabilities resolvidas (não vazias pros 8 — todos os
-    // `default_model` existem no catálogo). Pelo menos `gpt-4o`
-    // e `gpt-4o-mini` (que o `default.toml` referencia) estão
-    // no `data/catalog.json` desde a Etapa 2 da Fase 0.
+    // `default_model` existem no catálogo). A asserção abaixo, no
+    // fim da função, é quem garante essa premissa; aqui ela é
+    // consumida.
     for s in &summaries {
         assert!(
             !s.default_model_capabilities.is_empty(),
@@ -133,7 +133,26 @@ fn registry_loads_specialists_from_catalog() {
         .get(&SpecialistId::new("revisor"))
         .expect("revisor bundled");
     assert_eq!(revisor.id.as_str(), "revisor");
-    assert_eq!(revisor.default_model.as_str(), "gpt-4o");
+
+    // **O invariante é "aponta para modelo que existe", não "aponta
+    // para o gpt-4o".** A versão anterior fixava o id do modelo, e o
+    // efeito foi o oposto do pretendido: quando o `gpt-4o` saiu do
+    // catálogo em 2026-08-19, este teste falhou por causa do nome —
+    // e nao teria falhado se o `default.toml` tivesse ficado
+    // apontando para um modelo inexistente, que é o defeito de
+    // verdade. Agora ele mede o que importa.
+    let catalogo = frederico_model_catalog::Catalog::load();
+    for s in &summaries {
+        assert!(
+            catalogo
+                .models()
+                .iter()
+                .any(|m| m.model.as_str() == s.default_model),
+            "especialista `{}` aponta para `{}`, que nao esta no catalogo —              o run abortaria com `model_no_price`",
+            s.id.as_str(),
+            s.default_model
+        );
+    }
     // Default não-vazio do SpecialistMaxSteps.
     assert_eq!(
         revisor.max_steps.expect("max_steps set no default.toml").0,

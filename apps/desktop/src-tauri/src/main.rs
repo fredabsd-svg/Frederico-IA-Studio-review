@@ -73,6 +73,16 @@ struct AppState {
     /// caso contrário (retriever vira lexical-only). O
     /// `build_retriever` helper local lê daqui.
     embedding_provider: Arc<dyn frederico_memory::embedding::EmbeddingProvider>,
+    /// Catálogo efetivo: o embutido, fundido com o que os provedores
+    /// responderam no boot ([ADR-0052]).
+    ///
+    /// Começa igual ao embutido e é substituído quando (e se) a
+    /// tarefa de fundo terminar. A janela nunca espera por ele — é o
+    /// que separa "dispara rede no boot" de "depende de rede para
+    /// abrir", e foi a distinção que o ADR-0043 não fez.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    catalogo_efetivo: Arc<std::sync::RwLock<Vec<frederico_model_catalog::ModeloEfetivo>>>,
     /// Bundle de especialistas (Fase 6, Etapa 3, ADR-0030).
     /// Consumido pelo Tauri command `ListSpecialists` (e
     /// futuramente pelo `SubagentRunner` da Etapa 4). Carrega
@@ -1286,6 +1296,74 @@ fn main() {
                     frederico_app::composition::build_embedding_provider(&cfg, key)
                 });
 
+            // **Refresh de catálogo no boot** (ADR-0052 §D1). Começa
+            // com o embutido inteiro, para a janela abrir com lista
+            // completa antes de qualquer resposta de rede.
+            let catalogo_efetivo = Arc::new(std::sync::RwLock::new(
+                frederico_model_catalog::fundir(Catalog::load(), &[]),
+            ));
+
+            // A tarefa de fundo. Nada aqui bloqueia a abertura: se a
+            // rede estiver fora, se o provedor demorar ou se a
+            // resposta for inválida, o catálogo embutido continua no
+            // lugar e o app segue utilizável.
+            {
+                let providers_para_refresh = providers.clone();
+                let destino = catalogo_efetivo.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut respostas = Vec::new();
+                    for id in providers_para_refresh.providers() {
+                        let Some(adapter) = providers_para_refresh.get(&id) else {
+                            continue;
+                        };
+                        match adapter.listar_modelos().await {
+                            Ok(modelos) if !modelos.is_empty() => {
+                                tracing::info!(
+                                    provider = id.as_str(),
+                                    total = modelos.len(),
+                                    "catálogo do provedor atualizado"
+                                );
+                                respostas.push(frederico_model_catalog::RespostaDoProvedor {
+                                    provider: id.clone(),
+                                    modelos: modelos
+                                        .into_iter()
+                                        .map(|m| frederico_model_catalog::ModeloRemotoNormalizado {
+                                            id: m.id,
+                                            nome: m.nome,
+                                            janela_de_contexto: m.janela_de_contexto,
+                                            entrada: m.entrada,
+                                            saida: m.saida,
+                                        })
+                                        .collect(),
+                                });
+                            }
+                            // **Lista vazia é tratada como falha.** Um
+                            // provedor que responde `[]` faria a fusão
+                            // apagar todos os modelos embutidos dele —
+                            // e "não consegui listar" é bem mais
+                            // provável que "este provedor não tem
+                            // modelo nenhum".
+                            Ok(_) => tracing::warn!(
+                                provider = id.as_str(),
+                                "o provedor devolveu lista vazia; mantendo o catálogo embutido"
+                            ),
+                            Err(e) => tracing::info!(
+                                provider = id.as_str(),
+                                erro = %e,
+                                "sem refresh de catálogo para este provedor"
+                            ),
+                        }
+                    }
+                    if respostas.is_empty() {
+                        return;
+                    }
+                    let fundido = frederico_model_catalog::fundir(Catalog::load(), &respostas);
+                    if let Ok(mut guard) = destino.write() {
+                        *guard = fundido;
+                    }
+                });
+            }
+
             app.manage(AppState {
                 db,
                 orch,
@@ -1293,6 +1371,7 @@ fn main() {
                 document_worker,
                 embedding_provider,
                 specialist_bundle,
+                catalogo_efetivo,
             });
 
             Ok(())
@@ -1383,18 +1462,31 @@ async fn ipc_dispatch(
 
         // --- Leva 2: Catálogo ---
         AppOp::ModelCatalogList => {
-            let cat = Catalog::load();
-            let list: Vec<ModelDescriptorView> =
-                cat.list_all().into_iter().map(model_to_view).collect();
+            // Lê o catálogo **efetivo** (ADR-0052): o embutido, já
+            // fundido com o que os provedores responderam neste boot.
+            // Enquanto a tarefa de fundo não termina, isto é
+            // exatamente o embutido — nunca uma lista vazia.
+            let list: Vec<ModelDescriptorView> = state
+                .catalogo_efetivo
+                .read()
+                .map(|g| g.iter().map(|m| model_to_view(&m.descritor)).collect())
+                .unwrap_or_default();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
         AppOp::ModelCatalogForProvider { provider } => {
-            let cat = Catalog::load();
-            let list: Vec<ModelDescriptorView> = cat
-                .list_for_provider(&provider)
-                .into_iter()
-                .map(model_to_view)
-                .collect();
+            // Mesma fonte do `ModelCatalogList`: o catálogo efetivo,
+            // filtrado. É esta a chamada que o seletor de modelo do
+            // formulário de criação usa.
+            let list: Vec<ModelDescriptorView> = state
+                .catalogo_efetivo
+                .read()
+                .map(|g| {
+                    g.iter()
+                        .filter(|m| m.descritor.provider == provider)
+                        .map(|m| model_to_view(&m.descritor))
+                        .collect()
+                })
+                .unwrap_or_default();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
 
