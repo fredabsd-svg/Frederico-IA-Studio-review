@@ -1,5 +1,23 @@
 ## [Não publicado]
 
+### Corrigido — o app deixa de ser ilegível para quem usa o Windows em modo claro (2026-08-19)
+
+- **A cor de destaque do tema claro estava abaixo do mínimo legível, e nada avisava.** O latão que dá identidade ao app foi escrito para o fundo escuro e nunca ganhou versão para o fundo claro — quem usa o Windows em modo claro via um destaque com menos da metade do contraste exigido. Agora o tema claro está completo, e uma verificação automática mede os dois temas a cada mudança, para não acontecer de novo.
+- **A mensagem de erro sobre painel também estava abaixo do mínimo**, e essa ninguém tinha medido: o vermelho passava no fundo principal e falhava no fundo dos painéis, que é justamente onde a mensagem de erro aparece.
+
+### Acessibilidade — dá para usar o app pelo teclado e enxergar onde se está (2026-08-19)
+
+- **Não havia nenhuma indicação visual de foco em 1.037 linhas de estilo.** Quem navegava por teclado não via em que campo ou botão estava. Agora todo elemento interativo mostra onde o foco está — e só para quem navega por teclado, sem poluir a tela de quem usa o mouse.
+- **As listas suspensas deixaram de destoar.** Elas apareciam com a aparência clara do Windows dentro de um app escuro; agora seguem o tema.
+- **Links têm aparência própria**, em vez do roxo padrão do navegador que não combinava com nada.
+- **Números param de dançar.** Custo e contagem de tokens mudam a cada instante durante a resposta; agora usam dígitos de largura fixa, então a linha não se mexe a cada dígito.
+- **Quem pede menos animação no Windows recebe menos animação.**
+
+### Adicionado — a interface ganhou um sistema, e ele é verificado por máquina (2026-08-19)
+
+- **O app tinha 40 cores, 10 tamanhos de letra e 4 arredondamentos escolhidos um a um.** Isso não é estilo, é ruído — e é a razão pela qual a interface parecia improvisada mesmo com uma paleta correta. Agora existe uma escala: cores com nome e função, seis tamanhos de letra, seis de espaçamento, três de arredondamento.
+- **"Ficar bonito" não é o critério.** Duas verificações automáticas entraram no processo: uma mede contraste nos dois temas, outra recusa cor ou tamanho escrito solto. A opinião sobre aparência continua sendo de quem revisa, e continua sem travar nada — o que trava é o que dá para medir.
+
 ### Adicionado — o GitHub passa a poder ser ligado, e você diz exatamente onde (2026-08-19)
 
 - **Autorizar o GitHub deixou de ser um nível e virou uma lista.** Antes existia uma escala — "pode ler", "pode enviar" — que, uma vez no topo, valia para **qualquer** repositório e **qualquer** branch. Agora você escreve quais repositórios, quais branches e quais operações, no seu arquivo de preferências:

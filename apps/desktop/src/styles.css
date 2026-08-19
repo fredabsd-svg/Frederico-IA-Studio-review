@@ -1173,3 +1173,100 @@ td button {
   resize: vertical;
   min-height: 3rem;
 }
+
+/* ============================================================
+   Estados — foco, controles nativos e links
+   ============================================================
+
+   Etapa 5b da Fase 8, ADR-0045 §D2 porta 2.
+
+   Antes desta etapa o `styles.css` tinha **zero** ocorrências de
+   `focus` em 1.037 linhas. Quem navega por teclado não via onde
+   estava — falha direta do critério 2.4.7 do WCAG 2.1 AA, não
+   questão de gosto.
+   ============================================================ */
+
+/* `:focus-visible` e não `:focus`: o indicador aparece para quem
+   navega por teclado e não para quem clica com o mouse, que é o
+   comportamento que o navegador já sabe distinguir. Usar `:focus`
+   puro poria um anel em todo botão clicado, e a reação previsível
+   seria alguém removê-lo — trocando um incômodo por uma falha de
+   acessibilidade. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: var(--foco-largura) solid var(--foco);
+  outline-offset: var(--foco-deslocamento);
+  /* O raio acompanha o elemento para o anel não cortar canto. */
+  border-radius: var(--raio-md);
+}
+
+/* O anel do modal fica por cima do conteúdo vizinho: sem isto, o
+   `overflow` do painel corta o `outline-offset`. */
+.modal-body :focus-visible,
+.approval-form :focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- Controles nativos --------------------------------------
+   Os `<select>` renderizavam com a cromagem clara do Windows
+   dentro de um app escuro — a descontinuidade mais visível do
+   screenshot que originou o ADR-0045. `color-scheme` no controle
+   faz o próprio sistema desenhar a versão escura da seta e da
+   lista suspensa, o que uma reimplementação em CSS não alcança. */
+select,
+input,
+textarea {
+  color-scheme: inherit;
+  background: var(--bg-controle);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-md);
+  font-family: inherit;
+  font-size: var(--fonte-md);
+}
+
+select:disabled,
+input:disabled,
+textarea:disabled {
+  color: var(--fg-dim);
+  cursor: not-allowed;
+}
+
+/* --- Links ---------------------------------------------------
+   Não havia regra nenhuma para `<a>`: os links usavam o violeta
+   padrão do navegador, que não tem par com a paleta e não foi
+   medido contra nenhum fundo. */
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* --- Números -------------------------------------------------
+   Custo e contagem de token mudam a cada quadro do streaming.
+   Sem dígitos tabulares, a linha inteira dança a cada dígito que
+   troca de largura. */
+.cost,
+.tokens,
+.usage,
+.metric,
+[data-numerico] {
+  font-variant-numeric: var(--fonte-numerica);
+}
+
+/* --- Movimento ------------------------------------------------
+   Quem pede menos movimento no sistema operacional recebe menos
+   movimento. É o critério 2.3.3 do WCAG, e o custo é uma regra. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
