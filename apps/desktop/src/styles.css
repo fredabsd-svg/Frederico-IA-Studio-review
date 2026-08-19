@@ -109,7 +109,18 @@
   font-family: var(--fonte-familia);
   font-size: var(--fonte-raiz);
   line-height: var(--linha-altura);
-  color-scheme: light dark;
+  /* **`dark`, e não `light dark`.** O valor anterior declarava que a
+     página suporta os dois esquemas e deixava o navegador escolher
+     por conta própria — e o WebView2 escolhia claro para a lista
+     suspensa do `<select>` e para o `checkbox`, dentro de um app
+     escuro. Era o defeito nomeado no ADR-0045 §Contexto item 3, e
+     ele sobreviveu à primeira tentativa de correção (PR #77), que
+     pôs `color-scheme: inherit` nos controles: herdar `light dark`
+     é herdar a ambiguidade, não resolvê-la.
+     Aqui o esquema é escolhido explicitamente, do mesmo jeito que a
+     paleta já era. `color-scheme` é herdado, então os controles
+     seguem sem precisar de regra própria. */
+  color-scheme: dark;
 }
 
 /* ============================================================
@@ -130,6 +141,10 @@
    ============================================================ */
 @media (prefers-color-scheme: light) {
   :root {
+    /* Par do `color-scheme: dark` acima: quando a paleta muda, o
+       esquema dos controles nativos muda junto. */
+    color-scheme: light;
+
     --bg: #fafafa;
     --bg-elev: #fff;
     --bg-controle: #f0f0f0;
@@ -1208,15 +1223,16 @@ td button {
 }
 
 /* --- Controles nativos --------------------------------------
-   Os `<select>` renderizavam com a cromagem clara do Windows
-   dentro de um app escuro — a descontinuidade mais visível do
-   screenshot que originou o ADR-0045. `color-scheme` no controle
-   faz o próprio sistema desenhar a versão escura da seta e da
-   lista suspensa, o que uma reimplementação em CSS não alcança. */
+   Aparência do controle fechado. **A lista suspensa e o marcador do
+   `checkbox` não são estilizáveis por CSS** — quem os desenha é o
+   WebView2, seguindo o `color-scheme` do `:root`, que agora é
+   explícito. Foi essa distinção que a primeira tentativa (PR #77)
+   errou: dar `color-scheme: inherit` ao controle herdava o
+   `light dark` ambíguo do `:root` e deixava o popup branco dentro
+   do app escuro. */
 select,
 input,
 textarea {
-  color-scheme: inherit;
   background: var(--bg-controle);
   color: var(--fg);
   border: 1px solid var(--border);
