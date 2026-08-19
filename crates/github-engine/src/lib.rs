@@ -59,6 +59,16 @@ pub enum GithubError {
     Git(String),
     #[error("o repositório local não tem a branch {0}")]
     BranchLocalInexistente(String),
+    #[error(
+        "o remoto `{remote}` aponta para {url}, que não é o repositório autorizado {esperado}"
+    )]
+    RemotoNaoCorresponde {
+        remote: String,
+        url: String,
+        esperado: String,
+    },
+    #[error("o remoto `{0}` não tem URL configurada")]
+    RemotoSemUrl(String),
 }
 
 /// Um pull request criado.
@@ -241,22 +251,27 @@ impl GithubEngine {
             .find_remote(remote)
             .map_err(|e| GithubError::Git(e.message().to_string()))?;
 
-        let mut callbacks = git2::RemoteCallbacks::new();
-        let token = self.token.expose_secret().to_string();
-        callbacks.credentials(move |_url, _usuario, _tipos| {
-            // PAT como senha, com usuário fixo — é o que o GitHub
-            // aceita para HTTPS. O token **não** vai para o
-            // ambiente do processo em nenhum momento (ADR-0041 §D1).
-            git2::Cred::userpass_plaintext("x-access-token", &token)
-        });
-        let mut opcoes = git2::PushOptions::new();
-        opcoes.remote_callbacks(callbacks);
+        // **ADR-0048 §D4.** A matriz autoriza `owner/repo`; sem esta
+        // conferência, o push iria para onde o remoto apontar,
+        // carregando a autorização do repositório certo. Enquanto o
+        // motor não tinha porta para o agente, o cenário exigia
+        // alguém alterar o remoto à mão — mas `.git/config` fica no
+        // workspace, e o agente escreve no workspace.
+        // `url()` devolve `Result<&str, _>` no git2 0.21 quando a URL
+        // não é UTF-8 válida; os dois casos viram a mesma recusa.
+        let url = remoto
+            .url()
+            .map_err(|_| GithubError::RemotoSemUrl(remote.to_string()))?;
+        let alvo = repo_de_url(url);
+        if alvo.as_ref() != Some(&repo.completo()) {
+            return Err(GithubError::RemotoNaoCorresponde {
+                remote: remote.to_string(),
+                url: url.to_string(),
+                esperado: repo.completo(),
+            });
+        }
 
-        // Refspec sem `+`: sem force, por construção.
-        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        remoto
-            .push(&[refspec.as_str()], Some(&mut opcoes))
-            .map_err(|e| GithubError::Git(e.message().to_string()))?;
+        empurrar(&mut remoto, branch, self.token.expose_secret())?;
 
         Ok(PushFeito {
             repo: repo.completo(),
@@ -264,6 +279,66 @@ impl GithubEngine {
             commits,
         })
     }
+}
+
+/// A mecânica do push, separada da política.
+///
+/// A política (matriz e conferência do remoto, [ADR-0048] §D4) fica
+/// no [`GithubEngine::push`]. Esta função só empurra — e a separação
+/// existe para que a mecânica seja exercitada contra um repositório
+/// local nos testes de unidade, **sem** abrir uma porta que
+/// contorne a política na API pública. Ela é privada de propósito.
+///
+/// [ADR-0048]: ../docs/decisions/0048-superficie-de-ferramentas-de-marco-e-github.md
+fn empurrar(remoto: &mut git2::Remote<'_>, branch: &str, token: &str) -> Result<(), GithubError> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    let token = token.to_string();
+    callbacks.credentials(move |_url, _usuario, _tipos| {
+        // PAT como senha, com usuário fixo — é o que o GitHub aceita
+        // para HTTPS. O token **não** vai para o ambiente do
+        // processo em nenhum momento (ADR-0041 §D1).
+        git2::Cred::userpass_plaintext("x-access-token", &token)
+    });
+    let mut opcoes = git2::PushOptions::new();
+    opcoes.remote_callbacks(callbacks);
+
+    // Refspec sem `+`: sem force, por construção.
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    remoto
+        .push(&[refspec.as_str()], Some(&mut opcoes))
+        .map_err(|e| GithubError::Git(e.message().to_string()))
+}
+
+/// Extrai `owner/repo` de uma URL de remoto do GitHub.
+///
+/// Aceita as formas que o GitHub publica — `https://github.com/o/r`,
+/// `git@github.com:o/r`, com ou sem `.git`, com ou sem barra final —
+/// e devolve `None` para qualquer outra coisa, **inclusive outro
+/// host**. Um remoto apontando para outro serviço não é o
+/// repositório da matriz, por definição, e devolver `None` faz o
+/// caller recusar em vez de comparar nomes iguais em servidores
+/// diferentes.
+fn repo_de_url(url: &str) -> Option<String> {
+    let sem_esquema = url
+        .trim()
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| url.trim().trim_end_matches('/').strip_prefix("http://"))
+        .or_else(|| url.trim().trim_end_matches('/').strip_prefix("ssh://git@"))
+        .or_else(|| url.trim().trim_end_matches('/').strip_prefix("git@"))
+        .unwrap_or(url.trim().trim_end_matches('/'));
+
+    // Depois do host vem `/owner/repo` ou `:owner/repo`.
+    let resto = sem_esquema
+        .strip_prefix("github.com/")
+        .or_else(|| sem_esquema.strip_prefix("github.com:"))?;
+
+    let resto = resto.strip_suffix(".git").unwrap_or(resto);
+    let partes: Vec<&str> = resto.split('/').collect();
+    if partes.len() != 2 || partes[0].is_empty() || partes[1].is_empty() {
+        return None;
+    }
+    Some(format!("{}/{}", partes[0], partes[1]))
 }
 
 /// Quantos commits a branch local tem à frente do remoto.
@@ -289,4 +364,102 @@ fn contar_commits(repo: &git2::Repository, branch: &str, remote: &str) -> usize 
         let _ = walk.hide(r.id());
     }
     walk.count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mecânica do push, contra um repositório bare local.
+    ///
+    /// Vive aqui, e não em `tests/`, por uma razão de desenho: a
+    /// política do [ADR-0048] §D4 recusa remoto que não seja
+    /// `github.com`, e um repositório local nunca será. Testar a
+    /// mecânica pela API pública exigiria uma porta que contorne a
+    /// política — e uma porta dessas, mesmo marcada "só para teste",
+    /// é a porta. Aqui o teste alcança a função privada sem que ela
+    /// exista para o mundo.
+    ///
+    /// [ADR-0048]: ../docs/decisions/0048-superficie-de-ferramentas-de-marco-e-github.md
+    #[test]
+    fn mecanica_do_push_entrega_a_branch_ao_remoto() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bare = tmp.path().join("remoto.git");
+        git2::Repository::init_bare(&bare).expect("bare");
+
+        let trabalho = tmp.path().join("trabalho");
+        std::fs::create_dir_all(&trabalho).expect("mkdir");
+        let repo = git2::Repository::init(&trabalho).expect("init");
+        std::fs::write(trabalho.join("a.txt"), "conteudo\n").expect("escrever");
+        let mut index = repo.index().expect("index");
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .expect("add");
+        index.write().expect("write");
+        let arvore = repo
+            .find_tree(index.write_tree().expect("tree"))
+            .expect("find");
+        let sig = git2::Signature::now("Frederico", "f@example.com").expect("sig");
+        repo.commit(Some("HEAD"), &sig, &sig, "primeiro", &arvore, &[])
+            .expect("commit");
+        let head = repo.head().expect("head").peel_to_commit().expect("c");
+        repo.branch("feature/entrega", &head, false)
+            .expect("branch");
+
+        let mut remoto = repo
+            .remote("origin", &bare.to_string_lossy())
+            .expect("remote");
+
+        empurrar(&mut remoto, "feature/entrega", "token").expect("push");
+
+        let destino = git2::Repository::open_bare(&bare).expect("abrir bare");
+        destino
+            .find_reference("refs/heads/feature/entrega")
+            .expect("a branch tem que ter chegado");
+    }
+
+    /// O refspec montado não tem `+`, e é montado aqui.
+    #[test]
+    fn refspec_nao_tem_prefixo_de_force() {
+        let branch = "feature/x";
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        assert!(!refspec.starts_with('+'));
+        assert_eq!(refspec, "refs/heads/feature/x:refs/heads/feature/x");
+    }
+
+    /// As formas de URL que o GitHub publica são reconhecidas, e as
+    /// demais **não** — inclusive outro host com o mesmo caminho.
+    #[test]
+    fn repo_de_url_reconhece_as_formas_do_github_e_recusa_o_resto() {
+        for url in [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo/",
+            "git@github.com:owner/repo",
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+        ] {
+            assert_eq!(
+                repo_de_url(url).as_deref(),
+                Some("owner/repo"),
+                "não reconheceu {url}"
+            );
+        }
+
+        for url in [
+            // Outro host com o mesmo caminho: **não** é o repositório
+            // da matriz, e devolver `None` faz o caller recusar em vez
+            // de comparar nomes iguais em servidores diferentes.
+            "https://gitlab.com/owner/repo",
+            "https://github.com.attacker.example/owner/repo",
+            "https://exemplo.com/owner/repo",
+            "C:\\caminho\\local\\remoto.git",
+            "/caminho/local/remoto.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/extra",
+            "",
+        ] {
+            assert_eq!(repo_de_url(url), None, "deveria recusar {url}");
+        }
+    }
 }

@@ -316,7 +316,15 @@ fn repo_mal_formado_e_recusado() {
 /// [ADR-0041]: ../../../docs/decisions/0041-github-auth-e-matriz-de-autorizacao.md
 #[test]
 fn github_has_no_force_push_api() {
-    let fonte = include_str!("../src/lib.rs");
+    let arquivo = include_str!("../src/lib.rs");
+    // Corta no módulo de teste: ele contém
+    // `refspec_nao_tem_prefixo_de_force`, cujo **nome** casaria com a
+    // busca. Varrer o teste que prova a regra e acusá-lo de violá-la
+    // seria o teste se mordendo.
+    let fonte = match arquivo.find("#[cfg(test)]") {
+        Some(i) => &arquivo[..i],
+        None => arquivo,
+    };
     let codigo: String = fonte
         .lines()
         .map(|l| match l.find("//") {
@@ -453,25 +461,42 @@ fn repo_local_com_remoto(dir: &std::path::Path) -> (std::path::PathBuf, std::pat
     (trabalho, bare)
 }
 
+/// **Negação — o [ADR-0048] §D4.**
+///
+/// A matriz autoriza `owner/repo`, mas o push vai para onde o remoto
+/// apontar. Sem esta conferência, um remoto trocado empurraria para
+/// outro lugar carregando a autorização do repositório certo — e
+/// `.git/config` fica no workspace, onde o agente escreve.
+///
+/// Este teste era o twin do push até 2026-08-19. Ele deixou de poder
+/// empurrar de verdade porque o remoto local **não** é `github.com`,
+/// que é exatamente o que a proteção nova recusa. A mecânica do push
+/// passou a ser exercitada no teste de unidade
+/// `mecanica_do_push_entrega_a_branch_ao_remoto`, que alcança a
+/// função privada sem abrir porta que contorne a política.
+///
+/// [ADR-0048]: ../../../docs/decisions/0048-superficie-de-ferramentas-de-marco-e-github.md
 #[tokio::test]
-async fn push_chega_ao_remoto_pelo_caminho_de_producao() {
+async fn push_recusa_remoto_que_nao_e_o_repositorio_autorizado() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (trabalho, bare) = repo_local_com_remoto(tmp.path());
     let engine = GithubEngine::com_base_url(token(), matriz_permissiva(), "http://127.0.0.1:1");
 
-    let feito = engine
+    let erro = engine
         .push(&trabalho, &repo(), "feature/entrega", "origin")
         .await
-        .expect("push");
+        .expect_err("remoto que não é o repositório autorizado tem que ser recusado");
 
-    assert_eq!(feito.branch, "feature/entrega");
-    assert_eq!(feito.commits, 1, "um commit à frente do remoto vazio");
+    match &erro {
+        GithubError::RemotoNaoCorresponde { esperado, .. } => {
+            assert_eq!(esperado, "fredabsd-svg/Frederico-IA-Studio-review");
+        }
+        outro => panic!("esperava RemotoNaoCorresponde, veio {outro:?}"),
+    }
 
-    // A prova do outro lado: o bare recebeu a referência.
+    // E nada chegou ao remoto.
     let remoto = git2::Repository::open_bare(&bare).expect("abrir bare");
-    remoto
-        .find_reference("refs/heads/feature/entrega")
-        .expect("a branch tem que ter chegado ao remoto");
+    assert!(remoto.find_reference("refs/heads/feature/entrega").is_err());
 }
 
 /// **Negação:** push para branch fora da matriz não toca a rede.

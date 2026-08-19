@@ -20,6 +20,13 @@ frederico-runtimes = { workspace = true }
 # `git-engine`, que é puro e não conhece o Jail — quem entrega o
 # workspace resolvido é este crate (ADR-0040 §D3).
 frederico-git-engine = { workspace = true }
+# Etapa 4/5 da Fase 8 (ADR-0048): as ferramentas de marco e de
+# GitHub delegam aos motores; a política vive neles, e aqui fica só
+# a superfície que o agente enxerga.
+frederico-project-engine = { workspace = true }
+frederico-github-engine = { workspace = true }
+sqlx = { workspace = true }
+secrecy = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

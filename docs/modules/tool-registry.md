@@ -144,6 +144,43 @@ O `PermissionSet::git` foi bumpado para `Local` no mesmo commit
 `file_read` e a invariante de subagente. A lacuna é a mesma nomeada em
 `exec/shell.rs`.
 
+**Ferramentas de marco de projeto (Etapa 4 da Fase 8, ADR-0048 §D2):**
+
+- `MilestoneListTool` (`Safe`, sem aprovação), `MilestoneCreateTool`
+  (`Moderate`) e `MilestoneRestoreTool` (`High`), as duas últimas com
+  aprovação por invocação.
+
+Nenhuma aceita projeto no schema: operam sobre o projeto do
+**workspace da conversa**, encontrado pelo caminho do Jail. Workspace
+que não é projeto registrado faz a ferramenta recusar com essa
+mensagem. `project.open` **não** virou ferramenta — registrar projeto
+amplia o que o *usuário* alcança pela UI (ADR-0042 §D4), e uma
+ferramenta inverteria a direção.
+
+`restaurar` é `High` e não `Critical` porque o ADR-0042 §D3 garante
+que ela não descarta trabalho: o dano máximo é um commit indesejado,
+desfazível pelo Git do usuário.
+
+**Ferramentas de GitHub (Etapa 5, ADR-0048 §D3):**
+
+- `GithubPushTool` e `GithubCreatePrTool`, ambas `Critical` e com
+  aprovação por invocação.
+
+`Critical` tem consequência mecânica: é o único nível que força
+`ApprovalRequest.mandatory = true` sem UI de escopo
+(`validate.rs::with_mandatory_for_risk`). Commit local se desfaz;
+push para o repositório de outras pessoas, não.
+
+**A autorização não mora aqui.** A matriz é estado do `GithubEngine` e
+roda dentro dele, antes de qualquer rede (ADR-0041 §D2). As
+ferramentas chamam o motor e o motor recusa — duplicar a checagem
+criaria uma segunda régua que pode divergir.
+
+**As duas famílias são condicionais** (`MarcoDeps`, `GithubDeps`).
+Sem dependência, ficam fora do catálogo **e** da allowlist — bump
+atômico (ADR-0020 §3 D3), travado por
+`marcos_e_github_entram_e_saem_juntos_do_catalogo_e_da_allowlist`.
+
 **Workspace + Jail (Etapa 2):**
 
 - `Workspace` trait (raiz do workspace).

@@ -303,9 +303,9 @@ pub async fn build_orchestrator(
     // (eles testam outras fases). Passamos `None` pro `exec_deps`
     // pra ficar com o shape antigo (`[FilesReadTool]` ou
     // `[FilesReadTool, DocsGenerateTool, DocsInspectTool]`).
-    let tools = build_default_tools(invoker_for_tools, None);
+    let tools = build_default_tools(invoker_for_tools, None, None, None);
     let tool_registry = build_tool_registry(&tools);
-    let allowed_for_run = build_default_allowed_for_run(invoker, None);
+    let allowed_for_run = build_default_allowed_for_run(invoker, None, false, false);
     let permission_set = if has_invoker {
         initial_permission_set_for_capable_launcher()
     } else {

@@ -59,8 +59,10 @@ pub mod audit;
 pub mod error;
 pub mod exec;
 pub mod git;
+pub mod github;
 pub mod jail_resolver;
 pub mod manifest;
+pub mod marcos;
 pub mod permission;
 pub mod permission_loader;
 pub mod registry;
@@ -87,10 +89,12 @@ pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalScope};
 pub use audit::{AuditEntry, AuditSink, NoopAuditSink};
 pub use error::{ToolError, ToolErrorCode};
 pub use git::{GitBranchTool, GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};
+pub use github::{GithubCreatePrTool, GithubDeps, GithubPushTool};
 pub use manifest::{
     Availability, JsonSchema, Platform, ProviderMode, RiskLevel, ToolCategory, ToolManifest,
     ToolManifestBuilder, WorkerHealth,
 };
+pub use marcos::{MarcoDeps, MilestoneCreateTool, MilestoneListTool, MilestoneRestoreTool};
 pub use permission::{
     DocumentPermission, FileReadPermission, GitHubPermission, GitPermission, MemoryPermission,
     PermissionSet, RuntimePermission, TerminalMode,

@@ -1,5 +1,23 @@
 ## [Não publicado]
 
+### Adicionado — o assistente passa a poder salvar e restaurar marcos (2026-08-19)
+
+- **Marcos chegaram ao assistente.** Dá para pedir "salve como está agora com o nome entrega-cliente" e, depois, "volte para o marco entrega-cliente". Listar não interrompe; criar e restaurar param e esperam sua autorização, uma por vez.
+- **Restaurar continua sem descartar nada** — se houver trabalho não salvo, ele vira um marco automático antes, e a volta entra como um passo novo no histórico.
+- **O assistente não escolhe o projeto.** As três ferramentas operam sempre no projeto da conversa em que você está. Não existe parâmetro para apontar para outro — e **abrir projeto continua sendo ação sua**, pela interface: dar essa capacidade ao assistente inverteria quem decide o que o app alcança no seu disco.
+- **Apagar marco não existe**, do mesmo jeito que apagar branch não existe: a operação não está lá para ser pedida.
+
+### Segurança — o envio para o GitHub confere para onde está indo (2026-08-19)
+
+- **A autorização diz "pode enviar para `owner/repo`", e agora o app confere que é para lá que o envio vai.** Antes, ele obedecia ao endereço configurado no repositório local. Como esse endereço mora num arquivo dentro da pasta de trabalho — a mesma onde o assistente escreve —, autorizar um repositório e acabar enviando para outro deixou de ser hipótese quando as ferramentas passaram a existir.
+- **Qualquer endereço que não seja do GitHub é recusado**, inclusive um que apenas se pareça (`github.com.exemplo-falso.com`) ou que tenha o mesmo caminho em outro serviço.
+- **Efeito colateral honesto:** quem trabalha num fork cujo endereço aponta para o projeto original vai ver a recusa. O erro mostra os dois endereços, e a saída é corrigir a autorização ou o endereço — não há como o app adivinhar qual dos dois você quis.
+
+### Adicionado — as ferramentas de GitHub existem, e ainda não estão ligadas (2026-08-19)
+
+- **Enviar e abrir pull request foram construídas e testadas, mas o app ainda não as oferece ao assistente.** Falta a peça que diz *quais* repositórios e branches estão autorizados: ela é o coração da proteção, e o formato dela ainda não foi decidido.
+- **Ligá-las com a autorização vazia seria pior do que deixá-las fora**: apareceriam na lista de ferramentas e recusariam tudo, fazendo você aprovar pedidos que já iam falhar. Enquanto a peça não existe, elas ficam fora — a mesma regra que tirou os comandos de terminal do catálogo em agosto.
+
 ### Adicionado — Fase 8, Etapa 5: GitHub, com autorização que nega por padrão (2026-08-18)
 
 - **O app ganha o motor de `push` e de abrir pull request.** Ainda não está nas mãos do assistente nem em tela — o que entrou é a base, e com ela a decisão de quem pode fazer o quê.
