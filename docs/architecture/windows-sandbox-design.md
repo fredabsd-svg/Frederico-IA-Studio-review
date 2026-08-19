@@ -155,7 +155,7 @@ impl Drop for SecurityJailResolver {
 
 ## Rótulo de integridade do workdir
 
-Implementado em `crates/security/src/windows/integrity_label.rs::set_low_integrity_label`, chamado no Step 1 do `spawn_windows` ([ADR-0047](../decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
+Implementado em `crates/security/src/windows/integrity_label.rs::set_low_integrity_label`, chamado no Step 1 do `spawn_windows` ([ADR-0051](../decisions/0051-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
 
 **O que a camada faz.** Aplica `Mandatory Label\Low` (S-1-16-4096) com policy `NO_WRITE_UP` no workdir. Como o child nasce com `TokenIntegrityLevel = Low`, os dois rótulos se igualam **dentro** do workdir e a escrita passa; **fora** dele os objetos ficam em Medium (o default do filesystem) e a escrita é negada pelo access check. Bloquear a fuga, não bloquear tudo.
 

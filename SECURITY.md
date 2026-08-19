@@ -37,7 +37,7 @@ quando roda no Windows:
    tudo.
 
    > **Esta camada esteve inerte entre 2026-08-10 e 2026-08-18**
-   > ([ADR-0047](docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
+   > ([ADR-0051](docs/decisions/0051-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md)).
    > O descritor de segurança era montado com `OffsetSacl = 0`,
    > que o Windows lê como "SACL presente porém NULL": o
    > `SetFileSecurityW` devolvia sucesso e não aplicava rótulo

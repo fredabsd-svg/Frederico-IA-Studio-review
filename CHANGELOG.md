@@ -90,7 +90,7 @@
 - **Isto afrouxa o que existia na prática, e o registro fica.** Até aqui nada era gravável, o que parecia proteção mais forte. Não era garantia — era defeito com aparência de proteção —, mas quem observasse só o comportamento poderia ter tomado por garantia.
 - **O teste que deveria ter pego isso passava verde.** Ele afirmava provar que o processo isolado não escapa da pasta; como o processo não escrevia em canto nenhum, o teste não distinguia “não escapou” de “não escreve nada”. Passou a exigir as duas metades na mesma execução: gravar dentro tem de funcionar, gravar fora tem de falhar.
 - **Um teste instável foi fechado junto.** As provas do sandbox de Python baixavam também o runtime de Node, que elas não usam, e uma falha de rede nesse download reprovava a prova de Python — com quatro delas em paralelo, a que falhava mudava a cada rodada. Agora cada prova baixa só o que usa: o arquivo ficou estável e quatro vezes mais rápido.
-- **O que continua sem proteção, dito com todas as letras:** o processo isolado ainda **lê** arquivos fora da pasta se receber o caminho completo. Isso não mudou e está no `SECURITY.md`, junto das outras duas lacunas nomeadas. Ver [ADR-0047](docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
+- **O que continua sem proteção, dito com todas as letras:** o processo isolado ainda **lê** arquivos fora da pasta se receber o caminho completo. Isso não mudou e está no `SECURITY.md`, junto das outras duas lacunas nomeadas. Ver [ADR-0051](docs/decisions/0051-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
 
 ### Adicionado — Fase 8, Etapa 3 (spike): o app passa a saber fazer commit (2026-08-17)
 
