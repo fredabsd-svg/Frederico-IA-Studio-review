@@ -100,6 +100,16 @@ jobs:
       - name: Docs guard (REGRAS §1.10)
         run: node scripts/check-docs.mjs
 
+      # ADR-0045 §D2, portas 1 e 3 da Etapa 5b. As duas medem, nunca
+      # opinam: contraste é aritmética do WCAG, e literal fora do
+      # bloco de tokens é varredura. "Ficar bonito" continua sendo
+      # avaliação do revisor humano, e continua não bloqueando.
+      - name: UI contrast guard (WCAG 2.1 AA, ADR-0045)
+        run: node scripts/check-ui-contrast.mjs
+
+      - name: UI tokens guard (ADR-0045)
+        run: node scripts/check-ui-tokens.mjs
+
       # REGRAS §3 / ADR-0026: gate de E2E por fase. Cada fase `concluida` em
       # docs/status.md precisa ter `E2E de cobertura` (formato path::fn_name)
       # + `Passo CI` preenchidos e consistentes com o codigo. Roda em todo
