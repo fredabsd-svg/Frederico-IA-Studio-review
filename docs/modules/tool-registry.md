@@ -117,8 +117,15 @@ interseção com o Passo 5 do `validate_tool_call`.
 - `FileReadPermission` (None / WorkspaceOnly / WorkspacePlusApproved).
 - `RuntimePermission` (None / ReadOnly / Sandboxed / Unrestricted).
 - `TerminalMode` (None / RequireApproval / Denylist / Allowlist).
-- `GitPermission`, `GitHubPermission`, `MemoryPermission`,
-  `DocumentPermission`.
+- `GitPermission`, `MemoryPermission`, `DocumentPermission`.
+- `RegraGithubPerfil` — a matriz de GitHub como ela aparece no perfil
+  ([ADR-0049](../decisions/0049-matriz-de-github-no-permission-set.md)
+  §D1): `repo`, `branches`, `operacoes`, todos texto. **O
+  `GitHubPermission` escalar saiu** (§D3): era escala linear, e "pode
+  até `Push`" autorizava empurrar para qualquer repositório e
+  qualquer branch — o defeito que o ADR-0041 §D2 rejeita. O merge é
+  interseção nos três eixos, fail-closed, como o do
+  `network_allowlist`.
 
 **Registro (Etapa 2):**
 

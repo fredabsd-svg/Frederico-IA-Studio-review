@@ -39,7 +39,7 @@ Permissão de GitHub não é booleano (ADR-0041 §D2). `PermissionSet` ganha eix
 | Branches | padrão por repositório | nenhum |
 | Operações | `read` / `push` / `create_pr` | negado |
 
-Merge é interseção usuário ∩ projeto, fail-closed, como os demais eixos. `allow_all()` **não** vira curinga — mesma razão pela qual o `network_allowlist` da Fase 7 Etapa 7 manteve lista vazia em `allow_all()`: não existe "todos os repositórios" que o sistema saiba interpretar sem inventar comportamento.
+Merge é interseção usuário ∩ projeto, fail-closed, como os demais eixos — **entregue em 2026-08-19** pelo [ADR-0049](../decisions/0049-matriz-de-github-no-permission-set.md), que trocou o enum escalar `GitHubPermission` pelo campo `github_repos` do perfil e desce a interseção até dentro da regra (repositório, branch e operação). `allow_all()` **não** vira curinga — mesma razão pela qual o `network_allowlist` da Fase 7 Etapa 7 manteve lista vazia em `allow_all()`: não existe "todos os repositórios" que o sistema saiba interpretar sem inventar comportamento.
 
 **Branch protegida exige menção nominal.** `push` para `main` só passa se o padrão a incluir explicitamente.
 

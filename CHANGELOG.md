@@ -1,5 +1,22 @@
 ## [Não publicado]
 
+### Adicionado — o GitHub passa a poder ser ligado, e você diz exatamente onde (2026-08-19)
+
+- **Autorizar o GitHub deixou de ser um nível e virou uma lista.** Antes existia uma escala — "pode ler", "pode enviar" — que, uma vez no topo, valia para **qualquer** repositório e **qualquer** branch. Agora você escreve quais repositórios, quais branches e quais operações, no seu arquivo de preferências:
+
+  ```toml
+  [[github_repos]]
+  repo = "sua-conta/seu-projeto"
+  branches = ["main", "feature/*"]
+  operacoes = ["read", "push", "create_pr"]
+  ```
+
+- **Nada nessa lista tem valor implícito.** Lista ausente, vazia ou mal escrita significa nenhum repositório autorizado. Um item com o nome do repositório fora do formato `dono/projeto`, ou sem branch, ou só com operações que não existem, é descartado inteiro — não aproveitado pela metade. Num lugar onde o erro não tem desfazer, entender errado o que você escreveu é pior que recusar.
+- **`main` e `master` continuam exigindo menção pelo nome.** Um `*` na lista de branches não as alcança.
+- **As ferramentas de enviar e abrir pull request só aparecem para o assistente quando as duas coisas existem**: o token guardado no cofre do Windows **e** pelo menos um repositório na lista. Faltando qualquer uma, elas não aparecem — em vez de aparecerem e recusarem tudo, fazendo você aprovar pedidos que já iam falhar.
+- **Se você usa mais de uma conta do GitHub**, saiba que o app usa a primeira cadastrada. Escolher sozinho por outra regra qualquer seria um comportamento que você não pediu e não consegue prever; a escolha vira tela na etapa da interface.
+- **Quem tinha `github = "push"` no arquivo de preferências:** a linha passa a ser ignorada, e nada deixa de funcionar por causa disso — ela não era lida por nenhuma ferramenta. Para liberar de verdade, escreva a lista acima.
+
 ### Adicionado — o assistente passa a poder salvar e restaurar marcos (2026-08-19)
 
 - **Marcos chegaram ao assistente.** Dá para pedir "salve como está agora com o nome entrega-cliente" e, depois, "volte para o marco entrega-cliente". Listar não interrompe; criar e restaurar param e esperam sua autorização, uma por vez.

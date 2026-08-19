@@ -1079,25 +1079,47 @@ fn main() {
                 pool: std::sync::Arc::new(db.pool().clone()),
             });
 
-            // **GitHub (Etapa 5, ADR-0048 §D3): `None` por enquanto,
-            // e o motivo é a matriz, não o token.**
+            // **GitHub (ADR-0049 §D4): duas condições independentes.**
             //
-            // O `GithubEngine` exige token **e** matriz de
-            // autorização. O token tem trilha (`ServiceCredentialStore`
-            // no DPAPI, Etapa 2), mas a matriz não tem de onde vir: o
-            // `PermissionSet::github` continua sendo o enum escalar da
-            // Fase 3, que é justamente o que o ADR-0041 §D2 rejeita, e
-            // o formato dela no perfil ainda não foi decidido.
+            // Token no cofre **e** matriz não-vazia no perfil efetivo.
+            // Faltando qualquer uma, `github.push` e
+            // `github.create_pr` ficam fora do catálogo e da allowlist
+            // — bump atômico (ADR-0020 §3 D3).
             //
-            // Registrar as ferramentas com matriz vazia seria pior que
-            // não registrar: elas apareceriam no catálogo e recusariam
-            // toda invocação, gastando uma ida à fila de aprovação para
-            // falhar. O ADR-0020 §3 D3 manda o contrário — ou catálogo,
-            // allowlist e permissão se movem juntos, ou nenhum se move.
-            //
-            // O que falta é uma decisão de formato, não código: ver a
-            // pendência nomeada no `status.md`.
-            let github_deps: Option<frederico_tool_registry::GithubDeps> = None;
+            // A conta lida é a primeira cadastrada no serviço
+            // `github`. Multi-conta é decisão de UI que ainda não
+            // existe; escolher aqui uma regra silenciosa ("a mais
+            // recente", "a alfabética") criaria comportamento que
+            // ninguém pediu e que o usuário não consegue prever.
+            let token_github = tauri::async_runtime::block_on(async {
+                let contas = frederico_security::ServiceCredentialStore::list_accounts(&*credentials, "github")
+                    .await
+                    .unwrap_or_default();
+                let conta = contas.first()?;
+                let chave = frederico_security::ServiceCredentialKey::new("github", conta).ok()?;
+                frederico_security::ServiceCredentialStore::get_secret(&*credentials, &chave)
+                    .await
+                    .ok()
+                    .flatten()
+            });
+            // A matriz vem do perfil efetivo (usuário ∩ projeto),
+            // pelo mesmo caminho do `network_allowlist` acima. Sem
+            // perfil, `load_profile` cai no `PermissionSet::default()`
+            // → matriz vazia → ferramentas fora do catálogo, que é o
+            // deny-by-default do ADR-0049 §D4.
+            let github_repos: Vec<frederico_tool_registry::RegraGithubPerfil> =
+                match frederico_tool_registry::PermissionLoader::default_user_profile_path() {
+                    Some(user_path) => {
+                        let project_path =
+                            frederico_tool_registry::PermissionLoader::default_project_profile_path();
+                        let user_ps = permission_loader.load_profile(&user_path);
+                        let project_ps = permission_loader.load_profile(&project_path);
+                        user_ps.merge(&project_ps).github_repos
+                    }
+                    None => Vec::new(),
+                };
+            let github_deps =
+                frederico_app::composition::build_github_deps(token_github, &github_repos);
 
             let tools = frederico_app::composition::build_default_tools(
                 document_worker_invoker.clone(),

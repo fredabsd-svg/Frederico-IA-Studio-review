@@ -121,21 +121,21 @@ GitHub aceita em HTTPS.
 | `push_para_branch_nao_autorizada_e_recusado` | **negação** — e nada chega ao remoto |
 | `push_de_branch_inexistente_falha_antes_da_rede` | **negação** |
 
-## 7. O que ainda não existe
+## 7. O caminho até o perfil, e o que ainda não existe
 
-- **As ferramentas existem, mas a casca não as liga.**
-  `GithubPushTool` e `GithubCreatePrTool` estão implementadas e
-  testadas (ADR-0048 §D3), e o `main.rs` passa `None`: o
-  `GithubEngine` exige token **e** matriz, e a matriz não tem de onde
-  vir. Registrá-las com matriz vazia seria pior que não registrar —
-  apareceriam no catálogo e recusariam toda invocação, gastando uma
-  ida à fila de aprovação para falhar. O que falta é decisão de
-  formato, não código.
-- **`PermissionSet::github` continua sendo o enum escalar** da Fase 3
-  (`None`/`ReadOnly`/`Clone`/`Commit`/`Push`), que é justamente o que
-  o ADR-0041 §D2 rejeita. A matriz existe e aplica, mas ainda não é o
-  eixo do `PermissionSet`. Substituí-la é mudança de contrato que
-  toca `permission.rs`, o `permission_loader` e os perfis em TOML.
+- **A matriz chegou ao perfil em 2026-08-19**
+  ([ADR-0049](../decisions/0049-matriz-de-github-no-permission-set.md)),
+  e com ela as ferramentas passaram a poder ligar. São **duas
+  condições independentes** (§D4): token no cofre **e** matriz
+  não-vazia no perfil efetivo (`usuário ∩ projeto`). Faltando
+  qualquer uma, `github.push` e `github.create_pr` ficam fora do
+  catálogo e da allowlist. Matriz vazia com token presente **não**
+  liga — registrar anunciaria capacidade e recusaria toda invocação.
+- **Multi-conta não está resolvido.** A casca lê a primeira conta
+  cadastrada no serviço `github`. Escolher aqui uma regra silenciosa
+  ("a mais recente", "a alfabética") criaria comportamento que
+  ninguém pediu e que o usuário não consegue prever; a escolha é de
+  UI, na Etapa 6.
 - **Auditoria própria.** O spec pede repositório, branch, decisão e
   resultado gravados no espírito do `network_audit`. Não existe.
 - **O callback de credencial não é exercitado em todo PR.** O twin do
