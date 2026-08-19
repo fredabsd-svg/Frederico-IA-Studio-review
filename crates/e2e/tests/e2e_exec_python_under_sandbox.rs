@@ -226,7 +226,7 @@ fn make_ctx(workspace: &std::path::Path) -> ToolContext {
 ///
 /// Sem ele o teste não distingue "não escapou" de "não escreve
 /// em lugar nenhum" — e foi exatamente essa a situação real até
-/// [ADR-0047](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0047-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
+/// [ADR-0051](https://github.com/fredabsd-svg/Frederico-IA-Studio-review/blob/main/docs/decisions/0051-o-rotulo-de-integridade-do-workdir-nunca-foi-aplicado.md).
 /// O `set_low_integrity_label` montava um descritor de segurança
 /// self-relative com `OffsetSacl = 0`, o que o Windows lê como
 /// "SACL presente porém NULL": o `SetFileSecurityW` devolvia
@@ -289,7 +289,7 @@ except OSError as e:
         stdout.contains("DENTRO_OK"),
         "o filho não conseguiu escrever no próprio workdir; o teste de \
          negação abaixo passaria por não escrever em lugar nenhum, não \
-         por o sandbox ter bloqueado a fuga (ver ADR-0047). stdout={stdout:?}"
+         por o sandbox ter bloqueado a fuga (ver ADR-0051). stdout={stdout:?}"
     );
     assert!(
         inocente_path.exists(),

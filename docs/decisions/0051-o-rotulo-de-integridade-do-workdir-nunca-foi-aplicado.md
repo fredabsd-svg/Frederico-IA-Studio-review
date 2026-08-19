@@ -1,4 +1,13 @@
-# 0047 — O rótulo de integridade do workdir nunca foi aplicado: o sandbox bloqueava tudo, não a fuga
+# 0051 — O rótulo de integridade do workdir nunca foi aplicado: o sandbox bloqueava tudo, não a fuga
+
+> **Renumerado de 0047 para 0051 em 2026-08-19.** Dois ADRs nasceram
+> com o número `0047` no mesmo dia, escritos em paralelo: este e o
+> [0047](0047-git-engine-usa-git2-medido-por-spike.md) (`git-engine`
+> usa `git2`). Os dois olharam a pasta, viram o `0046` ocupado e
+> pegaram o seguinte. O `0047` do `git-engine` mesclou primeiro
+> (PR #70, 12:52; este é o PR #71, 14:28), então a numeração dele
+> prevalece e este recebe o próximo livre. **A decisão não mudou** —
+> mudou o número e as referências a ele.
 
 ## Contexto
 
