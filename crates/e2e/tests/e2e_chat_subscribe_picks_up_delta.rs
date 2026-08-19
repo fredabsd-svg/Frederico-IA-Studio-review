@@ -195,9 +195,9 @@ async fn build_orchestrator_with_channel_sink(
     let clock: Arc<dyn frederico_security::Clock> = Arc::new(SystemClock);
     let catalog: Arc<Catalog> = Arc::new(Catalog::load().clone());
 
-    let tools = build_default_tools(None, None);
+    let tools = build_default_tools(None, None, None, None);
     let tool_registry = build_tool_registry(&tools);
-    let allowed_for_run = build_default_allowed_for_run(None, None);
+    let allowed_for_run = build_default_allowed_for_run(None, None, false, false);
     let permission_set = initial_permission_set();
     let jail_resolver: Arc<dyn frederico_tool_registry::JailResolver> =
         Arc::new(FileSystemJailResolver::new(workspace.workspaces_root()));

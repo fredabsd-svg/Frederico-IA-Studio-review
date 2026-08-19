@@ -1073,13 +1073,43 @@ fn main() {
             // ora, hard-coded `true` (mesma regra do `Some(exec_deps)`
             // acima).
             let exec_deps_available = true;
+            // **Marcos de projeto (Etapa 4 da Fase 8, ADR-0048 §D2).**
+            // Dependem só do banco, que já está aberto aqui.
+            let marco_deps = Some(frederico_tool_registry::MarcoDeps {
+                pool: std::sync::Arc::new(db.pool().clone()),
+            });
+
+            // **GitHub (Etapa 5, ADR-0048 §D3): `None` por enquanto,
+            // e o motivo é a matriz, não o token.**
+            //
+            // O `GithubEngine` exige token **e** matriz de
+            // autorização. O token tem trilha (`ServiceCredentialStore`
+            // no DPAPI, Etapa 2), mas a matriz não tem de onde vir: o
+            // `PermissionSet::github` continua sendo o enum escalar da
+            // Fase 3, que é justamente o que o ADR-0041 §D2 rejeita, e
+            // o formato dela no perfil ainda não foi decidido.
+            //
+            // Registrar as ferramentas com matriz vazia seria pior que
+            // não registrar: elas apareceriam no catálogo e recusariam
+            // toda invocação, gastando uma ida à fila de aprovação para
+            // falhar. O ADR-0020 §3 D3 manda o contrário — ou catálogo,
+            // allowlist e permissão se movem juntos, ou nenhum se move.
+            //
+            // O que falta é uma decisão de formato, não código: ver a
+            // pendência nomeada no `status.md`.
+            let github_deps: Option<frederico_tool_registry::GithubDeps> = None;
+
             let tools = frederico_app::composition::build_default_tools(
                 document_worker_invoker.clone(),
                 Some(exec_deps.clone()),
+                marco_deps.clone(),
+                github_deps.clone(),
             );
             let allowed_for_run = frederico_app::composition::build_default_allowed_for_run(
                 document_worker_invoker.clone(),
                 Some(&exec_deps),
+                marco_deps.is_some(),
+                github_deps.is_some(),
             );
             // **Permission set 4-estados (Etapa 5+):** os 2
             // subsistemas (document-worker + exec) são

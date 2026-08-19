@@ -736,6 +736,8 @@ pub struct ExecDeps {
 pub fn build_default_tools(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
     exec_deps: Option<ExecDeps>,
+    marco_deps: Option<frederico_tool_registry::MarcoDeps>,
+    github_deps: Option<frederico_tool_registry::GithubDeps>,
 ) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(frederico_tool_registry::FilesReadTool::new()),
@@ -782,6 +784,47 @@ pub fn build_default_tools(
         Arc::new(frederico_tool_registry::GitBranchTool::new()),
         Arc::new(frederico_tool_registry::GitCommitTool::new()),
     ];
+
+    // --- Marcos de projeto (Etapa 4, ADR-0048 §D2) ----------------
+    //
+    // Dependem do banco: sem pool, não entram. O agente não vê
+    // ferramenta que não pode funcionar — bump atômico com a
+    // allowlist, ADR-0020 §3 D3.
+    //
+    // Nenhuma das três aceita projeto no schema: elas operam sobre o
+    // projeto do workspace da conversa (ADR-0048 §D1). `project.open`
+    // **não** virou ferramenta — registrar projeto amplia o que o
+    // usuário alcança pela UI, e uma ferramenta inverteria a direção.
+    if let Some(marco_deps) = marco_deps {
+        tools.push(Arc::new(frederico_tool_registry::MilestoneListTool::new(
+            marco_deps.clone(),
+        )));
+        tools.push(Arc::new(frederico_tool_registry::MilestoneCreateTool::new(
+            marco_deps.clone(),
+        )));
+        tools.push(Arc::new(
+            frederico_tool_registry::MilestoneRestoreTool::new(marco_deps),
+        ));
+    }
+
+    // --- GitHub (Etapa 5, ADR-0048 §D3) ---------------------------
+    //
+    // Dependem de token **e** matriz, ambos dentro do `GithubEngine`
+    // que a casca monta. Sem eles, as duas ficam fora do catálogo: a
+    // fila de aprovação não deve receber pedido de algo que falharia
+    // de qualquer jeito.
+    //
+    // As duas são `Critical` — o único nível que força
+    // `mandatory = true` na fila sem UI de escopo. Commit local se
+    // desfaz; push para o repositório de outras pessoas, não.
+    if let Some(github_deps) = github_deps {
+        tools.push(Arc::new(frederico_tool_registry::GithubPushTool::new(
+            github_deps.clone(),
+        )));
+        tools.push(Arc::new(frederico_tool_registry::GithubCreatePrTool::new(
+            github_deps,
+        )));
+    }
 
     // --- Subsistema documentos (Etapa 2.A) ------------------------
     if let Some(invoker) = invoker {
@@ -891,6 +934,8 @@ pub fn build_default_tools(
 pub fn build_default_allowed_for_run(
     invoker: Option<Arc<dyn frederico_core::WorkerInvoker>>,
     exec_deps: Option<&ExecDeps>,
+    tem_marcos: bool,
+    tem_github: bool,
 ) -> Vec<frederico_core::ToolId> {
     let mut allowed = vec![
         frederico_core::ToolId::new("files.read"),
@@ -919,6 +964,17 @@ pub fn build_default_allowed_for_run(
         frederico_core::ToolId::new("git.branch"),
         frederico_core::ToolId::new("git.commit"),
     ];
+
+    if tem_marcos {
+        allowed.push(frederico_core::ToolId::new("milestone.list"));
+        allowed.push(frederico_core::ToolId::new("milestone.create"));
+        allowed.push(frederico_core::ToolId::new("milestone.restore"));
+    }
+
+    if tem_github {
+        allowed.push(frederico_core::ToolId::new("github.push"));
+        allowed.push(frederico_core::ToolId::new("github.create_pr"));
+    }
 
     if invoker.is_some() {
         allowed.push(frederico_core::ToolId::new("docs.generate"));
@@ -1224,7 +1280,7 @@ mod tests {
         // `exec.python`/`exec.node` (precisam de exec_deps) NÃO
         // entram — o modelo não as vê. Mesma regra do exec:
         // sem `exec_deps`, `exec.*` não entram.
-        let tools = build_default_tools(None, None);
+        let tools = build_default_tools(None, None, None, None);
         // 4 de arquivo + 5 de Git (Etapa 3 da Fase 8). As de Git
         // entram sempre: são in-process, com a biblioteca linkada,
         // sem runtime a baixar nem processo a lançar.
@@ -1269,7 +1325,7 @@ mod tests {
         // o trait. A integração com o `DocumentWorkerLauncher`
         // lazy é responsabilidade da casca Tauri.
         let invoker = fake_invoker().await;
-        let tools = build_default_tools(Some(invoker), None);
+        let tools = build_default_tools(Some(invoker), None, None, None);
         assert_eq!(
             tools.len(),
             11,
@@ -1336,7 +1392,7 @@ mod tests {
             network_audit,
         };
 
-        let tools = build_default_tools(None, Some(exec_deps));
+        let tools = build_default_tools(None, Some(exec_deps), None, None);
         assert_eq!(
             tools.len(),
             12,
@@ -1369,7 +1425,7 @@ mod tests {
         // ADR-0035). O `RunExecutor` rejeita invocação de `docs.*`
         // e `exec.*` mesmo se o modelo tentar (defesa em
         // profundidade contra prompt injection).
-        let allowed = build_default_allowed_for_run(None, None);
+        let allowed = build_default_allowed_for_run(None, None, false, false);
         assert_eq!(
             allowed,
             vec![
@@ -1401,7 +1457,7 @@ mod tests {
         // 2 `ToolId`s aparecem em ambos; quando `None`, em
         // nenhum. A casca Tauri é quem garante a simetria.
         let invoker = fake_invoker().await;
-        let allowed = build_default_allowed_for_run(Some(invoker), None);
+        let allowed = build_default_allowed_for_run(Some(invoker), None, false, false);
         assert!(allowed.contains(&frederico_core::ToolId::new("files.read")));
         assert!(allowed.contains(&frederico_core::ToolId::new("files.list")));
         assert!(allowed.contains(&frederico_core::ToolId::new("files.write")));
@@ -1435,6 +1491,67 @@ mod tests {
     /// de invoker**, então a asserção vale nos quatro construtores de
     /// `PermissionSet` que a casca usa — não há configuração em que o
     /// Git apareça pela metade.
+    /// **Bump atômico das ferramentas de marco e de GitHub**
+    /// (ADR-0020 §3 D3, ADR-0048 §D2/§D3).
+    ///
+    /// As duas famílias são **condicionais**, ao contrário das de Git
+    /// da Etapa 3: marcos dependem do banco, GitHub depende de token
+    /// **e** matriz. Quando a dependência falta, elas não podem
+    /// aparecer nem no catálogo nem na allowlist — ferramenta que
+    /// falharia de qualquer jeito só gasta uma ida à fila de
+    /// aprovação.
+    ///
+    /// Este teste trava as duas direções: com dependência, as duas
+    /// listas contêm; sem dependência, nenhuma das duas contém.
+    #[tokio::test]
+    async fn marcos_e_github_entram_e_saem_juntos_do_catalogo_e_da_allowlist() {
+        let marcos = [
+            frederico_core::ToolId::new("milestone.list"),
+            frederico_core::ToolId::new("milestone.create"),
+            frederico_core::ToolId::new("milestone.restore"),
+        ];
+        let github = [
+            frederico_core::ToolId::new("github.push"),
+            frederico_core::ToolId::new("github.create_pr"),
+        ];
+
+        // --- Sem dependência: fora das duas listas.
+        let tools = build_default_tools(None, None, None, None);
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        let allowed = build_default_allowed_for_run(None, None, false, false);
+        for id in marcos.iter().chain(github.iter()) {
+            assert!(!ids.contains(id), "{id:?} no catálogo sem dependência");
+            assert!(!allowed.contains(id), "{id:?} na allowlist sem dependência");
+        }
+
+        // --- Com dependência: dentro das duas.
+        let marco_deps = frederico_tool_registry::MarcoDeps {
+            pool: Arc::new(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .connect_lazy("sqlite::memory:")
+                    .expect("pool"),
+            ),
+        };
+        let github_deps = frederico_tool_registry::GithubDeps {
+            engine: Arc::new(frederico_github_engine::GithubEngine::new(
+                secrecy::SecretString::from("token".to_string()),
+                frederico_github_engine::MatrizAutorizacao::vazia(),
+            )),
+        };
+        let tools = build_default_tools(None, None, Some(marco_deps), Some(github_deps));
+        let ids: Vec<frederico_core::ToolId> =
+            tools.iter().map(|t| t.manifest().id.clone()).collect();
+        let allowed = build_default_allowed_for_run(None, None, true, true);
+        for id in marcos.iter().chain(github.iter()) {
+            assert!(ids.contains(id), "{id:?} fora do catálogo com dependência");
+            assert!(
+                allowed.contains(id),
+                "{id:?} fora da allowlist com dependência"
+            );
+        }
+    }
+
     #[test]
     fn git_entra_atomicamente_no_catalogo_na_allowlist_e_na_permissao() {
         let esperadas: Vec<frederico_core::ToolId> = [
@@ -1450,7 +1567,7 @@ mod tests {
 
         // Peça 1 — catálogo, na configuração mais pobre possível
         // (sem runtime, sem invoker).
-        let tools = build_default_tools(None, None);
+        let tools = build_default_tools(None, None, None, None);
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         for id in &esperadas {
@@ -1458,7 +1575,7 @@ mod tests {
         }
 
         // Peça 2 — allowlist da run.
-        let allowed = build_default_allowed_for_run(None, None);
+        let allowed = build_default_allowed_for_run(None, None, false, false);
         for id in &esperadas {
             assert!(
                 allowed.contains(id),
@@ -1527,7 +1644,7 @@ mod tests {
         let shell = frederico_core::ToolId::new("exec.shell");
 
         // Peça 1 — catálogo.
-        let tools = build_default_tools(None, Some(exec_deps.clone()));
+        let tools = build_default_tools(None, Some(exec_deps.clone()), None, None);
         let ids: Vec<frederico_core::ToolId> =
             tools.iter().map(|t| t.manifest().id.clone()).collect();
         assert!(ids.contains(&shell), "exec.shell fora do catalogo: {ids:?}");
@@ -1535,7 +1652,7 @@ mod tests {
         // Peça 2 — allowlist da run. Sem ela o `RunExecutor`
         // recusa a invocação com `ToolNotAllowed` mesmo com a tool
         // registrada.
-        let allowed = build_default_allowed_for_run(None, Some(&exec_deps));
+        let allowed = build_default_allowed_for_run(None, Some(&exec_deps), false, false);
         assert!(
             allowed.contains(&shell),
             "exec.shell fora da allowlist de run: {allowed:?}"
@@ -1554,7 +1671,7 @@ mod tests {
 
         // E o lado negativo do mesmo bump: sem `exec_deps`, nenhuma
         // das peças de exec aparece.
-        let sem_exec = build_default_allowed_for_run(None, None);
+        let sem_exec = build_default_allowed_for_run(None, None, false, false);
         assert!(
             !sem_exec.contains(&shell),
             "exec.shell na allowlist sem exec_deps: {sem_exec:?}"

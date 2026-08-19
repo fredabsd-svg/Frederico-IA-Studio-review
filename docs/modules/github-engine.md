@@ -29,7 +29,7 @@ histórico mesmo depois de fechado.
 | `MatrizAutorizacao::autoriza` | repositório × branch × operação, fail-closed |
 | `MatrizAutorizacao::intersecao` | `usuário ∩ projeto`, só restringe |
 | `GithubEngine::criar_pr` | REST, com `base_url` injetável para o twin |
-| `GithubEngine::push` | `git2` sobre o remoto configurado, refspec sem force |
+| `GithubEngine::push` | `git2` sobre o remoto configurado, refspec sem force, com o remoto conferido contra a matriz |
 
 ## 3. A matriz é o portão, e ela é estado do cliente
 
@@ -55,6 +55,26 @@ branch principal escreve o nome dela, e a escrita é o consentimento —
 não um `*` digitado para liberar branches de trabalho que passou a
 cobrir produção sem ninguém perceber. Fixado em
 `curinga_nao_alcanca_branch_protegida`.
+
+## 3.1 O remoto é conferido contra a matriz (ADR-0048 §D4)
+
+A matriz autoriza `owner/repo`, mas o `git2` empurra para onde o
+remoto apontar. Sem conferência, um remoto trocado empurraria para
+outro lugar carregando a autorização do repositório certo — e
+`.git/config` fica no workspace, onde o agente escreve.
+
+O `push` compara a URL do remoto com o `owner/repo` autorizado e
+recusa se não baterem. São aceitas as formas que o GitHub publica
+(`https://`, `git@`, `ssh://git@`, com ou sem `.git` e barra final);
+**qualquer outro host é recusado**, inclusive um com o mesmo caminho
+(`https://gitlab.com/owner/repo`) ou um sufixo enganoso
+(`github.com.attacker.example`).
+
+Isto custou o twin do `push`: um repositório bare local nunca é
+`github.com`, então ele passou a ser corretamente recusado. A mecânica
+do push virou função privada, exercitada por teste de unidade que a
+alcança **sem** abrir porta que contorne a política; o antigo twin
+virou a negação `push_recusa_remoto_que_nao_e_o_repositorio_autorizado`.
 
 ## 4. Force-push é ausência de API
 
@@ -103,9 +123,14 @@ GitHub aceita em HTTPS.
 
 ## 7. O que ainda não existe
 
-- **Nenhuma ferramenta registrada no Tool Registry.** O agente não
-  alcança `push` nem `create_pr` — a superfície de ferramenta e a
-  aprovação por invocação do ADR-0041 §D4 são o próximo PR.
+- **As ferramentas existem, mas a casca não as liga.**
+  `GithubPushTool` e `GithubCreatePrTool` estão implementadas e
+  testadas (ADR-0048 §D3), e o `main.rs` passa `None`: o
+  `GithubEngine` exige token **e** matriz, e a matriz não tem de onde
+  vir. Registrá-las com matriz vazia seria pior que não registrar —
+  apareceriam no catálogo e recusariam toda invocação, gastando uma
+  ida à fila de aprovação para falhar. O que falta é decisão de
+  formato, não código.
 - **`PermissionSet::github` continua sendo o enum escalar** da Fase 3
   (`None`/`ReadOnly`/`Clone`/`Commit`/`Push`), que é justamente o que
   o ADR-0041 §D2 rejeita. A matriz existe e aplica, mas ainda não é o
