@@ -1,24 +1,162 @@
+/* ============================================================
+   Tinta & Latão — tokens do sistema de design
+   ============================================================
+
+   Etapa 5b da Fase 8, ADR-0045. A identidade não foi inventada
+   aqui: o `--accent` `#d4a05a` já era um tom de latão no app desde
+   a Fase 1, sem nome. O que faltava era estrutura — dez tamanhos de
+   fonte, quatro raios e 40 literais de cor escolhidos caso a caso
+   não formam escala, formam ruído.
+
+   **Estes tokens não são compartilhados com os `document-kits`**
+   (ADR-0045 §D3). Tela e impressão têm requisitos diferentes, e um
+   arquivo comum faria uma mudança feita por razão de impressão
+   mover a interface em silêncio. Mesma família, arquivos separados.
+
+   **Nenhum literal visual fora deste bloco.** A guarda
+   `scripts/check-ui-tokens.mjs` recusa cor, tamanho de fonte, raio
+   e espaçamento escritos direto na regra.
+   ============================================================ */
+
 :root {
+  /* --- Superfícies ------------------------------------------ */
   --bg: #1a1a1a;
   --bg-elev: #242424;
+  /* Fundo de controle nativo (`select`, `input`) — precisa ser
+     distinto do `--bg-elev` para o controle não sumir dentro do
+     painel. */
+  --bg-controle: #2e2e2e;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --overlay-forte: rgba(0, 0, 0, 0.6);
+
+  /* --- Texto ------------------------------------------------- */
   --fg: #e8e8e8;
   --fg-dim: #9a9a9a;
+  /* Texto sobre `--accent` e sobre os fundos de feedback fortes. */
+  --fg-sobre-acento: #1a1a1a;
+
+  /* --- Destaque ---------------------------------------------- */
   --accent: #d4a05a;
+
+  /* --- Bordas ------------------------------------------------ */
   --border: #333;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
-    Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
+
+  /* --- Feedback ---------------------------------------------- */
+  /* `#d17878` e não o `#c66` de antes: o antigo dava 4,69:1 sobre
+     `--bg` — que é o par que o ADR-0045 mediu e aprovou — mas
+     **4,18:1 sobre `--bg-elev`**, e é no painel elevado que a
+     mensagem de erro aparece. A medição do ADR só cobriu o fundo
+     de baixo; a porta de contraste cobre os dois, e foi ela que
+     encontrou. */
+  --erro: #d17878;
+  --erro-hover: #dc8f8f;
+  --erro-fundo: rgba(209, 120, 120, 0.15);
+  --erro-fundo-solido: #5a1d1d;
+  --sucesso: #6c6;
+  --sucesso-fundo-solido: #1d5a2a;
+  --info-fundo-solido: #1d3a5a;
+
+  /* --- Foco --------------------------------------------------
+     Indicador de foco visível (WCAG 2.1 AA, critério 2.4.7). O
+     app tinha **zero** ocorrências de `focus` em 1.037 linhas
+     antes desta etapa: quem navegava por teclado não via onde
+     estava. */
+  --foco: #d4a05a;
+  --foco-largura: 2px;
+  --foco-deslocamento: 2px;
+
+  /* --- Sombra ------------------------------------------------ */
+  --sombra-modal: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  /* --- Tipografia --------------------------------------------
+     Seis degraus, no lugar dos dez tamanhos ad-hoc. A pilha de
+     fontes é Windows-only de propósito: `-apple-system`,
+     `Roboto`, `Oxygen` e `Ubuntu` eram entradas mortas num produto
+     que só roda no Windows. */
+  --fonte-familia: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --fonte-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --fonte-xs: 0.75rem;
+  --fonte-sm: 0.8125rem;
+  --fonte-md: 0.9375rem;
+  --fonte-base: 1rem;
+  --fonte-lg: 1.125rem;
+  --fonte-xl: 1.5rem;
+  --fonte-raiz: 16px;
+  --linha-altura: 1.5;
+  /* Dígitos tabulares: números de custo e token mudam a cada
+     streaming, e sem isso a linha inteira dança a cada dígito. */
+  --fonte-numerica: tabular-nums;
+
+  /* --- Espaçamento -------------------------------------------
+     Seis degraus, no lugar de doze valores. Os intermediários
+     (0.1, 0.15, 0.3, 0.35, 0.4, 1.25rem) foram encaixados no
+     degrau vizinho. */
+  --esp-1: 0.25rem;
+  --esp-2: 0.5rem;
+  --esp-3: 0.75rem;
+  --esp-4: 1rem;
+  --esp-5: 1.5rem;
+  --esp-6: 2rem;
+
+  /* --- Raio --------------------------------------------------
+     Três degraus, no lugar de quatro valores. "Cantos mínimos" é
+     parte da personalidade declarada (ADR-0045 §D3), então o 6px
+     foi para baixo, não para cima. */
+  --raio-sm: 3px;
+  --raio-md: 4px;
+  --raio-lg: 8px;
+
+  font-family: var(--fonte-familia);
+  font-size: var(--fonte-raiz);
+  line-height: var(--linha-altura);
   color-scheme: light dark;
 }
 
+/* ============================================================
+   Tema claro — completo, não pela metade
+   ============================================================
+
+   O bloco anterior sobrescrevia 5 dos 6 tokens e **esquecia o
+   `--accent`**: o latão `#d4a05a` sobre o fundo claro `#fafafa`
+   dá 2,24:1, abaixo do mínimo de 4,5:1 do WCAG AA. Quem usa o
+   Windows em modo claro via um destaque ilegível, e nada avisava.
+
+   O ADR-0045 §D6 tinha duas saídas honestas — completar o bloco
+   ou assumir o app como escuro-only — e escolheu completar,
+   porque remover significaria ignorar uma preferência que o
+   sistema operacional expõe e que o app diz respeitar. A terceira
+   saída, que era a de então, fica proibida: a porta de contraste
+   do CI cobre os dois temas exatamente por isso.
+   ============================================================ */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fafafa;
     --bg-elev: #fff;
+    --bg-controle: #f0f0f0;
+    --overlay: rgba(0, 0, 0, 0.35);
+    --overlay-forte: rgba(0, 0, 0, 0.45);
+
     --fg: #1a1a1a;
-    --fg-dim: #6a6a6a;
+    --fg-dim: #5a5a5a;
+    --fg-sobre-acento: #fff;
+
+    /* Latão escurecido: 4,63:1 sobre `#fafafa`. O `#d4a05a` do
+       tema escuro dava 2,24:1 aqui. */
+    --accent: #8a5d18;
+
     --border: #d4d4d4;
+
+    --erro: #a03232;
+    --erro-hover: #8a2a2a;
+    --erro-fundo: rgba(160, 50, 50, 0.12);
+    --erro-fundo-solido: #f5dada;
+    --sucesso: #1f6b2f;
+    --sucesso-fundo-solido: #d9f0dd;
+    --info-fundo-solido: #d9e6f5;
+
+    --foco: #8a5d18;
+
+    --sombra-modal: 0 8px 32px rgba(0, 0, 0, 0.18);
   }
 }
 
@@ -40,23 +178,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1.5rem;
+  padding: var(--esp-3) var(--esp-5);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
 
 .topbar h1 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: var(--fonte-lg);
   letter-spacing: 0.02em;
 }
 
 .topbar nav a {
   color: var(--fg-dim);
   text-decoration: none;
-  margin-left: 1rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  margin-left: var(--esp-4);
+  padding: var(--esp-1) var(--esp-2);
+  border-radius: var(--raio-md);
 }
 
 .topbar nav a:hover,
@@ -67,14 +205,14 @@ body {
 
 main {
   flex: 1;
-  padding: 2rem 1.5rem;
+  padding: var(--esp-6) var(--esp-5);
   max-width: 900px;
   width: 100%;
   margin: 0 auto;
 }
 
 footer {
-  padding: 0.75rem 1.5rem;
+  padding: var(--esp-3) var(--esp-5);
   border-top: 1px solid var(--border);
   color: var(--fg-dim);
   text-align: center;
@@ -83,8 +221,8 @@ footer {
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
-  margin: 1rem 0;
+  gap: var(--esp-1) var(--esp-4);
+  margin: var(--esp-4) 0;
 }
 
 dt { color: var(--fg-dim); }
@@ -92,15 +230,15 @@ dd { margin: 0; }
 
 code {
   background: var(--bg-elev);
-  padding: 0.1rem 0.35rem;
-  border-radius: 3px;
-  font-size: 0.95em;
+  padding: var(--esp-1) var(--esp-2);
+  border-radius: var(--raio-sm);
+  font-size: var(--fonte-md);
 }
 
 pre {
   background: var(--bg-elev);
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
+  padding: var(--esp-3) var(--esp-4);
+  border-radius: var(--raio-md);
   overflow-x: auto;
 }
 
@@ -109,10 +247,10 @@ pre {
 .chat {
   display: grid;
   grid-template-columns: 240px 1fr;
-  gap: 1rem;
+  gap: var(--esp-4);
   height: calc(100vh - 8rem);
-  margin: 0 -1.5rem;
-  padding: 0 1.5rem;
+  margin: 0 calc(var(--esp-5) * -1);
+  padding: 0 var(--esp-5);
 }
 
 .conversations {
@@ -126,7 +264,7 @@ pre {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.5rem 0;
+  padding: var(--esp-2) 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -140,9 +278,9 @@ pre {
 .conversations li {
   display: flex;
   align-items: center;
-  padding: 0.25rem 0.5rem;
+  padding: var(--esp-1) var(--esp-2);
   border-bottom: 1px solid var(--border);
-  gap: 0.25rem;
+  gap: var(--esp-1);
 }
 
 .conversations li.active {
@@ -156,14 +294,14 @@ pre {
   cursor: pointer;
   text-align: left;
   flex: 1;
-  padding: 0.25rem;
-  font-size: 0.9rem;
+  padding: var(--esp-1);
+  font-size: var(--fonte-md);
 }
 
 .conversations li button small {
   display: block;
   color: var(--fg-dim);
-  font-size: 0.75rem;
+  font-size: var(--fonte-xs);
 }
 
 .link {
@@ -181,16 +319,16 @@ pre {
 }
 
 .link-danger {
-  color: #c66;
+  color: var(--erro);
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 1.1rem;
-  padding: 0 0.25rem;
+  font-size: var(--fonte-lg);
+  padding: 0 var(--esp-1);
 }
 
 .link-small {
-  font-size: 0.85rem;
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
   text-decoration: none;
 }
@@ -209,7 +347,7 @@ pre {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.5rem 0;
+  padding: var(--esp-2) 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -217,8 +355,8 @@ pre {
   background: var(--bg-elev);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-1) var(--esp-2);
 }
 
 /* O seletor de modelo era um `button.link` — texto colorido sem
@@ -228,28 +366,28 @@ pre {
 .conv-model {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--esp-2);
 }
 
 .conv-model-rotulo {
   color: var(--fg-dim);
-  font-size: 0.85rem;
+  font-size: var(--fonte-sm);
 }
 
 .messages {
   list-style: none;
   margin: 0;
-  padding: 1rem 0;
+  padding: var(--esp-4) 0;
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--esp-3);
 }
 
 .msg {
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
+  border-radius: var(--raio-lg);
+  padding: var(--esp-3) var(--esp-4);
   max-width: 80%;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -258,13 +396,13 @@ pre {
 .msg-user {
   align-self: flex-end;
   background: var(--accent);
-  color: #1a1a1a;
+  color: var(--fg-sobre-acento);
 }
 
 .msg-user .msg-meta,
 .msg-user .msg-status,
 .msg-user small {
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--overlay-forte);
 }
 
 .msg-assistant {
@@ -281,10 +419,10 @@ pre {
 
 .msg-meta {
   display: flex;
-  gap: 0.5rem;
-  font-size: 0.75rem;
+  gap: var(--esp-2);
+  font-size: var(--fonte-xs);
   color: var(--fg-dim);
-  margin-bottom: 0.25rem;
+  margin-bottom: var(--esp-1);
   align-items: center;
 }
 
@@ -301,7 +439,7 @@ pre {
 .msg-body {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.95rem;
+  font-size: var(--fonte-md);
   line-height: 1.45;
 }
 
@@ -316,45 +454,45 @@ pre {
 }
 
 .msg-error {
-  margin-top: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: rgba(204, 102, 102, 0.15);
-  border-left: 3px solid #c66;
-  border-radius: 4px;
+  margin-top: var(--esp-2);
+  padding: var(--esp-2) var(--esp-3);
+  background: var(--erro-fundo);
+  border-left: 3px solid var(--erro);
+  border-radius: var(--raio-md);
   color: var(--fg);
-  font-size: 0.9rem;
+  font-size: var(--fonte-md);
 }
 
 .msg-error p {
-  margin: 0.25rem 0 0;
+  margin: var(--esp-1) 0 0;
 }
 
 .msg-error .action {
   font-style: italic;
   color: var(--accent);
-  margin-top: 0.5rem !important;
+  margin-top: var(--esp-2) !important;
 }
 
 .stop {
-  margin-top: 0.5rem;
+  margin-top: var(--esp-2);
   background: transparent;
   color: var(--fg-dim);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.25rem 0.75rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-1) var(--esp-3);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--fonte-sm);
 }
 
 .stop:hover {
-  color: #c66;
-  border-color: #c66;
+  color: var(--erro);
+  border-color: var(--erro);
 }
 
 .composer {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
+  gap: var(--esp-2);
+  padding: var(--esp-2) 0;
   border-top: 1px solid var(--border);
 }
 
@@ -366,17 +504,17 @@ pre {
   background: var(--bg-elev);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-2);
   font: inherit;
 }
 
 .composer button[type="submit"] {
   background: var(--accent);
-  color: #1a1a1a;
+  color: var(--fg-sobre-acento);
   border: none;
-  border-radius: 4px;
-  padding: 0 1.5rem;
+  border-radius: var(--raio-md);
+  padding: 0 var(--esp-5);
   cursor: pointer;
   font-weight: 500;
   align-self: stretch;
@@ -388,11 +526,11 @@ pre {
 }
 
 .error {
-  background: rgba(204, 102, 102, 0.15);
-  border-left: 3px solid #c66;
-  border-radius: 4px;
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0;
+  background: var(--erro-fundo);
+  border-left: 3px solid var(--erro);
+  border-radius: var(--raio-md);
+  padding: var(--esp-2) var(--esp-3);
+  margin: var(--esp-2) 0;
   color: var(--fg);
 }
 
@@ -401,18 +539,18 @@ pre {
 table {
   width: 100%;
   border-collapse: collapse;
-  margin: 1rem 0;
+  margin: var(--esp-4) 0;
 }
 
 th, td {
   text-align: left;
-  padding: 0.5rem 0.75rem;
+  padding: var(--esp-2) var(--esp-3);
   border-bottom: 1px solid var(--border);
 }
 
 th {
   background: var(--bg-elev);
-  font-size: 0.85rem;
+  font-size: var(--fonte-sm);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--fg-dim);
@@ -420,32 +558,32 @@ th {
 
 td small {
   color: var(--fg-dim);
-  font-family: monospace;
-  font-size: 0.8rem;
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-sm);
 }
 
 td input[type="password"] {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-1) var(--esp-2);
   font: inherit;
-  margin-right: 0.5rem;
+  margin-right: var(--esp-2);
 }
 
 td button {
   background: var(--bg-elev);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-1) var(--esp-2);
   cursor: pointer;
-  margin-right: 0.25rem;
+  margin-right: var(--esp-1);
 }
 
 .status-ok {
-  color: #6c6;
+  color: var(--sucesso);
   font-weight: 500;
 }
 
@@ -454,7 +592,7 @@ td button {
 }
 
 .link-danger {
-  color: #c66;
+  color: var(--erro);
 }
 
 
@@ -463,7 +601,7 @@ td button {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -473,47 +611,47 @@ td button {
 .modal {
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--raio-lg);
   max-width: 600px;
   width: 90%;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--sombra-modal);
 }
 
 .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem 1.25rem;
+  padding: var(--esp-4) var(--esp-5);
   border-bottom: 1px solid var(--border);
 }
 
 .modal-header h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--fonte-base);
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   flex-wrap: wrap;
 }
 
 .modal-header h2 code {
   background: var(--bg);
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.95em;
+  padding: var(--esp-1) var(--esp-2);
+  border-radius: var(--raio-md);
+  font-size: var(--fonte-md);
 }
 
 .modal-close {
   background: transparent;
   border: 0;
   color: var(--fg-dim);
-  font-size: 1.5rem;
+  font-size: var(--fonte-xl);
   line-height: 1;
   cursor: pointer;
-  padding: 0.25rem 0.5rem;
+  padding: var(--esp-1) var(--esp-2);
 }
 
 .modal-close:hover {
@@ -521,7 +659,7 @@ td button {
 }
 
 .modal-body {
-  padding: 1rem 1.25rem;
+  padding: var(--esp-4) var(--esp-5);
   overflow-y: auto;
   flex: 1;
 }
@@ -529,33 +667,33 @@ td button {
 .modal-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 0.75rem 1.25rem;
+  gap: var(--esp-2);
+  padding: var(--esp-3) var(--esp-5);
   border-top: 1px solid var(--border);
 }
 
 .approval-modal .approval-context {
-  margin: 0 0 0.75rem;
+  margin: 0 0 var(--esp-3);
   color: var(--fg-dim);
 }
 
 .approval-modal details {
-  margin: 0.5rem 0;
+  margin: var(--esp-2) 0;
 }
 
 .approval-modal summary {
   cursor: pointer;
   color: var(--accent);
   font-weight: 500;
-  padding: 0.25rem 0;
+  padding: var(--esp-1) 0;
 }
 
 .approval-args {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.5rem;
-  font-size: 0.85rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-2);
+  font-size: var(--fonte-sm);
   max-height: 200px;
   overflow: auto;
   white-space: pre-wrap;
@@ -565,15 +703,15 @@ td button {
 .approval-form {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
+  gap: var(--esp-2);
+  margin-top: var(--esp-3);
 }
 
 .approval-form label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
+  gap: var(--esp-1);
+  font-size: var(--fonte-md);
   color: var(--fg-dim);
 }
 
@@ -582,47 +720,47 @@ td button {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.4rem 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-2) var(--esp-2);
   font-family: inherit;
-  font-size: 0.95rem;
+  font-size: var(--fonte-md);
 }
 
 .badge {
   background: var(--accent);
-  color: #1a1a1a;
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
+  color: var(--fg-sobre-acento);
+  padding: var(--esp-1) var(--esp-2);
+  border-radius: var(--raio-md);
+  font-size: var(--fonte-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .badge-warn {
-  background: #c66;
-  color: #fff;
+  background: var(--erro);
+  color: var(--bg-elev);
 }
 
 .btn-danger {
-  background: #c66;
-  color: #fff;
+  background: var(--erro);
+  color: var(--bg-elev);
   border: 0;
-  border-radius: 4px;
-  padding: 0.5rem 1rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-2) var(--esp-4);
   cursor: pointer;
   font-weight: 500;
 }
 
-.btn-danger:hover { background: #d77; }
+.btn-danger:hover { background: var(--erro-hover); }
 .btn-danger:disabled { background: var(--fg-dim); cursor: not-allowed; }
 
 .btn-primary {
   background: var(--accent);
-  color: #1a1a1a;
+  color: var(--fg-sobre-acento);
   border: 0;
-  border-radius: 4px;
-  padding: 0.5rem 1rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-2) var(--esp-4);
   cursor: pointer;
   font-weight: 500;
 }
@@ -635,14 +773,14 @@ td button {
 .memory-panel {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 1rem;
+  gap: var(--esp-4);
+  padding: var(--esp-4);
 }
 
 .memory-header {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--esp-2);
 }
 
 .memory-header h2 {
@@ -652,44 +790,44 @@ td button {
 .memory-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   align-items: center;
 }
 
 .memory-controls label {
   display: flex;
   flex-direction: column;
-  font-size: 0.85rem;
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
-  gap: 0.25rem;
+  gap: var(--esp-1);
 }
 
 .memory-controls input,
 .memory-controls select {
-  padding: 0.3rem 0.5rem;
+  padding: var(--esp-1) var(--esp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--raio-md);
   background: var(--bg-input);
   color: var(--fg);
 }
 
 .memory-error {
-  padding: 0.5rem;
-  background: var(--bg-error, #5a1d1d);
-  color: #fff;
-  border-radius: 4px;
+  padding: var(--esp-2);
+  background: var(--erro-fundo-solido);
+  color: var(--bg-elev);
+  border-radius: var(--raio-md);
 }
 
 .memory-banner {
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-success, #1d5a2a);
-  color: #fff;
-  border-radius: 4px;
+  padding: var(--esp-2) var(--esp-3);
+  background: var(--sucesso-fundo-solido);
+  color: var(--bg-elev);
+  border-radius: var(--raio-md);
 }
 
 .memory-section h3 {
-  margin: 0 0 0.5rem 0;
-  font-size: 1rem;
+  margin: 0 0 var(--esp-2) 0;
+  font-size: var(--fonte-base);
   color: var(--fg-dim);
 }
 
@@ -700,25 +838,25 @@ td button {
 
 .memory-card {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.75rem;
-  margin-bottom: 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-3);
+  margin-bottom: var(--esp-2);
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--esp-2);
 }
 
 .memory-card-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--esp-1);
 }
 
 .memory-meta {
   margin-left: auto;
-  font-size: 0.8rem;
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
 }
 
@@ -730,12 +868,12 @@ td button {
 .memory-score table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.85rem;
-  margin-top: 0.25rem;
+  font-size: var(--fonte-sm);
+  margin-top: var(--esp-1);
 }
 
 .memory-score td {
-  padding: 0.15rem 0.5rem;
+  padding: var(--esp-1) var(--esp-2);
   border-bottom: 1px solid var(--border);
 }
 
@@ -746,13 +884,13 @@ td button {
 .memory-card-footer {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   flex-wrap: wrap;
 }
 
 .memory-superseded {
   color: var(--fg-dim);
-  font-size: 0.8rem;
+  font-size: var(--fonte-sm);
 }
 
 .correction-context {
@@ -762,37 +900,37 @@ td button {
 .correction-old {
   background: var(--bg-input);
   border-left: 3px solid var(--border);
-  padding: 0.5rem;
-  margin: 0 0 1rem 0;
+  padding: var(--esp-2);
+  margin: 0 0 var(--esp-4) 0;
   white-space: pre-wrap;
 }
 
 .modal-body label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
+  gap: var(--esp-1);
+  margin-bottom: var(--esp-3);
 }
 
 .modal-body textarea,
 .modal-body select,
 .modal-body input[type="text"] {
-  padding: 0.3rem 0.5rem;
+  padding: var(--esp-1) var(--esp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--raio-md);
   background: var(--bg-input);
   color: var(--fg);
   font-family: inherit;
 }
 
 .badge-error {
-  background: var(--bg-error, #5a1d1d);
-  color: #fff;
+  background: var(--erro-fundo-solido);
+  color: var(--bg-elev);
 }
 
 .badge-info {
-  background: var(--bg-info, #1d3a5a);
-  color: #fff;
+  background: var(--info-fundo-solido);
+  color: var(--bg-elev);
 }
 
 /* === Fase 6, Etapa 7: Modo Equipe (PipelineView) ============ */
@@ -800,9 +938,9 @@ td button {
 .pipeline-view {
   display: grid;
   grid-template-columns: 280px 1fr;
-  gap: 1.5rem;
-  margin: 0 -1.5rem;
-  padding: 0 1.5rem;
+  gap: var(--esp-5);
+  margin: 0 calc(var(--esp-5) * -1);
+  padding: 0 var(--esp-5);
   min-height: calc(100vh - 8rem);
 }
 
@@ -810,8 +948,8 @@ td button {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem 0.5rem 0;
+  gap: var(--esp-3);
+  padding: var(--esp-2) var(--esp-4) var(--esp-2) 0;
   overflow: hidden;
 }
 
@@ -819,14 +957,14 @@ td button {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
-  padding-bottom: 0.5rem;
+  gap: var(--esp-2);
+  padding-bottom: var(--esp-2);
   border-bottom: 1px solid var(--border);
 }
 
 .pipeline-sidebar__header h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--fonte-base);
 }
 
 .pipeline-list {
@@ -836,12 +974,12 @@ td button {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--esp-1);
 }
 
 .pipeline-list__item {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--raio-md);
   background: var(--bg-elev);
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
@@ -863,7 +1001,7 @@ td button {
   border: 0;
   color: var(--fg);
   text-align: left;
-  padding: 0.5rem 0.75rem;
+  padding: var(--esp-2) var(--esp-3);
   cursor: pointer;
   font: inherit;
 }
@@ -872,56 +1010,56 @@ td button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
+  gap: var(--esp-2);
+  margin-bottom: var(--esp-1);
 }
 
 .pipeline-list__item-id {
-  font-family: monospace;
-  font-size: 0.85rem;
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-sm);
 }
 
 .pipeline-list__item-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 0.75rem;
+  font-size: var(--fonte-xs);
   color: var(--fg-dim);
 }
 
 .pipeline-empty {
   color: var(--fg-dim);
   font-style: italic;
-  padding: 1rem 0;
+  padding: var(--esp-4) 0;
 }
 
 .pipeline-detail {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: 0.5rem 0;
+  gap: var(--esp-4);
+  padding: var(--esp-2) 0;
 }
 
 .pipeline-detail__header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 1rem;
+  gap: var(--esp-4);
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.75rem;
+  padding-bottom: var(--esp-3);
 }
 
 .pipeline-detail__header h2 {
-  margin: 0 0 0.25rem 0;
-  font-size: 1.1rem;
+  margin: 0 0 var(--esp-1) 0;
+  font-size: var(--fonte-lg);
 }
 
 .pipeline-detail__meta {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   align-items: center;
 }
 
@@ -931,24 +1069,24 @@ td button {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   counter-reset: stage;
 }
 
 .pipeline-stage {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--raio-md);
   background: var(--bg-elev);
-  padding: 0.75rem 1rem;
+  padding: var(--esp-3) var(--esp-4);
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--esp-2);
 }
 
 .pipeline-stage__header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--esp-2);
   flex-wrap: wrap;
 }
 
@@ -958,36 +1096,36 @@ td button {
 }
 
 .pipeline-stage__id {
-  font-family: monospace;
-  font-size: 0.85rem;
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-sm);
 }
 
 .pipeline-stage__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.85rem;
+  gap: var(--esp-3);
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
 }
 
 .pipeline-stage__hashes {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.8rem;
+  gap: var(--esp-3);
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
 }
 
 .pipeline-stage__hashes code {
-  font-family: monospace;
-  font-size: 0.8rem;
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-sm);
 }
 
 .pipeline-stage__times {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.8rem;
+  gap: var(--esp-3);
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
 }
 
@@ -995,40 +1133,40 @@ td button {
 
 .pipeline-stage-draft {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.75rem;
-  margin-bottom: 0.5rem;
+  border-radius: var(--raio-md);
+  padding: var(--esp-3);
+  margin-bottom: var(--esp-2);
   background: var(--bg-elev);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--esp-2);
 }
 
 .pipeline-stage-draft__header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.9rem;
+  font-size: var(--fonte-md);
 }
 
 .pipeline-stage-draft label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.85rem;
+  gap: var(--esp-1);
+  font-size: var(--fonte-sm);
   color: var(--fg-dim);
 }
 
 .pipeline-stage-draft input,
 .pipeline-stage-draft select,
 .pipeline-stage-draft textarea {
-  padding: 0.4rem 0.5rem;
+  padding: var(--esp-2) var(--esp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--raio-md);
   background: var(--bg);
   color: var(--fg);
   font-family: inherit;
-  font-size: 0.95rem;
+  font-size: var(--fonte-md);
 }
 
 .pipeline-stage-draft textarea {
