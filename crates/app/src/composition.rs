@@ -579,6 +579,82 @@ pub fn initial_permission_set_for_capable_launcher_and_exec() -> PermissionSet {
     }
 }
 
+/// Converte a matriz do perfil na matriz que o motor aplica
+/// ([ADR-0049] §D1).
+///
+/// A conversão mora aqui, e não no perfil nem no motor, pelo mesmo
+/// arranjo do `network_allowlist` → `NetworkAllowlist`: o tipo que
+/// **decide** fica livre de serde e de formato de arquivo, e mudar a
+/// configuração não passa a mexer no portão.
+///
+/// Regra malformada é **descartada**, não aceita pela metade: um
+/// `repo` que não é `owner/repo`, ou uma operação que não existe, não
+/// vira autorização parcial. Descartar é a leitura fail-closed do
+/// arquivo — aceitar o que deu para entender autorizaria algo que o
+/// usuário não escreveu.
+///
+/// [ADR-0049]: ../../docs/decisions/0049-matriz-de-github-no-permission-set.md
+#[must_use]
+pub fn matriz_do_perfil(
+    regras: &[frederico_tool_registry::RegraGithubPerfil],
+) -> frederico_github_engine::MatrizAutorizacao {
+    use frederico_github_engine::{MatrizAutorizacao, Operacao, RegraRepo, RepoRef};
+
+    let convertidas: Vec<RegraRepo> = regras
+        .iter()
+        .filter_map(|r| {
+            let repo = RepoRef::parse(&r.repo).ok()?;
+            let operacoes: std::collections::BTreeSet<Operacao> = r
+                .operacoes
+                .iter()
+                .filter_map(|o| match o.as_str() {
+                    "read" => Some(Operacao::Ler),
+                    "push" => Some(Operacao::Push),
+                    "create_pr" => Some(Operacao::CriarPr),
+                    _ => None,
+                })
+                .collect();
+            if r.branches.is_empty() || operacoes.is_empty() {
+                return None;
+            }
+            Some(RegraRepo {
+                repo,
+                branches: r.branches.clone(),
+                operacoes,
+            })
+        })
+        .collect();
+    MatrizAutorizacao::com_regras(convertidas)
+}
+
+/// Monta as dependências das ferramentas de GitHub, ou `None`.
+///
+/// **Duas condições independentes** ([ADR-0049] §D4): token no cofre
+/// **e** matriz não-vazia no perfil efetivo. Faltando qualquer uma,
+/// `github.push` e `github.create_pr` ficam fora do catálogo e da
+/// allowlist — bump atômico (ADR-0020 §3 D3).
+///
+/// Matriz vazia com token presente **não** liga as ferramentas:
+/// registrá-las produziria um catálogo que anuncia capacidade e
+/// recusa toda invocação, fazendo o usuário aprovar pedidos que já
+/// iam falhar.
+///
+/// [ADR-0049]: ../../docs/decisions/0049-matriz-de-github-no-permission-set.md
+#[must_use]
+pub fn build_github_deps(
+    token: Option<secrecy::SecretString>,
+    regras: &[frederico_tool_registry::RegraGithubPerfil],
+) -> Option<frederico_tool_registry::GithubDeps> {
+    let token = token?;
+    let matriz = matriz_do_perfil(regras);
+    if matriz.esta_vazia() {
+        return None;
+    }
+    Some(frederico_tool_registry::GithubDeps {
+        engine: Arc::new(frederico_github_engine::GithubEngine::new(token, matriz)),
+    })
+}
+
 /// Constrói o `PermissionSet` **real** da cadeia
 /// `user ∩ project ∩ assistant` via
 /// `PermissionLoader::load_effective_permission_set`.
@@ -1491,6 +1567,154 @@ mod tests {
     /// de invoker**, então a asserção vale nos quatro construtores de
     /// `PermissionSet` que a casca usa — não há configuração em que o
     /// Git apareça pela metade.
+    /// A conversão perfil → matriz, incluindo o que ela **descarta**.
+    #[test]
+    fn matriz_do_perfil_converte_e_descarta_regra_malformada() {
+        use frederico_tool_registry::RegraGithubPerfil;
+
+        let regras = vec![
+            // Válida.
+            RegraGithubPerfil {
+                repo: "owner/repo".into(),
+                branches: vec!["main".into(), "feature/*".into()],
+                operacoes: vec!["read".into(), "push".into()],
+            },
+            // `repo` malformado — descartada inteira.
+            RegraGithubPerfil {
+                repo: "sem-barra".into(),
+                branches: vec!["main".into()],
+                operacoes: vec!["push".into()],
+            },
+            // Sem branch — não autorizaria nada.
+            RegraGithubPerfil {
+                repo: "owner/outro".into(),
+                branches: vec![],
+                operacoes: vec!["push".into()],
+            },
+            // Operação inexistente — sobra conjunto vazio.
+            RegraGithubPerfil {
+                repo: "owner/terceiro".into(),
+                branches: vec!["main".into()],
+                operacoes: vec!["merge".into(), "delete".into()],
+            },
+        ];
+
+        let matriz = matriz_do_perfil(&regras);
+        assert_eq!(
+            matriz.regras().len(),
+            1,
+            "só a regra válida sobrevive; aceitar o que deu para entender \
+             autorizaria algo que o usuário não escreveu"
+        );
+
+        let repo = frederico_github_engine::RepoRef::parse("owner/repo").expect("repo");
+        matriz
+            .autoriza(&repo, frederico_github_engine::Operacao::Push, Some("main"))
+            .expect("menção nominal a main autoriza");
+        assert!(
+            matriz
+                .autoriza(
+                    &repo,
+                    frederico_github_engine::Operacao::CriarPr,
+                    Some("main")
+                )
+                .is_err(),
+            "create_pr não estava no perfil"
+        );
+    }
+
+    /// **As duas condições do ADR-0049 §D4**, nas quatro combinações.
+    #[test]
+    fn github_so_liga_com_token_e_matriz_nao_vazia() {
+        use frederico_tool_registry::RegraGithubPerfil;
+
+        let regras = vec![RegraGithubPerfil {
+            repo: "owner/repo".into(),
+            branches: vec!["feature/*".into()],
+            operacoes: vec!["push".into()],
+        }];
+        let token = || Some(secrecy::SecretString::from("token".to_string()));
+
+        assert!(
+            build_github_deps(token(), &regras).is_some(),
+            "token + matriz = liga"
+        );
+        assert!(
+            build_github_deps(None, &regras).is_none(),
+            "sem token, não liga"
+        );
+        assert!(
+            build_github_deps(token(), &[]).is_none(),
+            "matriz vazia com token não liga: o catálogo anunciaria \
+             capacidade e recusaria toda invocação"
+        );
+        assert!(build_github_deps(None, &[]).is_none(), "sem nada, não liga");
+    }
+
+    /// A interseção do `PermissionSet` desce até dentro da regra
+    /// (ADR-0049 §D2).
+    #[test]
+    fn merge_do_permission_set_interseca_a_matriz_nos_tres_eixos() {
+        use frederico_tool_registry::{PermissionSet, RegraGithubPerfil};
+
+        let usuario = PermissionSet {
+            github_repos: vec![
+                RegraGithubPerfil {
+                    repo: "owner/repo".into(),
+                    branches: vec!["main".into(), "feature/*".into()],
+                    operacoes: vec!["read".into(), "push".into(), "create_pr".into()],
+                },
+                RegraGithubPerfil {
+                    repo: "owner/so-do-usuario".into(),
+                    branches: vec!["main".into()],
+                    operacoes: vec!["push".into()],
+                },
+            ],
+            ..PermissionSet::default()
+        };
+        let projeto = PermissionSet {
+            github_repos: vec![RegraGithubPerfil {
+                repo: "owner/repo".into(),
+                branches: vec!["feature/*".into()],
+                operacoes: vec!["read".into(), "push".into()],
+            }],
+            ..PermissionSet::default()
+        };
+
+        let efetivo = usuario.merge(&projeto);
+        assert_eq!(
+            efetivo.github_repos.len(),
+            1,
+            "repositório que só existe de um lado sai inteiro"
+        );
+        let regra = &efetivo.github_repos[0];
+        assert_eq!(
+            regra.branches,
+            vec!["feature/*".to_string()],
+            "branch que só um lado cita sai"
+        );
+        assert_eq!(
+            regra.operacoes,
+            vec!["read".to_string(), "push".to_string()],
+            "operação que só um lado cita sai"
+        );
+
+        // E a interseção com um perfil sem matriz zera.
+        let vazio = PermissionSet::default();
+        assert!(efetivo.merge(&vazio).github_repos.is_empty());
+    }
+
+    /// `allow_all()` **não** vira curinga de repositório — mesma
+    /// razão do `network_allowlist` da Fase 7 Etapa 7.
+    #[test]
+    fn allow_all_nao_autoriza_repositorio_nenhum() {
+        use frederico_tool_registry::PermissionSet;
+        assert!(
+            PermissionSet::allow_all().github_repos.is_empty(),
+            "não existe `todos os repositórios` que o sistema saiba interpretar"
+        );
+    }
+
     /// **Bump atômico das ferramentas de marco e de GitHub**
     /// (ADR-0020 §3 D3, ADR-0048 §D2/§D3).
     ///

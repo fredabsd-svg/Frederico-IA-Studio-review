@@ -147,8 +147,20 @@ struct PermissionProfileToml {
     node: Option<crate::permission::RuntimePermission>,
     #[serde(default)]
     git: Option<crate::permission::GitPermission>,
+    /// Matriz de GitHub ([ADR-0049] §D1). Campo aditivo, como o
+    /// `network_allowlist` foi: perfil antigo continua parseando e
+    /// cai em vazio — que nega tudo, exatamente o que já acontecia
+    /// implicitamente antes do campo existir.
+    ///
+    /// O `github` escalar de antes é ignorado se ainda estiver no
+    /// arquivo. `deny_unknown_fields` **não** está ligado nesta
+    /// struct e não passa a estar: recusar o perfil inteiro por uma
+    /// chave obsoleta trocaria uma permissão a menos por um app que
+    /// não abre.
+    ///
+    /// [ADR-0049]: ../../docs/decisions/0049-matriz-de-github-no-permission-set.md
     #[serde(default)]
-    github: Option<crate::permission::GitHubPermission>,
+    github_repos: Option<Vec<crate::permission::RegraGithubPerfil>>,
     #[serde(default)]
     web_browse: Option<bool>,
     #[serde(default)]
@@ -197,7 +209,7 @@ impl PermissionProfileToml {
             python: self.python.unwrap_or_default(),
             node: self.node.unwrap_or_default(),
             git: self.git.unwrap_or_default(),
-            github: self.github.unwrap_or_default(),
+            github_repos: self.github_repos.unwrap_or_default(),
             web_browse: self.web_browse.unwrap_or(false),
             web_download: self.web_download.unwrap_or(false),
             network: self.network.unwrap_or(false),

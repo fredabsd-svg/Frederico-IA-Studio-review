@@ -96,8 +96,8 @@ pub use manifest::{
 };
 pub use marcos::{MarcoDeps, MilestoneCreateTool, MilestoneListTool, MilestoneRestoreTool};
 pub use permission::{
-    DocumentPermission, FileReadPermission, GitHubPermission, GitPermission, MemoryPermission,
-    PermissionSet, RuntimePermission, TerminalMode,
+    DocumentPermission, FileReadPermission, GitPermission, MemoryPermission, PermissionSet,
+    RegraGithubPerfil, RuntimePermission, TerminalMode,
 };
 pub use permission_loader::{PermissionLoadError, PermissionLoader};
 pub use registry::ToolRegistry;

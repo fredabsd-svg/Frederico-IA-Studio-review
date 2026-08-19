@@ -128,35 +128,35 @@ impl fmt::Display for GitPermission {
     }
 }
 
-/// Permissão de GitHub remoto. Spec §"Contrato":
-/// `GitHubPermission { None, ReadOnly, Clone, Commit, Push }`.
-/// Ordem de "permissividade": `None < ReadOnly < Clone < Commit < Push`.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
+/// Uma regra de GitHub como ela aparece no perfil ([ADR-0049] §D1).
+///
+/// **Dado simples, não o tipo que decide.** A `MatrizAutorizacao` do
+/// `github-engine` é quem autoriza, e ela é construída a partir disto
+/// na composição. Manter os dois separados evita que mudar o formato
+/// do arquivo passe a mexer no portão — é o mesmo arranjo do
+/// `network_allowlist`, que é `Vec<String>` aqui e `NetworkAllowlist`
+/// no proxy.
+///
+/// **O enum `GitHubPermission` saiu** ([ADR-0049] §D3). Ele era uma
+/// escala linear (`None` < `ReadOnly` < ... < `Push`), que é
+/// moralmente o mesmo defeito que o [ADR-0041] §D2 rejeita: "pode até
+/// Push" autorizava empurrar para qualquer repositório e qualquer
+/// branch. Dois eixos para a mesma decisão produziriam a pergunta
+/// "qual dos dois vale?", e a resposta certa nunca é "os dois".
+///
+/// [ADR-0041]: ../../docs/decisions/0041-github-auth-e-matriz-de-autorizacao.md
+/// [ADR-0049]: ../../docs/decisions/0049-matriz-de-github-no-permission-set.md
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GitHubPermission {
-    #[default]
-    None,
-    ReadOnly,
-    Clone,
-    /// Tudo **exceto** push e PR (operações destrutivas exigem
-    /// aprovação caso a caso).
-    Commit,
-    /// Tudo, incluindo push e PR.
-    Push,
-}
-
-impl fmt::Display for GitHubPermission {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::ReadOnly => f.write_str("read_only"),
-            Self::Clone => f.write_str("clone"),
-            Self::Commit => f.write_str("commit"),
-            Self::Push => f.write_str("push"),
-        }
-    }
+pub struct RegraGithubPerfil {
+    /// `owner/repo`.
+    pub repo: String,
+    /// Padrões de branch. Vazio = nenhuma.
+    #[serde(default)]
+    pub branches: Vec<String>,
+    /// `read`, `push`, `create_pr`. Vazio = nenhuma.
+    #[serde(default)]
+    pub operacoes: Vec<String>,
 }
 
 /// Permissão de memória. Spec §"Contrato":
@@ -232,8 +232,12 @@ pub struct PermissionSet {
     pub node: RuntimePermission,
     /// Git local.
     pub git: GitPermission,
-    /// GitHub remoto.
-    pub github: GitHubPermission,
+    /// GitHub remoto, como matriz ([ADR-0049] §D1). Vazio = nenhum
+    /// repositório autorizado, que é o default e o comportamento
+    /// certo: sem entrada, o app não sabe para onde empurrar.
+    ///
+    /// [ADR-0049]: ../../docs/decisions/0049-matriz-de-github-no-permission-set.md
+    pub github_repos: Vec<RegraGithubPerfil>,
     /// Navegação web.
     pub web_browse: bool,
     /// Download via web.
@@ -279,7 +283,7 @@ impl Default for PermissionSet {
             python: RuntimePermission::None,
             node: RuntimePermission::None,
             git: GitPermission::None,
-            github: GitHubPermission::None,
+            github_repos: Vec::new(),
             web_browse: false,
             web_download: false,
             network: false,
@@ -310,7 +314,12 @@ impl PermissionSet {
             python: RuntimePermission::Unrestricted,
             node: RuntimePermission::Unrestricted,
             git: GitPermission::Full,
-            github: GitHubPermission::Push,
+            // `allow_all()` **não** vira curinga de repositório —
+            // mesma razão pela qual o `network_allowlist` fica vazio
+            // aqui (Fase 7 Etapa 7): não existe "todos os
+            // repositórios" que o sistema saiba interpretar sem
+            // inventar comportamento (ADR-0041 §D2).
+            github_repos: Vec::new(),
             web_browse: true,
             web_download: true,
             network: true,
@@ -406,8 +415,18 @@ impl PermissionSet {
         if self.git > parent.git {
             return false;
         }
-        if self.github > parent.github {
-            return false;
+        // `github_repos`: cada regra do filho tem que caber numa do
+        // pai — repositório presente, branches e operações contidas.
+        // Regra que o pai não cita é regra que o filho não pode ter.
+        for minha in &self.github_repos {
+            let Some(dela) = parent.github_repos.iter().find(|r| r.repo == minha.repo) else {
+                return false;
+            };
+            if !minha.branches.iter().all(|b| dela.branches.contains(b))
+                || !minha.operacoes.iter().all(|o| dela.operacoes.contains(o))
+            {
+                return false;
+            }
         }
         if self.memory > parent.memory {
             return false;
@@ -543,7 +562,39 @@ impl PermissionSet {
         let python = std::cmp::min(self.python, other.python);
         let node = std::cmp::min(self.node, other.node);
         let git = std::cmp::min(self.git, other.git);
-        let github = std::cmp::min(self.github, other.github);
+        // `github_repos`: interseção nos três eixos (ADR-0049 §D2).
+        // Repositório que só existe de um lado sai; branch e operação
+        // idem. Regra que sobra sem branch ou sem operação é
+        // descartada — ela não autorizaria nada, e mantê-la produziria
+        // a mensagem de erro errada ("operação negada" em vez de
+        // "fora da matriz").
+        let github_repos: Vec<RegraGithubPerfil> = self
+            .github_repos
+            .iter()
+            .filter_map(|minha| {
+                let dela = other.github_repos.iter().find(|r| r.repo == minha.repo)?;
+                let branches: Vec<String> = minha
+                    .branches
+                    .iter()
+                    .filter(|b| dela.branches.contains(b))
+                    .cloned()
+                    .collect();
+                let operacoes: Vec<String> = minha
+                    .operacoes
+                    .iter()
+                    .filter(|o| dela.operacoes.contains(o))
+                    .cloned()
+                    .collect();
+                if branches.is_empty() || operacoes.is_empty() {
+                    return None;
+                }
+                Some(RegraGithubPerfil {
+                    repo: minha.repo.clone(),
+                    branches,
+                    operacoes,
+                })
+            })
+            .collect();
         let memory = std::cmp::min(self.memory, other.memory);
         let documents = std::cmp::min(self.documents, other.documents);
 
@@ -556,7 +607,7 @@ impl PermissionSet {
             python,
             node,
             git,
-            github,
+            github_repos,
             web_browse,
             web_download,
             network,
@@ -594,7 +645,7 @@ mod tests {
         assert_eq!(p.python, RuntimePermission::None);
         assert_eq!(p.node, RuntimePermission::None);
         assert_eq!(p.git, GitPermission::None);
-        assert_eq!(p.github, GitHubPermission::None);
+        assert!(p.github_repos.is_empty(), "default nega todo repositório");
         assert!(!p.web_browse);
         assert!(!p.web_download);
         assert!(!p.network);
