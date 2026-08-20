@@ -73,7 +73,7 @@ use crate::pipeline_orchestrator::{MultimodelOrchestrator, StageSpec};
 use crate::subagent_runner::SubagentRunner;
 use frederico_agent_engine::Budget;
 use frederico_core::{ConversationId, MessageId, RunId, ToolId};
-use frederico_model_catalog::{Catalog, SpecialistRegistry};
+use frederico_model_catalog::{CatalogHandle, SpecialistRegistry};
 use frederico_provider_engine::event_sink::EventSink;
 use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
@@ -138,7 +138,12 @@ pub struct ChatOrchestrator {
     pub db: Arc<Database>,
     #[allow(dead_code)] // guardado para time-stamping em hooks futuros
     pub clock: Arc<dyn Clock>,
-    pub catalog: Arc<Catalog>,
+    /// Catálogo **efetivo**, não o embutido: o refresh do boot
+    /// ([ADR-0052]) pode substituí-lo, e o motor precisa validar
+    /// contra a mesma lista que a UI oferece.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    pub catalog: Arc<CatalogHandle>,
     // ---- Tooling (Etapa 4.x.y) ----
     /// `ToolRegistry` com os manifestos. O `RunExecutor` consulta
     /// pra validar `tool_call`s e construir o `tools:` do
@@ -200,7 +205,7 @@ impl ChatOrchestrator {
         sink: Arc<dyn EventSink>,
         db: Arc<Database>,
         clock: Arc<dyn Clock>,
-        catalog: Arc<Catalog>,
+        catalog: Arc<CatalogHandle>,
         tool_registry: ToolRegistry,
         jail_resolver: Arc<dyn JailResolver>,
         tools: Vec<Arc<dyn Tool>>,
@@ -295,6 +300,7 @@ impl ChatOrchestrator {
             .ok_or_else(|| ChatOrchestratorError::ProviderNotFound(conv.provider_id.clone()))?;
         let descriptor = self
             .catalog
+            .current()
             .find_model(&conv.provider_id, &conv.model_id)
             .cloned()
             .ok_or_else(|| ChatOrchestratorError::ModelNotFound {

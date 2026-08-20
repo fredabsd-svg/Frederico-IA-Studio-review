@@ -1105,8 +1105,15 @@ pub struct ChatOrchestratorParts {
     /// `Arc<dyn Clock>` (SystemClock em produção,
     /// FakeClock em testes).
     pub clock: Arc<dyn frederico_security::Clock>,
-    /// `Arc<Catalog>` (catálogo de modelos).
-    pub catalog: Arc<frederico_model_catalog::Catalog>,
+    /// Catálogo **efetivo** de modelos, compartilhado com a UI.
+    ///
+    /// É um handle, não um `Arc<Catalog>` fixo, porque o refresh
+    /// de boot ([ADR-0052]) publica uma lista nova depois que os
+    /// provedores respondem — e o motor precisa validar contra a
+    /// mesma lista que a lista suspensa oferece.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    pub catalog: Arc<frederico_model_catalog::CatalogHandle>,
     /// `ToolRegistry` (catálogo de ferramentas). Construído
     /// via `build_tool_registry(tools)`.
     pub tool_registry: ToolRegistry,

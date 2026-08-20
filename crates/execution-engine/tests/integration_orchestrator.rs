@@ -71,7 +71,7 @@ async fn make_orchestrator() -> (Arc<ChatOrchestrator>, PathBuf, Arc<RecordingEv
         sink_dyn,
         db,
         clock,
-        catalog,
+        std::sync::Arc::new(frederico_model_catalog::CatalogHandle::new(catalog)),
         tool_registry,
         jail_resolver,
         vec![],

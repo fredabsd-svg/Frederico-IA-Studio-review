@@ -85,7 +85,7 @@ fn build_orchestrator(
         sink,
         db,
         clock,
-        catalog,
+        std::sync::Arc::new(frederico_model_catalog::CatalogHandle::new(catalog)),
         ToolRegistry::new(),
         frederico_tool_registry::static_jail_resolver(
             Jail::new(std::env::temp_dir().as_path()).unwrap(),

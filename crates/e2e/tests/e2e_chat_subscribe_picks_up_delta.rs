@@ -224,7 +224,7 @@ async fn build_orchestrator_with_channel_sink(
         sink: sink.clone(),
         db: db.clone(),
         clock,
-        catalog: catalog.clone(),
+        catalog: std::sync::Arc::new(frederico_model_catalog::CatalogHandle::new(catalog.clone())),
         tool_registry,
         jail_resolver,
         tools,

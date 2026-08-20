@@ -161,6 +161,24 @@ impl Catalog {
         CATALOG.get_or_init(Catalog::from_embedded_json)
     }
 
+    /// Monta um catálogo a partir de descritores já resolvidos.
+    ///
+    /// É o construtor que o refresh de boot usa: a fusão do
+    /// embutido com o que os provedores responderam ([ADR-0052])
+    /// produz `Vec<ModeloEfetivo>`, e o motor precisa de um
+    /// `Catalog` para validar o modelo escolhido.
+    ///
+    /// **Por que isso existe:** sem ele, a UI listava a lista
+    /// fundida e o motor validava contra a embutida — as duas
+    /// discordavam sobre quais modelos existem, e escolher um
+    /// modelo novo dava `ModelNotFound` no meio da conversa.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    #[must_use]
+    pub fn from_models(models: Vec<ModelDescriptor>) -> Self {
+        Self { models }
+    }
+
     /// Carrega a partir de uma string JSON (útil para testes com
     /// catálogo customizado).
     #[must_use]
@@ -411,5 +429,61 @@ mod tests {
         // O hash é gerado no build.rs; este teste apenas garante que
         // a env var é não-vazia (caso algo esteja mal configurado).
         assert!(!CATALOG_HASH.is_empty());
+    }
+}
+
+/// Handle compartilhado do catálogo **efetivo**.
+///
+/// Existe porque o catálogo deixou de ser fixo no boot: o refresh
+/// do [ADR-0052] o substitui quando os provedores respondem, e
+/// tanto a UI quanto o motor de execução precisam enxergar a
+/// *mesma* lista. Antes desta ligação, a UI lia a lista fundida e
+/// o `ChatOrchestrator` validava contra a embutida — a lista
+/// suspensa oferecia modelos que o motor rejeitava.
+///
+/// A troca é do ponteiro inteiro, não de itens: um `Arc<Catalog>`
+/// obtido por [`Self::current`] continua válido e coerente mesmo
+/// que o refresh publique outro no meio de um run.
+///
+/// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+#[derive(Debug)]
+pub struct CatalogHandle {
+    atual: std::sync::RwLock<std::sync::Arc<Catalog>>,
+}
+
+impl CatalogHandle {
+    #[must_use]
+    pub fn new(inicial: std::sync::Arc<Catalog>) -> Self {
+        Self {
+            atual: std::sync::RwLock::new(inicial),
+        }
+    }
+
+    /// O catálogo em vigor agora.
+    ///
+    /// Se o lock estiver envenenado (algum thread entrou em pânico
+    /// segurando-o), devolve o embutido em vez de propagar o
+    /// pânico: ficar sem catálogo nenhum derrubaria todo run, e o
+    /// embutido é sempre uma resposta defensável.
+    #[must_use]
+    pub fn current(&self) -> std::sync::Arc<Catalog> {
+        match self.atual.read() {
+            Ok(g) => g.clone(),
+            Err(_) => std::sync::Arc::new(Catalog::load().clone()),
+        }
+    }
+
+    /// Publica um catálogo novo. Ignorado se o lock estiver
+    /// envenenado — perder um refresh é melhor que derrubar o app.
+    pub fn replace(&self, novo: std::sync::Arc<Catalog>) {
+        if let Ok(mut g) = self.atual.write() {
+            *g = novo;
+        }
+    }
+}
+
+impl Default for CatalogHandle {
+    fn default() -> Self {
+        Self::new(std::sync::Arc::new(Catalog::load().clone()))
     }
 }

@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { SessionSidebar } from "../components/SessionSidebar";
+import { ModelSelector } from "../components/ModelSelector";
+import {
+  LiveExecutionPanel,
+  tempoRelativo,
+  type FaseLive,
+  type LinhaLive,
+} from "../components/LiveExecutionPanel";
+import {
+  TaskProgressCard,
+  type Etapa,
+} from "../components/TaskProgressCard";
+import { saudacao } from "../saudacao";
 import {
   cancelRun,
   createConversation,
@@ -135,6 +148,101 @@ export function Chat() {
   // Unlisten handlers ativos.
   const unlistensRef = useRef<Map<string, () => void>>(new Map());
 
+  // --- Execução ao vivo ---------------------------------------------
+  //
+  // Tudo aqui é derivado de evento do journal. Nenhuma linha do
+  // console e nenhuma etapa existe sem um evento que a tenha
+  // originado — é a diferença entre mostrar execução e encenar
+  // execução.
+  const [liveLinhas, setLiveLinhas] = useState<LinhaLive[]>([]);
+  const [etapas, setEtapas] = useState<Etapa[]>([]);
+  const [fase, setFase] = useState<FaseLive>("ocioso");
+  const [liveAberto, setLiveAberto] = useState(false);
+  // Início do run, para os timestamps `mm:ss` do console serem
+  // relativos ao run e não ao relógio de parede.
+  const inicioRef = useRef<number>(Date.now());
+
+  const anotar = useCallback(
+    (tipo: LinhaLive["tipo"], texto: string) => {
+      setLiveLinhas((ls) => [
+        ...ls,
+        { tempo: tempoRelativo(inicioRef.current, Date.now()), tipo, texto },
+      ]);
+    },
+    [],
+  );
+
+  /**
+   * Traduz um `StreamEvent` do journal em linha de console e/ou
+   * mudança de etapa.
+   *
+   * O `delta` **não** vira linha: ele é o texto da resposta, que já
+   * aparece na conversa. Repeti-lo no console encheria o log de
+   * prosa e esconderia o que o console existe para mostrar —
+   * ferramenta, erro, encerramento.
+   */
+  const registrarEvento = useCallback(
+    (ev: StreamEvent) => {
+      switch (ev.kind) {
+        case "tool_call":
+          setEtapas((es) => [
+            ...es.map((e) =>
+              e.estado === "executando" ? { ...e, estado: "concluida" as const } : e,
+            ),
+            {
+              id: ev.id,
+              ferramenta: ev.name,
+              argumentos: ev.arguments_json,
+              estado: "executando" as const,
+            },
+          ]);
+          anotar("comando", `$ ${ev.name}`);
+          break;
+        case "usage":
+          anotar(
+            "saida",
+            `tokens · ${ev.prompt_tokens}↑ ${ev.completion_tokens}↓`,
+          );
+          break;
+        case "error":
+          setEtapas((es) =>
+            es.map((e) =>
+              e.estado === "executando"
+                ? { ...e, estado: "falhou" as const, erro: ev.message.detail ?? undefined }
+                : e,
+            ),
+          );
+          anotar("erro", ev.message.title || "erro do provedor");
+          setFase("falhou");
+          break;
+        case "cancelled":
+          setEtapas((es) =>
+            es.map((e) =>
+              e.estado === "executando" ? { ...e, estado: "cancelada" as const } : e,
+            ),
+          );
+          anotar("aviso", "execução cancelada pelo usuário");
+          setFase("cancelado");
+          break;
+        case "done":
+          setEtapas((es) =>
+            es.map((e) =>
+              e.estado === "executando" ? { ...e, estado: "concluida" as const } : e,
+            ),
+          );
+          anotar(
+            ev.stop_reason === "error" ? "erro" : "ok",
+            `encerrado · ${ev.stop_reason}`,
+          );
+          setFase(ev.stop_reason === "error" ? "falhou" : "concluido");
+          break;
+        default:
+          break;
+      }
+    },
+    [anotar],
+  );
+
   const refreshCatalog = useCallback(async () => {
     try {
       const c = await listCatalog();
@@ -238,6 +346,13 @@ export function Chat() {
     setSending(true);
     const content = draft.trim();
     setDraft("");
+    // Cada envio começa um console novo. Acumular entre runs
+    // misturaria a saída de duas execuções sem separador, e o
+    // timestamp `mm:ss` do run anterior passaria a mentir.
+    inicioRef.current = Date.now();
+    setLiveLinhas([]);
+    setEtapas([]);
+    setFase("executando");
     try {
       const result = await sendMessage(state.current.conversation.id, content);
       // Recarrega a conversa (traz o user message e o assistant
@@ -246,7 +361,15 @@ export function Chat() {
       // Subscrição ao run.
       if (result.user_message) {
         const msgs = await getConversation(state.current.conversation.id);
-        const asst = msgs.messages.find((m) => m.role === "assistant");
+        // **Casa pelo `run_id` que o envio devolveu**, não pela
+        // primeira mensagem de assistente da conversa. O `find`
+        // anterior retornava sempre a *primeira*, então a partir do
+        // segundo envio a UI assinava um run já encerrado: a
+        // resposta nova ficava presa em "digitando…" para sempre,
+        // porque nenhum evento daquele run velho ia chegar.
+        const asst = msgs.messages.find(
+          (m) => m.role === "assistant" && m.run_id === result.run_id,
+        );
         if (asst && asst.run_id) {
           const runId = asst.run_id;
           setStreamingMessageId(asst.id);
@@ -259,6 +382,7 @@ export function Chat() {
               // `sub.lastSeq()` pra reconexão futura. Aqui, só o
               // `event` interessa pra acumular o delta.
               const ev = envelope.event;
+              registrarEvento(ev);
               if (ev.kind === "delta") {
                 accumRef.current.set(
                   asst.id,
@@ -280,6 +404,17 @@ export function Chat() {
                 unlistensRef.current.get(runId)?.();
                 unlistensRef.current.delete(runId);
                 setStreamingMessageId(null);
+                // O status do run é a palavra final. O evento
+                // `done` pode não chegar (queda de conexão,
+                // timeout do watchdog) e o cabeçalho ficaria preso
+                // em "Executando" para sempre.
+                setFase(
+                  status.status === "completed"
+                    ? "concluido"
+                    : status.status === "cancelled"
+                      ? "cancelado"
+                      : "falhou",
+                );
                 // Re-fetch para pegar status final + usage + cost.
                 if (state.current) {
                   loadCurrent(state.current.conversation.id);
@@ -315,113 +450,102 @@ export function Chat() {
 
   // === Render ========================================================
 
-  if (state.loading) return <p>Carregando…</p>;
+  if (state.loading) return <p className="carregando">Carregando…</p>;
 
-  if (state.conversations.length === 0) {
-    return (
-      <section>
-        <h2>Sem conversas ainda</h2>
-        <p>
-          Crie uma conversa nova escolhendo provedor e modelo. Configure a
-          chave em <Link to="/settings">Configurações</Link> antes (ou use o{" "}
-          <code>simulated</code> pra testes).
-        </p>
-        <NewConversationForm
-          catalog={state.catalog}
-          onCreate={handleNewConversation}
-        />
-      </section>
-    );
-  }
+  const conv = state.current?.conversation ?? null;
+  const executando = streamingMessageId !== null;
 
   return (
-    <section className="chat">
-      <aside className="conversations">
-        <header>
-          <strong>Conversas</strong>
-          <Link to="/settings" className="link-small">
-            Configurações
-          </Link>
-        </header>
-        <ul>
-          {state.conversations.map((c) => (
-            <li
-              key={c.id}
-              className={c.id === params.id ? "active" : ""}
-            >
-              <button
-                className="link"
-                onClick={() => handleSelect(c.id)}
-                title={`${c.provider_id}/${c.model_id}`}
-              >
-                {c.title || `${c.provider_id}/${c.model_id}`}
-                <small>{formatCost(c.total_cost_microcents)}</small>
-              </button>
-              <button
-                className="link-danger"
-                onClick={() => handleDelete(c.id)}
-                title="Apagar conversa"
-              >
-                ×
-              </button>
-            </li>
-          ))}
-        </ul>
-      </aside>
-      <main className="messages-pane">
-        {state.current ? (
+    <div className="studio">
+      <SessionSidebar
+        conversas={state.conversations}
+        atual={params.id}
+        formatCost={formatCost}
+        onSelecionar={handleSelect}
+        onApagar={handleDelete}
+        onNova={() => navigate("/chat")}
+      />
+
+      <main className="studio-centro">
+        {state.error && (
+          <div className="error" role="alert">
+            <strong>Erro:</strong> {state.error}
+          </div>
+        )}
+
+        {conv === null ? (
+          <TelaVazia
+            catalog={state.catalog}
+            temConversas={state.conversations.length > 0}
+            onCriar={handleNewConversation}
+          />
+        ) : (
           <>
-            <ConversationHeader
-              conv={state.current.conversation}
-              catalog={state.catalog}
-              onChangeModel={handleSetModel}
-            />
-            <ul className="messages">
-              {state.current.messages.map((m) => {
+            <ul className="mensagens">
+              {state.current!.messages.map((m) => {
                 const streamed = accumRef.current.get(m.id) ?? "";
-                const display = m.role === "user" ? m.content : streamed || m.content;
+                const display =
+                  m.role === "user" ? m.content : streamed || m.content;
                 const err = errorsRef.current.get(m.id);
-                const isStreaming =
-                  streamingMessageId === m.id ||
-                  (m.role === "assistant" && m.status === "streaming");
+                const ultimaResposta = [...state.current!.messages]
+                  .reverse()
+                  .find((x) => x.role === "assistant");
+                const ehUltimaResposta =
+                  m.role === "assistant" && m.id === ultimaResposta?.id;
                 return (
-                  <li
-                    key={m.id}
-                    className={`msg msg-${m.role} msg-${m.status}`}
-                  >
-                    <div className="msg-meta">
-                      <span className="msg-role">
-                        {m.role === "user"
-                          ? "você"
-                          : m.role === "assistant"
-                            ? "assistente"
-                            : m.role}
-                      </span>
-                      {m.role === "assistant" && (
-                        <span className="msg-status">
-                          {m.status === "streaming" ? "digitando…" : m.status}
-                        </span>
-                      )}
-                      {m.role === "assistant" &&
-                        (m.prompt_tokens !== null ||
-                          m.completion_tokens !== null) && (
-                          <small>
-                            {m.prompt_tokens ?? 0}↑ {m.completion_tokens ?? 0}↓ ·{" "}
-                            {formatCost(m.cost_microcents)}
-                          </small>
-                        )}
-                    </div>
-                    <div className="msg-body">{display}</div>
-                    {err && <ErrorView err={err} />}
-                    {isStreaming && streamingMessageId === m.id && (
-                      <button className="stop" onClick={handleStop}>
-                        Parar
-                      </button>
+                  <li key={m.id} className={`msg msg-${m.role}`}>
+                    {m.role === "user" ? (
+                      <div className="bolha-usuario">{display}</div>
+                    ) : (
+                      <div className="resposta">
+                        <div className="resposta-meta">
+                          <span className="avatar" aria-hidden="true">
+                            F
+                          </span>
+                          <strong>Assistente</strong>
+                          <span className="badge-modelo">{conv.model_id}</span>
+                          {(m.prompt_tokens !== null ||
+                            m.completion_tokens !== null) && (
+                            <span className="resposta-numeros" data-numerico>
+                              {m.prompt_tokens ?? 0}↑ {m.completion_tokens ?? 0}↓
+                              {" · "}
+                              {formatCost(m.cost_microcents)}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* O card de progresso acompanha a última
+                            resposta: é a que está (ou acabou de
+                            estar) em execução. Repeti-lo em toda
+                            resposta antiga encheria a conversa de
+                            cards mortos. */}
+                        {ehUltimaResposta &&
+                          (etapas.length > 0 || fase !== "ocioso") && (
+                            <TaskProgressCard
+                              etapas={etapas}
+                              fase={fase}
+                              liveAberto={liveAberto}
+                              onAlternarLive={() => setLiveAberto((v) => !v)}
+                            />
+                          )}
+
+                        <div className="resposta-corpo">
+                          {display || (
+                            <span className="resposta-vazia">
+                              {m.status === "streaming"
+                                ? "aguardando o provedor…"
+                                : "sem conteúdo"}
+                            </span>
+                          )}
+                        </div>
+                        {err && <ErrorView err={err} />}
+                      </div>
                     )}
                   </li>
                 );
               })}
             </ul>
+
             <form
               className="composer"
               onSubmit={(e) => {
@@ -432,101 +556,102 @@ export function Chat() {
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Escreva uma mensagem… (Shift+Enter para quebrar linha, Enter envia)"
+                placeholder="Descreva a tarefa…"
+                aria-label="Mensagem"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
                     handleSend();
                   }
                 }}
-                rows={3}
-                disabled={sending}
+                rows={2}
               />
-              <button type="submit" disabled={sending || !draft.trim()}>
-                {sending ? "Enviando…" : "Enviar"}
-              </button>
+              <div className="composer-acoes">
+                <ModelSelector
+                  catalogo={state.catalog}
+                  providerAtual={conv.provider_id}
+                  modelAtual={conv.model_id}
+                  onEscolher={handleSetModel}
+                />
+                <span className="composer-dica">
+                  Enter envia · Shift+Enter quebra linha
+                </span>
+                <span className="composer-espacador" />
+                {/* **Um botão, não dois.** Executar e Cancelar são
+                    o mesmo lugar na tela porque são a mesma decisão
+                    em momentos opostos; dois botões obrigariam a
+                    mirar de novo no meio de um run. */}
+                {executando ? (
+                  <button
+                    type="button"
+                    className="btn-cancelar"
+                    onClick={handleStop}
+                  >
+                    ■ Cancelar
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="btn-executar"
+                    disabled={sending || !draft.trim()}
+                  >
+                    {sending ? "Enviando…" : "Executar →"}
+                  </button>
+                )}
+              </div>
             </form>
           </>
-        ) : (
-          <p>Selecione uma conversa à esquerda ou crie uma nova.</p>
-        )}
-        {state.error && (
-          <div className="error">
-            <strong>Erro:</strong> {state.error}
-          </div>
         )}
       </main>
-    </section>
+
+      {liveAberto && (
+        <LiveExecutionPanel
+          linhas={liveLinhas}
+          fase={fase}
+          operacao={
+            etapas.find((e) => e.estado === "executando")?.ferramenta ?? null
+          }
+          onFechar={() => setLiveAberto(false)}
+          onCancelar={executando ? handleStop : null}
+        />
+      )}
+    </div>
   );
 }
 
-function ConversationHeader(props: {
-  conv: ConversationView;
+/**
+ * Tela vazia: saudação por horário + criação da primeira sessão.
+ *
+ * A saudação usa a hora local de quem abriu. `saudacao()` é pura e
+ * recebe a hora — a leitura do relógio fica aqui, na borda.
+ */
+function TelaVazia(props: {
   catalog: ModelDescriptorView[];
-  onChangeModel: (provider: string, model: string) => void;
+  temConversas: boolean;
+  onCriar: (provider: string, model: string) => void;
 }) {
-  const { conv, catalog, onChangeModel } = props;
-
-  // Valor composto `provider/model`: o `<select>` precisa de uma
-  // chave única, e o mesmo `model` pode aparecer em provedores
-  // diferentes (`openrouter` reexpõe modelos da OpenAI e da
-  // Anthropic com o mesmo nome).
-  const atual = `${conv.provider_id}/${conv.model_id}`;
-
-  // Agrupado por provedor, mas **sem filtrar por provedor**. O
-  // backend sempre soube trocar os dois campos de uma vez
-  // (`UPDATE conversations SET provider_id, model_id`); era só a
-  // UI que restringia a escolha ao provedor corrente, deixando
-  // uma conversa presa na OpenAI sem motivo técnico.
-  const porProvedor = new Map<string, ModelDescriptorView[]>();
-  for (const m of catalog) {
-    const lista = porProvedor.get(m.provider);
-    if (lista) lista.push(m);
-    else porProvedor.set(m.provider, [m]);
-  }
-
-  // O modelo da conversa pode não estar no catálogo (catálogo
-  // mudou entre versões). Sem esta opção o `<select>` mostraria
-  // outro modelo como se fosse o dela — mentira silenciosa.
-  const conhecido = catalog.some(
-    (m) => m.provider === conv.provider_id && m.model === conv.model_id,
-  );
-
+  const { titulo, sublinha } = saudacao(new Date().getHours());
   return (
-    <header className="conv-header">
-      <label className="conv-model">
-        <span className="conv-model-rotulo">Modelo</span>
-        <select
-          value={atual}
-          aria-label="Modelo da conversa"
-          onChange={(e) => {
-            const [provider, ...resto] = e.target.value.split("/");
-            // `rejoin` porque há model ids com barra
-            // (`meta-llama/llama-3.1-70b` no OpenRouter).
-            onChangeModel(provider, resto.join("/"));
-          }}
-        >
-          {!conhecido && (
-            <option value={atual}>
-              {conv.provider_id} / {conv.model_id} (fora do catálogo)
-            </option>
-          )}
-          {[...porProvedor.entries()].map(([provider, modelos]) => (
-            <optgroup key={provider} label={provider}>
-              {modelos.map((m) => (
-                <option
-                  key={`${m.provider}/${m.model}`}
-                  value={`${m.provider}/${m.model}`}
-                >
-                  {m.display_name} ({m.model})
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </label>
-      <small>Total: {formatCost(conv.total_cost_microcents)}</small>
-    </header>
+    <section className="tela-vazia">
+      <span className="marca-grande" aria-hidden="true">
+        F
+      </span>
+      <h2>{titulo}</h2>
+      <p className="tela-vazia-sub">{sublinha}</p>
+      {props.catalog.length === 0 ? (
+        <p className="tela-vazia-aviso">
+          Nenhum modelo disponível. Configure uma chave em{" "}
+          <Link to="/settings">Configurações</Link>.
+        </p>
+      ) : (
+        <NewConversationForm catalog={props.catalog} onCreate={props.onCriar} />
+      )}
+      {props.temConversas && (
+        <p className="tela-vazia-sub">
+          Ou escolha uma sessão na coluna da esquerda.
+        </p>
+      )}
+    </section>
   );
 }
 

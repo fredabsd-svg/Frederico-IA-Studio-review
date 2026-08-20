@@ -1,6 +1,6 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-10
+Verificado contra o código em: 2026-08-20
 Fase correspondente: 1
 -->
 
@@ -9,6 +9,70 @@ Fase correspondente: 1
 > Diretório: [`apps/desktop/`](../../apps/desktop/)
 > Binário: `frederico-desktop` (Rust + Tauri 2)
 > Frontend: React + TypeScript + Vite
+
+
+## O layout do Studio
+
+Desde 2026-08-20 a tela de chat é um ambiente de três colunas, e
+não mais uma página rolável.
+
+```
+┌──────────────────────────────────────────────┐
+│ topbar 48px — marca · rotas · conexão        │
+├────────┬───────────────────────┬─────────────┤
+│sessões │ conversa              │ Live 400px  │
+│ 236px  │  · mensagens (rola)   │  · console  │
+│        │  · card da tarefa     │    (rola)   │
+│        │  · composer (fixo)    │             │
+└────────┴───────────────────────┴─────────────┘
+```
+
+A raiz tem `height: 100vh; overflow: hidden`. **Só a lista de
+mensagens e o console rolam** — com `min-height` a página inteira
+rolava e o composer saía da tela no meio de uma execução.
+
+### O que o card de progresso mostra, e o que ele não inventa
+
+O protótipo de design desenha cinco etapas nomeadas ("Ler e
+analisar as planilhas", "Gerar código de análise"…), porque foi
+desenhado contra um núcleo que planeja a tarefa antes de executar.
+
+**O núcleo não planeja.** Ele emite `tool_call` quando o modelo
+pede uma ferramenta, e nada antes disso. Então o card lista as
+ferramentas que foram de fato chamadas, na ordem em que foram.
+Escrever os cinco títulos do protótipo daria uma tela mais bonita e
+uma afirmação falsa.
+
+Quando houver planejamento por etapas no núcleo, os títulos entram
+no mesmo componente sem mudar o resto.
+
+### O que ficou de fora, e por quê
+
+| Do protótipo | Por que não entrou |
+|---|---|
+| Arquivos do workspace, na sidebar | não há conceito de arquivo de workspace listável pela UI |
+| Uso do mês, no rodapé da sidebar | custo por sessão existe; agregação por período, não |
+| "Seleção automática" no seletor | não há roteador multi-modelo por etapa |
+| Favoritos e filtros por capacidade | nada persiste favorito; capacidade existe no descritor, mas não como filtro |
+| Artefatos e referências ao concluir | o núcleo não emite artefato como evento |
+| Catálogo de frases e superfícies pré-app | funcionalidade própria (rede + cache + notificação), fora desta rodada |
+
+### Ícones
+
+Desenhados à mão em `TopBar.tsx`, não importados. O handoff pede
+Lucide, mas trazer uma dependência de ~1.500 ícones para usar dois
+não se paga num app empacotado. O traço segue o mesmo padrão
+(`stroke: 2`, 16px, `currentColor`).
+
+### Tokens novos
+
+`--bg-profundo` (poço do console), `--bg-painel` (painel Live),
+`--bg-usuario`/`--border-usuario` (bolha do usuário), `--aviso`,
+`--fg-terminal`, `--accent-tinta`, `--accent-gradiente`,
+`--fonte-xxs`, `--raio-pill`. Todos com par no tema claro, e todos
+os que carregam texto entraram na porta de contraste — que subiu de
+20 para 31 pares.
+
 
 ## O que faz
 

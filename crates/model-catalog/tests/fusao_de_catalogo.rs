@@ -1,8 +1,8 @@
 //! Testes da fusão embutido × remoto — ADR-0052 §D2 e §D3.
 
-use frederico_core::ProviderId;
+use frederico_core::{ModelId, ProviderId};
 use frederico_model_catalog::{
-    fundir, Catalog, ModeloRemotoNormalizado, Origem, RespostaDoProvedor,
+    fundir, Catalog, CatalogHandle, ModeloRemotoNormalizado, Origem, RespostaDoProvedor,
 };
 
 fn remoto(id: &str, entrada: Option<u64>, saida: Option<u64>) -> ModeloRemotoNormalizado {
@@ -172,4 +172,74 @@ fn resposta_de_um_provedor_nao_afeta_os_outros() {
     assert!(!efetivo
         .iter()
         .any(|m| m.descritor.provider.as_str() == "anthropic"));
+}
+
+// --- O handle compartilhado -----------------------------------------
+//
+// Estes testes fecham o buraco que a primeira ligação deixou: a UI
+// lia a lista fundida e o motor de execução validava contra a
+// embutida. As duas discordavam sobre quais modelos existem, e
+// escolher um modelo que só o remoto conhecia dava `ModelNotFound`
+// no meio da conversa — erro do provedor, na cara do usuário, por
+// um modelo que o próprio app tinha oferecido na lista suspensa.
+
+/// O motor enxerga o que o refresh publicou, não o embutido.
+///
+/// Percorre o caminho de produção inteiro: `fundir` → `from_models`
+/// → `replace` → `find_model`. É o percurso que estava cortado no
+/// meio.
+#[test]
+fn o_que_o_refresh_publica_e_o_que_o_motor_le() {
+    let handle = CatalogHandle::new(std::sync::Arc::new(Catalog::load().clone()));
+    let deepseek = ProviderId::from("deepseek");
+    let inedito = ModelId::from("modelo-que-so-o-remoto-conhece");
+
+    assert!(
+        handle.current().find_model(&deepseek, &inedito).is_none(),
+        "pré-condição: o embutido não conhece este modelo"
+    );
+
+    let fundido = fundir(
+        Catalog::load(),
+        &[RespostaDoProvedor {
+            provider: deepseek.clone(),
+            modelos: vec![remoto(
+                "modelo-que-so-o-remoto-conhece",
+                Some(1000),
+                Some(2000),
+            )],
+        }],
+    );
+    handle.replace(std::sync::Arc::new(Catalog::from_models(
+        fundido.into_iter().map(|m| m.descritor).collect(),
+    )));
+
+    assert!(
+        handle.current().find_model(&deepseek, &inedito).is_some(),
+        "depois do refresh, o motor tem de resolver o modelo que a UI oferece"
+    );
+}
+
+/// Um `Arc` obtido antes da troca continua coerente: a publicação
+/// substitui o ponteiro inteiro, não muta a lista sob os pés de um
+/// run em andamento.
+#[test]
+fn a_lista_de_um_run_em_andamento_nao_muda_sob_os_pes_dele() {
+    let handle = CatalogHandle::new(std::sync::Arc::new(Catalog::load().clone()));
+    let antes = handle.current();
+    let total_antes = antes.list_all().len();
+    assert!(total_antes > 0, "pré-condição: o embutido não é vazio");
+
+    handle.replace(std::sync::Arc::new(Catalog::from_models(vec![])));
+
+    assert_eq!(
+        antes.list_all().len(),
+        total_antes,
+        "o snapshot que o run pegou não pode encolher no meio do caminho"
+    );
+    assert_eq!(
+        handle.current().list_all().len(),
+        0,
+        "quem pedir depois vê a lista nova"
+    );
 }

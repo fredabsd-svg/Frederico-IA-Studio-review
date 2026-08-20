@@ -82,7 +82,7 @@ struct AppState {
     /// abrir", e foi a distinção que o ADR-0043 não fez.
     ///
     /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
-    catalogo_efetivo: Arc<std::sync::RwLock<Vec<frederico_model_catalog::ModeloEfetivo>>>,
+    catalogo_efetivo: Arc<frederico_model_catalog::CatalogHandle>,
     /// Bundle de especialistas (Fase 6, Etapa 3, ADR-0030).
     /// Consumido pelo Tauri command `ListSpecialists` (e
     /// futuramente pelo `SubagentRunner` da Etapa 4). Carrega
@@ -714,6 +714,15 @@ fn main() {
             let providers = build_provider_map(credentials_dyn);
             let runs = RunRegistry::new();
             let catalog = Arc::new(Catalog::load().clone());
+            // **Catálogo efetivo** (ADR-0052): um handle que o
+            // refresh de boot substitui e que o motor de execução
+            // lê a cada envio. A UI e o motor precisam enxergar a
+            // *mesma* lista — quando divergiram, a lista suspensa
+            // oferecia modelos que o motor rejeitava com
+            // `ModelNotFound`.
+            let catalogo_efetivo = Arc::new(frederico_model_catalog::CatalogHandle::new(
+                catalog.clone(),
+            ));
             // Specialist bundle (Fase 6, Etapa 3, ADR-0030):
             // carrega bundled + override + pareia com o catálogo pra
             // resolver capabilities por `default_model`. Mesmo
@@ -1238,7 +1247,7 @@ fn main() {
                 sink: sink.clone(),
                 db: db.clone(),
                 clock: clock.clone(),
-                catalog: catalog.clone(),
+                catalog: catalogo_efetivo.clone(),
                 tool_registry: tool_registry_for_orchestrator,
                 jail_resolver: jail_resolver.clone(),
                 tools,
@@ -1299,10 +1308,6 @@ fn main() {
             // **Refresh de catálogo no boot** (ADR-0052 §D1). Começa
             // com o embutido inteiro, para a janela abrir com lista
             // completa antes de qualquer resposta de rede.
-            let catalogo_efetivo = Arc::new(std::sync::RwLock::new(
-                frederico_model_catalog::fundir(Catalog::load(), &[]),
-            ));
-
             // A tarefa de fundo. Nada aqui bloqueia a abertura: se a
             // rede estiver fora, se o provedor demorar ou se a
             // resposta for inválida, o catálogo embutido continua no
@@ -1358,9 +1363,11 @@ fn main() {
                         return;
                     }
                     let fundido = frederico_model_catalog::fundir(Catalog::load(), &respostas);
-                    if let Ok(mut guard) = destino.write() {
-                        *guard = fundido;
-                    }
+                    destino.replace(std::sync::Arc::new(
+                        frederico_model_catalog::Catalog::from_models(
+                            fundido.into_iter().map(|m| m.descritor).collect(),
+                        ),
+                    ));
                 });
             }
 
@@ -1468,9 +1475,11 @@ async fn ipc_dispatch(
             // exatamente o embutido — nunca uma lista vazia.
             let list: Vec<ModelDescriptorView> = state
                 .catalogo_efetivo
-                .read()
-                .map(|g| g.iter().map(|m| model_to_view(&m.descritor)).collect())
-                .unwrap_or_default();
+                .current()
+                .list_all()
+                .into_iter()
+                .map(model_to_view)
+                .collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
         AppOp::ModelCatalogForProvider { provider } => {
@@ -1479,14 +1488,11 @@ async fn ipc_dispatch(
             // formulário de criação usa.
             let list: Vec<ModelDescriptorView> = state
                 .catalogo_efetivo
-                .read()
-                .map(|g| {
-                    g.iter()
-                        .filter(|m| m.descritor.provider == provider)
-                        .map(|m| model_to_view(&m.descritor))
-                        .collect()
-                })
-                .unwrap_or_default();
+                .current()
+                .list_for_provider(&provider)
+                .into_iter()
+                .map(model_to_view)
+                .collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
 

@@ -1,5 +1,16 @@
 ## [Não publicado]
 
+### Alterado — o Studio ganhou a cara nova (2026-08-20)
+
+- **A tela principal virou um ambiente de trabalho.** Barra superior com a marca, coluna de sessões à esquerda, conversa no centro e um painel de execução ao vivo à direita. Antes eram links de texto no topo e uma lista de conversas sem hierarquia.
+- **A lista de modelos deixou de ser o controle branco do Windows.** Agora é uma janelinha desenhada pelo próprio app: escura, com busca, agrupada por provedor, e o preço de cada modelo ao lado. Fecha com Esc ou clicando fora.
+- **Modelo local aparece como "não informado" no lugar do preço**, e não como grátis. O custo existe — em energia e em máquina — e o app não o conhece.
+- **O console mostra o que o núcleo emitiu**, com a hora de cada linha contada desde o começo da execução. Comando, aviso e erro têm cores próprias, e o texto é selecionável para copiar.
+- **O console não rouba a rolagem.** Se você subiu para ler uma linha antiga, ele para de descer sozinho até você voltar ao fim.
+- **Um botão só para Executar e Cancelar**, no mesmo lugar. Eram dois, e no meio de uma execução era preciso mirar de novo.
+- **A tela vazia cumprimenta pelo horário** — madrugada, manhã, tarde ou noite.
+- **O card de progresso mostra as ferramentas que foram realmente chamadas**, com o estado de cada uma. Não mostra etapas planejadas, porque o núcleo ainda não planeja — inventá-las seria dizer que o app fez algo que não fez.
+
 ### Adicionado — a lista de modelos deixa de envelhecer (2026-08-19)
 
 - **O app passa a perguntar aos provedores quais modelos existem, toda vez que abre.** Antes a lista era fixa, escrita no dia em que o app foi compilado — e estava parada em 2024: nenhum modelo lançado desde então aparecia, e a única forma de acrescentar um era recompilar o programa.
