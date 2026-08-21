@@ -27,9 +27,11 @@ use std::sync::OnceLock;
 use frederico_core::{ModelId, ProviderId};
 use serde::{Deserialize, Serialize};
 
+pub mod fusao;
 pub mod registry;
 pub mod specialist;
 
+pub use fusao::{fundir, ModeloEfetivo, ModeloRemotoNormalizado, Origem, RespostaDoProvedor};
 pub use registry::{DefaultSpecialistRegistry, RegistryError, SpecialistRegistry};
 pub use specialist::{
     parse_specialists_toml, SpecialistDefinition, SpecialistId, SpecialistMaxSteps,
@@ -90,8 +92,23 @@ impl CapabilitySet {
     }
 }
 
-/// Preço por **mil tokens**, em microcents (`u64`). Sem ponto flutuante
-/// no banco (regra do [ADR-0006](../decisions/0006-model-catalog-crate.md)).
+/// Preço por **milhão** de tokens. Sem ponto flutuante no banco
+/// (regra do [ADR-0006](../decisions/0006-model-catalog-crate.md)).
+///
+/// **O nome do campo mente sobre a unidade, e o comentário anterior
+/// mentia sobre a base.** Ele dizia "por mil tokens", enquanto o
+/// `cost_microcents` divide por `1_000_000` e o campo do JSON se
+/// chama `pricing_per_million` — é por milhão. E a unidade não é
+/// microcent (10⁻⁶ de centavo): é **10⁻⁵ de dólar**, ou seja
+/// milicentavo. Conferido contra seis entradas do catálogo cujo
+/// preço público se conhece — GPT-4o mini a US$ 0,15/1M gravado como
+/// `15000`, Claude 3.5 Haiku a US$ 0,80/1M como `80000`.
+///
+/// O nome fica como está porque renomeá-lo toca schema, JSON, banco
+/// e migração — trabalho com risco próprio, que não cabe junto de
+/// uma atualização de catálogo. Fica registrado para quem for
+/// calcular preço a partir daqui não errar por três ordens de
+/// grandeza.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PriceTable {
     pub input_microcents: u64,
@@ -142,6 +159,24 @@ impl Catalog {
     pub fn load() -> &'static Self {
         static CATALOG: OnceLock<Catalog> = OnceLock::new();
         CATALOG.get_or_init(Catalog::from_embedded_json)
+    }
+
+    /// Monta um catálogo a partir de descritores já resolvidos.
+    ///
+    /// É o construtor que o refresh de boot usa: a fusão do
+    /// embutido com o que os provedores responderam ([ADR-0052])
+    /// produz `Vec<ModeloEfetivo>`, e o motor precisa de um
+    /// `Catalog` para validar o modelo escolhido.
+    ///
+    /// **Por que isso existe:** sem ele, a UI listava a lista
+    /// fundida e o motor validava contra a embutida — as duas
+    /// discordavam sobre quais modelos existem, e escolher um
+    /// modelo novo dava `ModelNotFound` no meio da conversa.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    #[must_use]
+    pub fn from_models(models: Vec<ModelDescriptor>) -> Self {
+        Self { models }
     }
 
     /// Carrega a partir de uma string JSON (útil para testes com
@@ -286,14 +321,41 @@ mod tests {
     #[test]
     fn find_model_returns_known_entry() {
         let cat = Catalog::load();
+
+        // **Não fixa um modelo de mercado.** A versão anterior deste
+        // teste pinava `openai/gpt-4o`, e quebrou na primeira
+        // atualização do catálogo — que é uma operação de rotina, não
+        // uma mudança de contrato. Teste que quebra quando o dado é
+        // atualizado corretamente mede a data do arquivo, não o
+        // código.
+        //
+        // `simulated/fake-model-v1` é a única entrada que o produto
+        // controla: existe para os testes e não sai do catálogo por
+        // decisão de nenhum provedor.
         let m = cat
-            .find_model(&ProviderId::new("openai"), &ModelId::new("gpt-4o"))
-            .expect("gpt-4o deve estar no catálogo");
-        assert_eq!(m.context_window, 128_000);
+            .find_model(
+                &ProviderId::new("simulated"),
+                &ModelId::new("fake-model-v1"),
+            )
+            .expect("o modelo simulado deve estar no catálogo");
+        assert!(m.context_window > 0);
         assert!(m.modalities.has_input(Modality::Text));
-        assert!(m.modalities.has_input(Modality::Image));
         assert!(m.capabilities.has(Capability::Tools));
-        assert!(m.capabilities.has(Capability::Vision));
+
+        // Controle positivo do `find_model`: id que não existe
+        // devolve `None`, e não a primeira entrada.
+        assert!(cat
+            .find_model(&ProviderId::new("simulated"), &ModelId::new("nao-existe"))
+            .is_none());
+
+        // E o catálogo tem entrada multimodal — sem prender a qual.
+        assert!(
+            cat.models()
+                .iter()
+                .any(|m| m.modalities.has_input(Modality::Image)
+                    && m.capabilities.has(Capability::Vision)),
+            "o catálogo perdeu toda entrada com visão"
+        );
     }
 
     #[test]
@@ -367,5 +429,61 @@ mod tests {
         // O hash é gerado no build.rs; este teste apenas garante que
         // a env var é não-vazia (caso algo esteja mal configurado).
         assert!(!CATALOG_HASH.is_empty());
+    }
+}
+
+/// Handle compartilhado do catálogo **efetivo**.
+///
+/// Existe porque o catálogo deixou de ser fixo no boot: o refresh
+/// do [ADR-0052] o substitui quando os provedores respondem, e
+/// tanto a UI quanto o motor de execução precisam enxergar a
+/// *mesma* lista. Antes desta ligação, a UI lia a lista fundida e
+/// o `ChatOrchestrator` validava contra a embutida — a lista
+/// suspensa oferecia modelos que o motor rejeitava.
+///
+/// A troca é do ponteiro inteiro, não de itens: um `Arc<Catalog>`
+/// obtido por [`Self::current`] continua válido e coerente mesmo
+/// que o refresh publique outro no meio de um run.
+///
+/// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+#[derive(Debug)]
+pub struct CatalogHandle {
+    atual: std::sync::RwLock<std::sync::Arc<Catalog>>,
+}
+
+impl CatalogHandle {
+    #[must_use]
+    pub fn new(inicial: std::sync::Arc<Catalog>) -> Self {
+        Self {
+            atual: std::sync::RwLock::new(inicial),
+        }
+    }
+
+    /// O catálogo em vigor agora.
+    ///
+    /// Se o lock estiver envenenado (algum thread entrou em pânico
+    /// segurando-o), devolve o embutido em vez de propagar o
+    /// pânico: ficar sem catálogo nenhum derrubaria todo run, e o
+    /// embutido é sempre uma resposta defensável.
+    #[must_use]
+    pub fn current(&self) -> std::sync::Arc<Catalog> {
+        match self.atual.read() {
+            Ok(g) => g.clone(),
+            Err(_) => std::sync::Arc::new(Catalog::load().clone()),
+        }
+    }
+
+    /// Publica um catálogo novo. Ignorado se o lock estiver
+    /// envenenado — perder um refresh é melhor que derrubar o app.
+    pub fn replace(&self, novo: std::sync::Arc<Catalog>) {
+        if let Ok(mut g) = self.atual.write() {
+            *g = novo;
+        }
+    }
+}
+
+impl Default for CatalogHandle {
+    fn default() -> Self {
+        Self::new(std::sync::Arc::new(Catalog::load().clone()))
     }
 }

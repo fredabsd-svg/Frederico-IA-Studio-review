@@ -91,6 +91,26 @@ pub trait ProviderAdapter: Send + Sync {
     /// modelo não tem preço explícito.
     fn cost_model(&self) -> CostModel;
 
+    /// Lista os modelos que o provedor declara ter, para o refresh
+    /// de catálogo no boot ([ADR-0052] §D1).
+    ///
+    /// **Default recusa em vez de devolver lista vazia.** Um adapter
+    /// que não sabe listar e devolvesse `Ok(vec![])` seria lido pela
+    /// fusão como "o provedor não tem modelo nenhum", e a lista
+    /// embutida dele desapareceria da UI. Recusar preserva o
+    /// embutido, que é o comportamento certo para quem não sabe
+    /// responder.
+    ///
+    /// [ADR-0052]: ../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    async fn listar_modelos(
+        &self,
+    ) -> Result<Vec<crate::openai_compat::ModeloRemoto>, crate::types::ProviderError> {
+        Err(crate::types::ProviderError::network(format!(
+            "o adapter do provedor '{}' não sabe listar modelos",
+            self.id().as_str()
+        )))
+    }
+
     /// Resposta não-streaming. Usado por `Provider.TestConnection`
     /// (`max_tokens: 1`) e por clientes que não querem stream.
     async fn complete(

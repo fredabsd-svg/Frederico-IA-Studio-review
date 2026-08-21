@@ -1,18 +1,133 @@
 {
   "models": [
     {
-      "provider": "openai",
-      "model": "gpt-4o",
-      "display_name": "GPT-4o",
-      "context_window": 128000,
+      "provider": "anthropic",
+      "model": "claude-opus-5",
+      "display_name": "Claude Opus 5",
+      "context_window": 1000000,
       "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode", "parallel_tool_calls", "vision"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
       "pricing_per_million": {
         "input_microcents": 500000,
+        "output_microcents": 2500000
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "context_window": 1000000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 300000,
         "output_microcents": 1500000
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "display_name": "Claude Haiku 4.5",
+      "context_window": 200000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 100000,
+        "output_microcents": 500000
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "context_window": 1000000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 1000000,
+        "output_microcents": 5000000
+      }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol",
+      "context_window": 1050000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 500000,
+        "output_microcents": 3000000
       }
     },
     {
@@ -21,103 +136,194 @@
       "display_name": "GPT-4o mini",
       "context_window": 128000,
       "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode", "parallel_tool_calls", "vision"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
       "pricing_per_million": {
         "input_microcents": 15000,
         "output_microcents": 60000
       }
     },
     {
-      "provider": "anthropic",
-      "model": "claude-3-5-sonnet-latest",
-      "display_name": "Claude 3.5 Sonnet",
-      "context_window": 200000,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-sol",
+      "display_name": "OpenAI: GPT-5.6 Sol (via OpenRouter)",
+      "context_window": 1050000,
       "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "vision", "prompt_caching"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
       "pricing_per_million": {
-        "input_microcents": 300000,
+        "input_microcents": 250000,
         "output_microcents": 1500000
       }
     },
     {
-      "provider": "anthropic",
-      "model": "claude-3-5-haiku-latest",
-      "display_name": "Claude 3.5 Haiku",
-      "context_window": 200000,
-      "modalities": {
-        "input": ["text"],
-        "output": ["text"]
-      },
-      "capabilities": ["tools", "prompt_caching"],
-      "pricing_per_million": {
-        "input_microcents": 80000,
-        "output_microcents": 400000
-      }
-    },
-    {
       "provider": "openrouter",
-      "model": "openai/gpt-4o",
-      "display_name": "OpenAI: GPT-4o (via OpenRouter)",
-      "context_window": 128000,
+      "model": "anthropic/claude-opus-5",
+      "display_name": "Anthropic: Claude Opus 5 (via OpenRouter)",
+      "context_window": 1000000,
       "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode", "vision"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
       "pricing_per_million": {
         "input_microcents": 500000,
-        "output_microcents": 1500000
+        "output_microcents": 2500000
       }
     },
     {
       "provider": "openrouter",
-      "model": "anthropic/claude-3-5-sonnet",
-      "display_name": "Anthropic: Claude 3.5 Sonnet (via OpenRouter)",
-      "context_window": 200000,
+      "model": "google/gemini-3.7-flash",
+      "display_name": "Google: Gemini 3.7 Flash (via OpenRouter)",
+      "context_window": 1048576,
       "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "vision"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls",
+        "vision",
+        "prompt_caching"
+      ],
       "pricing_per_million": {
-        "input_microcents": 300000,
-        "output_microcents": 1500000
+        "input_microcents": 37500,
+        "output_microcents": 187500
       }
     },
     {
       "provider": "openrouter",
-      "model": "meta-llama/llama-3.1-70b-instruct",
-      "display_name": "Meta: Llama 3.1 70B Instruct (via OpenRouter)",
-      "context_window": 131072,
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "display_name": "DeepSeek: V4 Pro (via OpenRouter)",
+      "context_window": 1048576,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
-        "input_microcents": 32000,
-        "output_microcents": 32000
+        "input_microcents": 66000,
+        "output_microcents": 198000
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "meta/muse-spark-1.2",
+      "display_name": "Meta: Muse Spark 1.2 (via OpenRouter)",
+      "context_window": 1048576,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 125000,
+        "output_microcents": 425000
       }
     },
     {
       "provider": "deepseek",
-      "model": "deepseek-chat",
-      "display_name": "DeepSeek Chat",
-      "context_window": 64000,
+      "model": "deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "context_window": 1000000,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode", "reasoning_content"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
-        "input_microcents": 27000,
-        "output_microcents": 110000
+        "input_microcents": 132000,
+        "output_microcents": 396000
+      }
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "context_window": 1000000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
+      "pricing_per_million": {
+        "input_microcents": 44000,
+        "output_microcents": 132000
       }
     },
     {
@@ -126,10 +332,18 @@
       "display_name": "Mistral Large",
       "context_window": 128000,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools", "json_mode"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
         "input_microcents": 200000,
         "output_microcents": 600000
@@ -141,10 +355,18 @@
       "display_name": "NVIDIA NIM: Llama 3.1 70B",
       "context_window": 131072,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
         "input_microcents": 0,
         "output_microcents": 0
@@ -156,10 +378,18 @@
       "display_name": "Ollama: Llama 3.1 8B (local)",
       "context_window": 131072,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": [],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
         "input_microcents": 0,
         "output_microcents": 0
@@ -171,10 +401,18 @@
       "display_name": "LM Studio: Qwen 2.5 7B (local)",
       "context_window": 131072,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": [],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
         "input_microcents": 0,
         "output_microcents": 0
@@ -186,10 +424,18 @@
       "display_name": "Simulated Model v1 (tests)",
       "context_window": 8192,
       "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
       },
-      "capabilities": ["tools"],
+      "capabilities": [
+        "tools",
+        "json_mode",
+        "parallel_tool_calls"
+      ],
       "pricing_per_million": {
         "input_microcents": 0,
         "output_microcents": 0

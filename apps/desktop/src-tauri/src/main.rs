@@ -73,6 +73,16 @@ struct AppState {
     /// caso contrário (retriever vira lexical-only). O
     /// `build_retriever` helper local lê daqui.
     embedding_provider: Arc<dyn frederico_memory::embedding::EmbeddingProvider>,
+    /// Catálogo efetivo: o embutido, fundido com o que os provedores
+    /// responderam no boot ([ADR-0052]).
+    ///
+    /// Começa igual ao embutido e é substituído quando (e se) a
+    /// tarefa de fundo terminar. A janela nunca espera por ele — é o
+    /// que separa "dispara rede no boot" de "depende de rede para
+    /// abrir", e foi a distinção que o ADR-0043 não fez.
+    ///
+    /// [ADR-0052]: ../../../docs/decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md
+    catalogo_efetivo: Arc<frederico_model_catalog::CatalogHandle>,
     /// Bundle de especialistas (Fase 6, Etapa 3, ADR-0030).
     /// Consumido pelo Tauri command `ListSpecialists` (e
     /// futuramente pelo `SubagentRunner` da Etapa 4). Carrega
@@ -704,6 +714,15 @@ fn main() {
             let providers = build_provider_map(credentials_dyn);
             let runs = RunRegistry::new();
             let catalog = Arc::new(Catalog::load().clone());
+            // **Catálogo efetivo** (ADR-0052): um handle que o
+            // refresh de boot substitui e que o motor de execução
+            // lê a cada envio. A UI e o motor precisam enxergar a
+            // *mesma* lista — quando divergiram, a lista suspensa
+            // oferecia modelos que o motor rejeitava com
+            // `ModelNotFound`.
+            let catalogo_efetivo = Arc::new(frederico_model_catalog::CatalogHandle::new(
+                catalog.clone(),
+            ));
             // Specialist bundle (Fase 6, Etapa 3, ADR-0030):
             // carrega bundled + override + pareia com o catálogo pra
             // resolver capabilities por `default_model`. Mesmo
@@ -1228,7 +1247,7 @@ fn main() {
                 sink: sink.clone(),
                 db: db.clone(),
                 clock: clock.clone(),
-                catalog: catalog.clone(),
+                catalog: catalogo_efetivo.clone(),
                 tool_registry: tool_registry_for_orchestrator,
                 jail_resolver: jail_resolver.clone(),
                 tools,
@@ -1286,6 +1305,72 @@ fn main() {
                     frederico_app::composition::build_embedding_provider(&cfg, key)
                 });
 
+            // **Refresh de catálogo no boot** (ADR-0052 §D1). Começa
+            // com o embutido inteiro, para a janela abrir com lista
+            // completa antes de qualquer resposta de rede.
+            // A tarefa de fundo. Nada aqui bloqueia a abertura: se a
+            // rede estiver fora, se o provedor demorar ou se a
+            // resposta for inválida, o catálogo embutido continua no
+            // lugar e o app segue utilizável.
+            {
+                let providers_para_refresh = providers.clone();
+                let destino = catalogo_efetivo.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut respostas = Vec::new();
+                    for id in providers_para_refresh.providers() {
+                        let Some(adapter) = providers_para_refresh.get(&id) else {
+                            continue;
+                        };
+                        match adapter.listar_modelos().await {
+                            Ok(modelos) if !modelos.is_empty() => {
+                                tracing::info!(
+                                    provider = id.as_str(),
+                                    total = modelos.len(),
+                                    "catálogo do provedor atualizado"
+                                );
+                                respostas.push(frederico_model_catalog::RespostaDoProvedor {
+                                    provider: id.clone(),
+                                    modelos: modelos
+                                        .into_iter()
+                                        .map(|m| frederico_model_catalog::ModeloRemotoNormalizado {
+                                            id: m.id,
+                                            nome: m.nome,
+                                            janela_de_contexto: m.janela_de_contexto,
+                                            entrada: m.entrada,
+                                            saida: m.saida,
+                                        })
+                                        .collect(),
+                                });
+                            }
+                            // **Lista vazia é tratada como falha.** Um
+                            // provedor que responde `[]` faria a fusão
+                            // apagar todos os modelos embutidos dele —
+                            // e "não consegui listar" é bem mais
+                            // provável que "este provedor não tem
+                            // modelo nenhum".
+                            Ok(_) => tracing::warn!(
+                                provider = id.as_str(),
+                                "o provedor devolveu lista vazia; mantendo o catálogo embutido"
+                            ),
+                            Err(e) => tracing::info!(
+                                provider = id.as_str(),
+                                erro = %e,
+                                "sem refresh de catálogo para este provedor"
+                            ),
+                        }
+                    }
+                    if respostas.is_empty() {
+                        return;
+                    }
+                    let fundido = frederico_model_catalog::fundir(Catalog::load(), &respostas);
+                    destino.replace(std::sync::Arc::new(
+                        frederico_model_catalog::Catalog::from_models(
+                            fundido.into_iter().map(|m| m.descritor).collect(),
+                        ),
+                    ));
+                });
+            }
+
             app.manage(AppState {
                 db,
                 orch,
@@ -1293,6 +1378,7 @@ fn main() {
                 document_worker,
                 embedding_provider,
                 specialist_bundle,
+                catalogo_efetivo,
             });
 
             Ok(())
@@ -1330,21 +1416,32 @@ async fn ipc_dispatch(
 
         // --- Etapa 1: Provedores (credenciais) ---
         AppOp::ProviderList => {
-            // Lista provedores conhecidos do storage; por enquanto
-            // a tabela está vazia até o usuário cadastrar o primeiro.
+            // O cofre é a fonte de verdade para "configurado". A tabela
+            // pode sobreviver a uma remoção manual no Credential Manager;
+            // nesse caso não podemos mostrar uma chave que já não existe.
+            let credenciais: std::collections::HashSet<_> = state
+                .credentials
+                .list_providers()
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
             let repo = frederico_storage::ProviderConfigRepo::new(&state.db);
             let list: Vec<ProviderConfigView> = repo
                 .list()
                 .await
                 .map_err(|e| e.to_string())?
                 .into_iter()
-                .map(|c| ProviderConfigView {
-                    provider: c.provider_id,
-                    display_name: c.display_name,
-                    configured: c.configured,
-                    last_ok_at: c.last_ok_at,
-                    last_error_at: c.last_error_at,
-                    last_error: c.last_error,
+                .map(|c| {
+                    let configured = credenciais.contains(&c.provider_id);
+                    ProviderConfigView {
+                        provider: c.provider_id,
+                        display_name: c.display_name,
+                        configured,
+                        last_ok_at: c.last_ok_at,
+                        last_error_at: c.last_error_at,
+                        last_error: c.last_error,
+                    }
                 })
                 .collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
@@ -1353,6 +1450,9 @@ async fn ipc_dispatch(
             // DPAPI real: grava no Windows Credential Manager. A
             // mesma instância configurada no `setup` é usada —
             // nada de shim de memória.
+            if value.trim().is_empty() {
+                return Ok(IpcResponse::err("A chave de API não pode estar vazia."));
+            }
             let sec = secrecy::SecretString::new(value.into());
             state
                 .credentials
@@ -1383,14 +1483,26 @@ async fn ipc_dispatch(
 
         // --- Leva 2: Catálogo ---
         AppOp::ModelCatalogList => {
-            let cat = Catalog::load();
-            let list: Vec<ModelDescriptorView> =
-                cat.list_all().into_iter().map(model_to_view).collect();
+            // Lê o catálogo **efetivo** (ADR-0052): o embutido, já
+            // fundido com o que os provedores responderam neste boot.
+            // Enquanto a tarefa de fundo não termina, isto é
+            // exatamente o embutido — nunca uma lista vazia.
+            let list: Vec<ModelDescriptorView> = state
+                .catalogo_efetivo
+                .current()
+                .list_all()
+                .into_iter()
+                .map(model_to_view)
+                .collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
         }
         AppOp::ModelCatalogForProvider { provider } => {
-            let cat = Catalog::load();
-            let list: Vec<ModelDescriptorView> = cat
+            // Mesma fonte do `ModelCatalogList`: o catálogo efetivo,
+            // filtrado. É esta a chamada que o seletor de modelo do
+            // formulário de criação usa.
+            let list: Vec<ModelDescriptorView> = state
+                .catalogo_efetivo
+                .current()
                 .list_for_provider(&provider)
                 .into_iter()
                 .map(model_to_view)

@@ -1,7 +1,7 @@
 //! Contract tests off-PR contra provedores OpenAI-compat.
 //!
 //! **Quando rodam**: CI noturno (com `OPENAI_API_KEY` e
-//! `OPENROUTER_API_KEY` configurados) e manualmente por devs.
+//! `OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY` configurados) e manualmente.
 //!
 //! **O que validam**: que o `OpenAiCompatAdapter` se comporta
 //! igual ao provedor real — os eventos parseados batem com o que
@@ -31,6 +31,7 @@ use tokio::time::timeout;
 
 const OPENAI_BASE: &str = "https://api.openai.com/v1";
 const OPENROUTER_BASE: &str = "https://openrouter.ai/api/v1";
+const DEEPSEEK_BASE: &str = "https://api.deepseek.com/v1";
 
 /// Helper local: monta um `ChatRequest` trivial. `max_tokens: 1`
 /// mantém o custo do contract test baixo.
@@ -43,6 +44,7 @@ fn trivial_request(provider: &str, model: &str) -> ChatRequest {
             content: "Reply with the single word: ok".to_string(),
             name: None,
             tool_call_id: None,
+            tool_calls: vec![],
         }],
         tools: vec![],
         temperature: None,
@@ -127,6 +129,45 @@ async fn openrouter_stream_completes_with_done() -> Result<(), Box<dyn std::erro
 
     eprintln!(
         "[contract] openrouter OK — {} eventos, {deltas} deltas",
+        events.len()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn deepseek_stream_completes_with_done() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = match common::openai_adapter_or_skip("DEEPSEEK_API_KEY", DEEPSEEK_BASE) {
+        Some(adapter) => adapter,
+        None => return Ok(()),
+    };
+
+    let req = trivial_request("deepseek", "deepseek-v4-flash");
+    let stream = adapter.stream(req)?;
+    let events = timeout(
+        Duration::from_secs(common::CONTRACT_TIMEOUT_SECS),
+        common::drain_events(stream),
+    )
+    .await
+    .map_err(|_| "timeout esperando o stream DeepSeek")?;
+
+    let deltas = events
+        .iter()
+        .filter(|event| matches!(event, StreamEvent::Delta { .. }))
+        .count();
+    let dones = events
+        .iter()
+        .filter(|event| matches!(event, StreamEvent::Done { .. }))
+        .count();
+    assert!(
+        deltas >= 1,
+        "DeepSeek deveria emitir Delta; recebi {events:?}"
+    );
+    assert_eq!(
+        dones, 1,
+        "DeepSeek deveria emitir um Done; recebi {events:?}"
+    );
+    eprintln!(
+        "[contract] deepseek OK — {} eventos, {deltas} deltas",
         events.len()
     );
     Ok(())

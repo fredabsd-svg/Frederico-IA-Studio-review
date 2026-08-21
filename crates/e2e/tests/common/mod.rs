@@ -340,7 +340,7 @@ pub async fn build_orchestrator(
         sink: sink.clone() as Arc<dyn EventSink>,
         db: db.clone(),
         clock,
-        catalog: catalog.clone(),
+        catalog: std::sync::Arc::new(frederico_model_catalog::CatalogHandle::new(catalog.clone())),
         tool_registry,
         jail_resolver,
         tools,

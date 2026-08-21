@@ -61,6 +61,22 @@ const PARES = [
   ["foco", "bg-elev", AA_NAO_TEXTO],
   // Borda contra o fundo do painel — separador visual.
   ["border", "bg-elev", 1.0],
+  // --- Superfícies do Studio (novo layout) -------------------
+  // O poço do terminal e o painel Live são fundos de texto como
+  // qualquer outro: se entram na paleta, entram na porta.
+  ["fg", "bg-profundo", AA_TEXTO],
+  ["fg", "bg-painel", AA_TEXTO],
+  ["fg-dim", "bg-painel", AA_TEXTO],
+  ["fg-terminal", "bg-profundo", AA_TEXTO],
+  ["accent", "bg-profundo", AA_TEXTO],
+  ["erro", "bg-profundo", AA_TEXTO],
+  ["sucesso", "bg-profundo", AA_TEXTO],
+  ["aviso", "bg-profundo", AA_TEXTO],
+  ["aviso", "bg", AA_TEXTO],
+  ["aviso", "bg-elev", AA_TEXTO],
+  // Mensagem do usuário: fundo próprio, texto normal.
+  ["fg", "bg-usuario", AA_TEXTO],
+  ["border-usuario", "bg-usuario", 1.0],
 ];
 
 /** `#rgb` / `#rrggbb` → `[r, g, b]`. */

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { HashRouter, Link, Navigate, Route, Routes } from "react-router-dom";
+import {
+  HashRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 import { ApprovalModal } from "./components/ApprovalModal";
+import { TopBar } from "./components/TopBar";
 import {
   getAppVersion,
   listApprovals,
@@ -124,17 +131,13 @@ export function App() {
   return (
     <HashRouter>
       <div className="layout">
-        <header className="topbar">
-          <h1>Frederico IA Studio</h1>
-          <nav>
-            <Link to="/chat">Chat</Link>
-            <Link to="/team">Modo Equipe</Link>
-            <Link to="/memories">Memórias</Link>
-            <Link to="/settings">Configurações</Link>
-            <Link to="/sobre">Sobre</Link>
-          </nav>
-        </header>
-        <main>
+        {/* `conectado` = a versão do binário respondeu, ou seja,
+            a casca Tauri está de pé. Não é "há provedor
+            configurado" — essa informação vive em
+            `/settings` e afirmá-la aqui exigiria um IPC a mais
+            para dizer algo que a tela ao lado já diz melhor. */}
+        <TopBar conectado={versao !== null} />
+        <Corpo>
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<Chat />} />
@@ -144,7 +147,7 @@ export function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/sobre" element={<About />} />
           </Routes>
-        </main>
+        </Corpo>
         <footer>
           <small>
             Frederico IA Studio
@@ -165,4 +168,19 @@ export function App() {
       </div>
     </HashRouter>
   );
+}
+
+/**
+ * `<main>` com a largura certa para cada rota.
+ *
+ * O Studio ocupa a janela inteira (três colunas, altura fixa); as
+ * telas de leitura — Configurações, Sobre, Memórias — continuam
+ * numa coluna de 900px, que é onde texto corrido se lê. Uma regra
+ * só para as duas coisas deixaria o console espremido ou o texto
+ * atravessando a tela.
+ */
+function Corpo(props: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  const estudio = pathname === "/" || pathname.startsWith("/chat");
+  return <main className={estudio ? "" : "coluna"}>{props.children}</main>;
 }

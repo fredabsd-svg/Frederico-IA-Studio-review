@@ -37,11 +37,49 @@ Adapter de provedores de LLM (OpenAI-compat, Anthropic) e a infraestrutura de te
 - **UTF-8 partido entre chunks** é cenário coberto pelo fixture `openai/utf8_split.jsonl`. Se o parser regredir nesse caso, o teste `parser_handles_utf8_split_across_chunks` falha.
 - **Sentinela `[DONE]`** do OpenAI-compat é traduzido para `StreamEvent::Done { stop_reason: Stop }`. Não vaza no stream do consumidor.
 
+### Compatibilidade de ferramentas: DeepSeek e OpenRouter
+
+O nome canônico de uma ferramenta permanece o nome interno do Studio,
+por exemplo `files.read` e `docs.generate`. Na montagem de pedidos
+OpenAI-compatible, `ToolNameMap` cria nomes aceitos pela API (somente
+`[A-Za-z0-9_-]`, até 64 caracteres), resolve colisões de forma
+determinística e traduz o nome recebido de volta antes de emitir
+`StreamEvent::ToolCall`. Essa tradução é de fronteira: o catálogo, o
+journal e o executor continuam usando o identificador canônico.
+
+Uma rodada com ferramenta é serializada como duas mensagens ligadas:
+a mensagem do assistente contém `tool_calls`, e a mensagem de papel
+`tool` contém o mesmo `tool_call_id`. Não substitua a chamada do
+assistente por texto descritivo; provedores mais estritos rejeitam ou
+perdem o contexto da ferramenta.
+
+O transporte do stream carrega `ProviderError` estruturado. Portanto,
+uma resposta HTTP 401/402/403/404/429/5xx preserva `status` e
+`ProviderErrorKind`; só falhas reais de transporte viram `Network`.
+
+No DeepSeek V4, o pedido inclui `thinking: { type: "disabled" }`.
+Esses modelos ativam raciocínio por padrão, mas o produto ainda não tem
+estado para `reasoning_content`. Quando essa interface existir, a opção
+deve virar uma capacidade explícita em vez de remover silenciosamente o
+campo.
+
 ## Como testar isoladamente
 
 ```bash
 cargo test -p frederico-provider-engine
 ```
+
+Os testes de contrato reais são opt-in e nunca leem a credencial do
+cofre de produção. Defina `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY` ou
+`OPENAI_API_KEY` no ambiente e execute
+`cargo test -p frederico-provider-engine --test openai_compat_contract -- --nocapture`.
+Sem a variável correspondente, o teste informa `SKIP`; um resultado do
+processo igual a zero não significa que a chamada externa aconteceu.
+
+Os testes de recovery compartilham uma única política de espera pelo
+`RecordingEventSink`: polling de 20 ms por até 5 segundos. Não duplique
+timeouts locais nesses testes. A janela anterior de 2 segundos falhou sob
+carga no runner Windows do CI antes de o evento de status ser observado.
 
 Os testes vivem em `#[cfg(test)] mod tests` em cada arquivo do crate. Os fixtures vivem em `crates/provider-engine/fixtures/<provider>/<scenario>.jsonl` e são carregados por `fake::transport::load_golden_file`.
 

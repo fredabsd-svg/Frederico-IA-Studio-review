@@ -26,6 +26,20 @@
      distinto do `--bg-elev` para o controle não sumir dentro do
      painel. */
   --bg-controle: #2e2e2e;
+  /* Poço: mais fundo que `--bg`. É o fundo do terminal e do
+     papel de parede — superfícies que afundam, não que elevam.
+     Sem ele o console ficava no mesmo plano do painel e o olho
+     não separava "saída de processo" de "interface". */
+  --bg-profundo: #141414;
+  /* Meio-tom entre `--bg` e `--bg-elev`, para o painel Live. Ele
+     não é um card (não flutua sobre a conversa) nem o fundo da
+     janela (é uma região própria). */
+  --bg-painel: #1e1e1e;
+  /* Fundo da mensagem do usuário: tinta de latão sobre `--bg`,
+     não o latão puro. A mensagem precisa se distinguir da do
+     assistente sem competir com os botões de ação. */
+  --bg-usuario: #2e2a22;
+  --border-usuario: #4a3d28;
   --overlay: rgba(0, 0, 0, 0.5);
   --overlay-forte: rgba(0, 0, 0, 0.6);
 
@@ -34,9 +48,20 @@
   --fg-dim: #9a9a9a;
   /* Texto sobre `--accent` e sobre os fundos de feedback fortes. */
   --fg-sobre-acento: #1a1a1a;
+  /* Corpo da saída de terminal: um degrau abaixo de `--fg`. A
+     saída de processo é volume, não leitura linha a linha; o
+     comando (`--accent`) é que precisa saltar. */
+  --fg-terminal: #b8b8b8;
 
   /* --- Destaque ---------------------------------------------- */
   --accent: #d4a05a;
+  /* Latão a 12%: fundo de chip ativo e de ícone selecionado. É
+     tinta, não preenchimento — a cor da marca só é sólida em
+     superfície de ação. */
+  --accent-tinta: rgba(212, 160, 90, 0.12);
+  /* Marca "F". Gradiente e não chapado: é o único lugar do app
+     onde o latão aparece com volume. */
+  --accent-gradiente: linear-gradient(135deg, #d4a05a, #8a5d18);
 
   /* --- Bordas ------------------------------------------------ */
   --border: #333;
@@ -53,6 +78,9 @@
   --erro-fundo: rgba(209, 120, 120, 0.15);
   --erro-fundo-solido: #5a1d1d;
   --sucesso: #6c6;
+  /* Aviso do terminal — o degrau entre `--sucesso` e `--erro` que
+     faltava. Sem ele, "atenção" e "falhou" saíam da mesma cor. */
+  --aviso: #e0b465;
   --sucesso-fundo-solido: #1d5a2a;
   --info-fundo-solido: #1d3a5a;
 
@@ -75,6 +103,9 @@
      que só roda no Windows. */
   --fonte-familia: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --fonte-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  /* 11px — o degrau que a linha meta e os rótulos de seção usam.
+     Fora da escala anterior porque nada antes descia tanto. */
+  --fonte-xxs: 0.6875rem;
   --fonte-xs: 0.75rem;
   --fonte-sm: 0.8125rem;
   --fonte-md: 0.9375rem;
@@ -105,11 +136,25 @@
   --raio-sm: 3px;
   --raio-md: 4px;
   --raio-lg: 8px;
+  /* Pílula: só chips informativos e de filtro (ADR-0045 §D3 —
+     "cantos mínimos" continua valendo para tudo que é ação). */
+  --raio-pill: 999px;
 
   font-family: var(--fonte-familia);
   font-size: var(--fonte-raiz);
   line-height: var(--linha-altura);
-  color-scheme: light dark;
+  /* **`dark`, e não `light dark`.** O valor anterior declarava que a
+     página suporta os dois esquemas e deixava o navegador escolher
+     por conta própria — e o WebView2 escolhia claro para a lista
+     suspensa do `<select>` e para o `checkbox`, dentro de um app
+     escuro. Era o defeito nomeado no ADR-0045 §Contexto item 3, e
+     ele sobreviveu à primeira tentativa de correção (PR #77), que
+     pôs `color-scheme: inherit` nos controles: herdar `light dark`
+     é herdar a ambiguidade, não resolvê-la.
+     Aqui o esquema é escolhido explicitamente, do mesmo jeito que a
+     paleta já era. `color-scheme` é herdado, então os controles
+     seguem sem precisar de regra própria. */
+  color-scheme: dark;
 }
 
 /* ============================================================
@@ -130,19 +175,34 @@
    ============================================================ */
 @media (prefers-color-scheme: light) {
   :root {
+    /* Par do `color-scheme: dark` acima: quando a paleta muda, o
+       esquema dos controles nativos muda junto. */
+    color-scheme: light;
+
     --bg: #fafafa;
     --bg-elev: #fff;
     --bg-controle: #f0f0f0;
+    /* No claro, "profundo" afunda: mais escuro que `--bg`, não
+       mais claro. O poço continua sendo poço. */
+    --bg-profundo: #e6e6e6;
+    --bg-painel: #f2f2f2;
+    --bg-usuario: #f7f0e2;
+    --border-usuario: #d9c7a4;
     --overlay: rgba(0, 0, 0, 0.35);
     --overlay-forte: rgba(0, 0, 0, 0.45);
 
     --fg: #1a1a1a;
     --fg-dim: #5a5a5a;
     --fg-sobre-acento: #fff;
+    /* Um degrau acima de `--fg-dim` em legibilidade: a saída de
+       terminal no claro precisa de mais peso, não menos. */
+    --fg-terminal: #3a3a3a;
 
     /* Latão escurecido: 4,63:1 sobre `#fafafa`. O `#d4a05a` do
        tema escuro dava 2,24:1 aqui. */
     --accent: #8a5d18;
+    --accent-tinta: rgba(138, 93, 24, 0.12);
+    --accent-gradiente: linear-gradient(135deg, #8a5d18, #5c3d0f);
 
     --border: #d4d4d4;
 
@@ -151,6 +211,8 @@
     --erro-fundo: rgba(160, 50, 50, 0.12);
     --erro-fundo-solido: #f5dada;
     --sucesso: #1f6b2f;
+    /* O `#e0b465` do escuro dá 1,86:1 aqui — invisível. */
+    --aviso: #7a5510;
     --sucesso-fundo-solido: #d9f0dd;
     --info-fundo-solido: #d9e6f5;
 
@@ -171,51 +233,145 @@ body {
 .layout {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* Altura fixa e overflow travado: só a lista de mensagens e o
+     console rolam. Com `min-height` a página inteira rolava e o
+     composer saía da tela no meio de um run. */
+  height: 100vh;
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--esp-3) var(--esp-5);
+  gap: var(--esp-4);
+  height: 48px;
+  flex: 0 0 auto;
+  padding: 0 var(--esp-4);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
 
-.topbar h1 {
-  margin: 0;
-  font-size: var(--fonte-lg);
-  letter-spacing: 0.02em;
+.topbar-esq,
+.topbar-dir {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-3);
+  min-width: 0;
 }
 
-.topbar nav a {
+.topbar-titulo {
+  margin: 0;
+  font-size: var(--fonte-md);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* Marca "F": o único lugar do app onde o latão tem volume. */
+.marca {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: var(--raio-md);
+  background: var(--accent-gradiente);
+  color: var(--fg-sobre-acento);
+  font-weight: 700;
+  font-size: var(--fonte-sm);
+}
+
+.topbar-nav {
+  display: flex;
+  gap: var(--esp-1);
+  margin-left: var(--esp-2);
+}
+
+.topbar-nav a {
   color: var(--fg-dim);
   text-decoration: none;
-  margin-left: var(--esp-4);
-  padding: var(--esp-1) var(--esp-2);
+  padding: var(--esp-1) var(--esp-3);
   border-radius: var(--raio-md);
+  font-size: var(--fonte-sm);
+  white-space: nowrap;
 }
 
-.topbar nav a:hover,
-.topbar nav a.active {
+.topbar-nav a:hover {
   color: var(--fg);
-  background: var(--bg);
+  background: var(--bg-controle);
+}
+
+.topbar-nav a.ativo {
+  color: var(--fg);
+  background: var(--accent-tinta);
+}
+
+/* Estado de conexão: ponto + texto. Nunca só o ponto — quem não
+   distingue verde de cinza fica sem a informação. */
+.conexao {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  color: var(--fg-dim);
+  font-size: var(--fonte-xs);
+  white-space: nowrap;
+}
+
+.conexao-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--raio-pill);
+  flex: 0 0 auto;
+}
+
+.conexao-dot.ok { background: var(--sucesso); }
+.conexao-dot.off { background: var(--fg-dim); }
+
+.btn-icone {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  border-radius: var(--raio-md);
+  cursor: pointer;
+}
+
+.btn-icone:hover {
+  color: var(--fg);
+  background: var(--bg-controle);
+}
+
+.btn-icone svg {
+  width: 16px;
+  height: 16px;
 }
 
 main {
   flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+/* As telas que não são o Studio continuam numa coluna legível. */
+main.coluna {
   padding: var(--esp-6) var(--esp-5);
   max-width: 900px;
-  width: 100%;
   margin: 0 auto;
+  overflow: auto;
 }
 
 footer {
-  padding: var(--esp-3) var(--esp-5);
+  flex: 0 0 auto;
+  padding: var(--esp-1) var(--esp-4);
   border-top: 1px solid var(--border);
   color: var(--fg-dim);
   text-align: center;
+  font-size: var(--fonte-xxs);
 }
 
 dl {
@@ -242,67 +398,6 @@ pre {
   overflow-x: auto;
 }
 
-/* --- Chat --------------------------------------------------------- */
-
-.chat {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: var(--esp-4);
-  height: calc(100vh - 8rem);
-  margin: 0 calc(var(--esp-5) * -1);
-  padding: 0 var(--esp-5);
-}
-
-.conversations {
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.conversations header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--esp-2) 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.conversations ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-}
-
-.conversations li {
-  display: flex;
-  align-items: center;
-  padding: var(--esp-1) var(--esp-2);
-  border-bottom: 1px solid var(--border);
-  gap: var(--esp-1);
-}
-
-.conversations li.active {
-  background: var(--bg-elev);
-}
-
-.conversations li button {
-  background: none;
-  border: none;
-  color: var(--fg);
-  cursor: pointer;
-  text-align: left;
-  flex: 1;
-  padding: var(--esp-1);
-  font-size: var(--fonte-md);
-}
-
-.conversations li button small {
-  display: block;
-  color: var(--fg-dim);
-  font-size: var(--fonte-xs);
-}
 
 .link {
   color: var(--accent);
@@ -327,131 +422,6 @@ pre {
   padding: 0 var(--esp-1);
 }
 
-.link-small {
-  font-size: var(--fonte-sm);
-  color: var(--fg-dim);
-  text-decoration: none;
-}
-
-.link-small:hover {
-  color: var(--fg);
-}
-
-.messages-pane {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.conv-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--esp-2) 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.conv-header select {
-  background: var(--bg-elev);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--raio-md);
-  padding: var(--esp-1) var(--esp-2);
-}
-
-/* O seletor de modelo era um `button.link` — texto colorido sem
-   borda, sublinhado só no hover, indistinguível de um rótulo.
-   Existia e funcionava; ninguém o encontrava. Agora é um
-   `<select>` sempre visível, com rótulo explícito ao lado. */
-.conv-model {
-  display: flex;
-  align-items: center;
-  gap: var(--esp-2);
-}
-
-.conv-model-rotulo {
-  color: var(--fg-dim);
-  font-size: var(--fonte-sm);
-}
-
-.messages {
-  list-style: none;
-  margin: 0;
-  padding: var(--esp-4) 0;
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--esp-3);
-}
-
-.msg {
-  border-radius: var(--raio-lg);
-  padding: var(--esp-3) var(--esp-4);
-  max-width: 80%;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-}
-
-.msg-user {
-  align-self: flex-end;
-  background: var(--accent);
-  color: var(--fg-sobre-acento);
-}
-
-.msg-user .msg-meta,
-.msg-user .msg-status,
-.msg-user small {
-  color: var(--overlay-forte);
-}
-
-.msg-assistant {
-  align-self: flex-start;
-}
-
-.msg-system {
-  align-self: center;
-  font-style: italic;
-  color: var(--fg-dim);
-  background: transparent;
-  border: 1px dashed var(--border);
-}
-
-.msg-meta {
-  display: flex;
-  gap: var(--esp-2);
-  font-size: var(--fonte-xs);
-  color: var(--fg-dim);
-  margin-bottom: var(--esp-1);
-  align-items: center;
-}
-
-.msg-role {
-  font-weight: bold;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.msg-status {
-  font-style: italic;
-}
-
-.msg-body {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: var(--fonte-md);
-  line-height: 1.45;
-}
-
-.msg-streaming .msg-body::after {
-  content: "▍";
-  animation: blink 1s steps(1) infinite;
-  opacity: 0.5;
-}
-
-@keyframes blink {
-  50% { opacity: 0; }
-}
 
 .msg-error {
   margin-top: var(--esp-2);
@@ -473,57 +443,6 @@ pre {
   margin-top: var(--esp-2) !important;
 }
 
-.stop {
-  margin-top: var(--esp-2);
-  background: transparent;
-  color: var(--fg-dim);
-  border: 1px solid var(--border);
-  border-radius: var(--raio-md);
-  padding: var(--esp-1) var(--esp-3);
-  cursor: pointer;
-  font-size: var(--fonte-sm);
-}
-
-.stop:hover {
-  color: var(--erro);
-  border-color: var(--erro);
-}
-
-.composer {
-  display: flex;
-  gap: var(--esp-2);
-  padding: var(--esp-2) 0;
-  border-top: 1px solid var(--border);
-}
-
-.composer textarea {
-  flex: 1;
-  resize: vertical;
-  min-height: 3rem;
-  max-height: 12rem;
-  background: var(--bg-elev);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--raio-md);
-  padding: var(--esp-2);
-  font: inherit;
-}
-
-.composer button[type="submit"] {
-  background: var(--accent);
-  color: var(--fg-sobre-acento);
-  border: none;
-  border-radius: var(--raio-md);
-  padding: 0 var(--esp-5);
-  cursor: pointer;
-  font-weight: 500;
-  align-self: stretch;
-}
-
-.composer button[type="submit"]:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 .error {
   background: var(--erro-fundo);
@@ -1208,15 +1127,16 @@ td button {
 }
 
 /* --- Controles nativos --------------------------------------
-   Os `<select>` renderizavam com a cromagem clara do Windows
-   dentro de um app escuro — a descontinuidade mais visível do
-   screenshot que originou o ADR-0045. `color-scheme` no controle
-   faz o próprio sistema desenhar a versão escura da seta e da
-   lista suspensa, o que uma reimplementação em CSS não alcança. */
+   Aparência do controle fechado. **A lista suspensa e o marcador do
+   `checkbox` não são estilizáveis por CSS** — quem os desenha é o
+   WebView2, seguindo o `color-scheme` do `:root`, que agora é
+   explícito. Foi essa distinção que a primeira tentativa (PR #77)
+   errou: dar `color-scheme: inherit` ao controle herdava o
+   `light dark` ambíguo do `:root` e deixava o popup branco dentro
+   do app escuro. */
 select,
 input,
 textarea {
-  color-scheme: inherit;
   background: var(--bg-controle);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -1269,4 +1189,823 @@ a:hover {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+
+/* ============================================================
+   Studio — o layout de trabalho
+   ============================================================
+
+   Três colunas: sessões (236px) · conversa (flexível) · Live
+   (400px, só quando aberto). A raiz não rola; rolam a lista de
+   mensagens e o console, cada um no seu poço.
+   ============================================================ */
+
+.studio {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --- Sidebar de sessões ------------------------------------ */
+
+.sidebar {
+  width: 236px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-3);
+  padding: var(--esp-3);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.btn-nova-sessao {
+  width: 100%;
+  padding: var(--esp-2) var(--esp-3);
+  background: var(--bg-controle);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-md);
+  color: var(--fg);
+  font-size: var(--fonte-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.btn-nova-sessao:hover { border-color: var(--accent); }
+.btn-nova-sessao .mais { color: var(--accent); font-weight: 700; }
+
+.sidebar-secao {
+  margin: 0;
+  font-size: var(--fonte-xxs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+
+.sidebar-vazio {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--fonte-xs);
+}
+
+.sessoes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sessao {
+  display: flex;
+  align-items: stretch;
+  border-left: 2px solid transparent;
+}
+
+.sessao.ativa {
+  background: var(--bg-elev);
+  border-left-color: var(--accent);
+}
+
+.sessao-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-1);
+  padding: var(--esp-2) var(--esp-3);
+  background: none;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sessao-titulo {
+  font-size: var(--fonte-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessao-meta {
+  font-size: var(--fonte-xxs);
+  color: var(--fg-dim);
+  font-variant-numeric: var(--fonte-numerica);
+}
+
+.sessao-apagar {
+  flex: 0 0 auto;
+  width: 28px;
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.sessao-apagar:hover { color: var(--erro); }
+
+/* --- Coluna central ---------------------------------------- */
+
+.studio-centro {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mensagens {
+  list-style: none;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--esp-5) var(--esp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-5);
+}
+
+.mensagens > .msg {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+.msg-user { display: flex; justify-content: flex-end; }
+
+.bolha-usuario {
+  max-width: 78%;
+  padding: var(--esp-3) var(--esp-4);
+  background: var(--bg-usuario);
+  border: 1px solid var(--border-usuario);
+  border-radius: var(--raio-lg) var(--raio-lg) var(--raio-sm) var(--raio-lg);
+  white-space: pre-wrap;
+}
+
+.resposta { display: flex; flex-direction: column; gap: var(--esp-3); }
+
+.resposta-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  flex-wrap: wrap;
+  font-size: var(--fonte-xs);
+  color: var(--fg-dim);
+}
+
+.resposta-meta strong { color: var(--fg); }
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: var(--raio-pill);
+  background: var(--accent-gradiente);
+  color: var(--fg-sobre-acento);
+  font-weight: 700;
+  font-size: var(--fonte-xs);
+}
+
+.badge-modelo {
+  padding: 0 var(--esp-2);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-sm);
+  font-size: var(--fonte-xxs);
+}
+
+.resposta-numeros { font-variant-numeric: var(--fonte-numerica); }
+.resposta-corpo { white-space: pre-wrap; }
+.resposta-vazia { color: var(--fg-dim); font-style: italic; }
+
+/* --- Card de progresso da tarefa --------------------------- */
+
+.tarefa {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-lg);
+  overflow: hidden;
+}
+
+.tarefa-cabecalho {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-3);
+  padding: var(--esp-3);
+}
+
+.tarefa-titulos { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.tarefa-estado { font-size: var(--fonte-sm); }
+.tarefa-estado.executando { color: var(--accent); }
+.tarefa-estado.concluido { color: var(--sucesso); }
+.tarefa-estado.falhou { color: var(--erro); }
+.tarefa-estado.cancelado,
+.tarefa-estado.ocioso { color: var(--fg-dim); }
+
+.tarefa-operacao {
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-xxs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tarefa-contagem {
+  font-size: var(--fonte-xxs);
+  color: var(--fg-dim);
+  font-variant-numeric: var(--fonte-numerica);
+}
+
+.tarefa-dot,
+.live-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: var(--raio-pill);
+  background: var(--fg-dim);
+}
+
+.tarefa-dot.executando,
+.live-dot.executando {
+  background: var(--accent);
+  animation: pulso 1.2s ease-in-out infinite;
+}
+
+.tarefa-dot.concluido, .live-dot.concluido { background: var(--sucesso); }
+.tarefa-dot.falhou, .live-dot.falhou { background: var(--erro); }
+
+@keyframes pulso {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.btn-live {
+  flex: 0 0 auto;
+  padding: var(--esp-1) var(--esp-3);
+  background: var(--bg-controle);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-md);
+  color: var(--accent);
+  font-size: var(--fonte-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tarefa-barra {
+  height: 3px;
+  background: var(--bg-controle);
+}
+
+.tarefa-barra > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s;
+}
+
+.etapa { border-top: 1px solid var(--border); }
+
+.etapa-linha {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--esp-3);
+  padding: var(--esp-2) var(--esp-3);
+  background: none;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--fonte-sm);
+}
+
+.etapa-linha:hover { background: var(--bg-controle); }
+
+.etapa-glifo {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: var(--raio-pill);
+  font-size: var(--fonte-xxs);
+}
+
+.etapa-glifo.executando {
+  color: var(--accent);
+  background: var(--accent-tinta);
+  animation: pulso 1.2s ease-in-out infinite;
+}
+
+.etapa-glifo.concluida { color: var(--sucesso); }
+.etapa-glifo.falhou { color: var(--erro); }
+.etapa-glifo.cancelada { color: var(--fg-dim); }
+
+.etapa-ferramenta {
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-xs);
+}
+
+.etapa-estado-texto {
+  flex: 1;
+  color: var(--fg-dim);
+  font-size: var(--fonte-xxs);
+}
+
+.etapa-seta { color: var(--fg-dim); }
+
+.etapa-detalhe {
+  padding: 0 var(--esp-3) var(--esp-3) var(--esp-6);
+}
+
+.etapa-detalhe pre {
+  margin: 0;
+  padding: var(--esp-2);
+  background: var(--bg-profundo);
+  border: 1px solid var(--bg-controle);
+  border-radius: var(--raio-md);
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-xxs);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.etapa-erro { color: var(--erro); font-size: var(--fonte-xs); }
+
+.etapa-saida {
+  margin-top: var(--esp-2);
+  color: var(--fg-terminal);
+}
+
+/* --- Composer ----------------------------------------------- */
+
+.composer {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: var(--esp-3) var(--esp-4) var(--esp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-2);
+}
+
+.composer textarea {
+  width: 100%;
+  resize: vertical;
+  padding: var(--esp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-lg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: var(--fonte-md);
+}
+
+.composer-acoes {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-3);
+  flex-wrap: wrap;
+}
+
+.composer-espacador { flex: 1; }
+
+.composer-dica {
+  color: var(--fg-dim);
+  font-size: var(--fonte-xxs);
+}
+
+.btn-executar,
+.btn-cancelar {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 var(--esp-4);
+  border-radius: var(--raio-md);
+  font-size: var(--fonte-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-executar {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--fg-sobre-acento);
+}
+
+.btn-executar:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-executar:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-cancelar {
+  background: none;
+  border: 1px solid var(--erro);
+  color: var(--erro);
+}
+
+.btn-cancelar:hover { background: var(--erro-fundo); }
+
+/* --- Seletor de modelos (popover) --------------------------- */
+
+.seletor-modelo { position: relative; }
+
+.btn-modelo {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  max-width: 320px;
+  height: 32px;
+  padding: 0 var(--esp-3);
+  background: var(--bg-controle);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-md);
+  color: var(--fg);
+  font-size: var(--fonte-xs);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.btn-modelo:hover { border-color: var(--accent); }
+
+.btn-modelo-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: var(--raio-pill);
+  background: var(--accent);
+}
+
+.btn-modelo-seta { color: var(--fg-dim); }
+
+.popover-modelo {
+  position: absolute;
+  bottom: calc(100% + var(--esp-2));
+  left: 0;
+  z-index: 20;
+  width: min(400px, 90vw);
+  max-height: calc(100vh - 140px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-lg);
+  box-shadow: var(--sombra-modal);
+  overflow: hidden;
+}
+
+.popover-busca { padding: var(--esp-3); border-bottom: 1px solid var(--border); }
+
+.popover-busca input {
+  width: 100%;
+  padding: var(--esp-2);
+  background: var(--bg-controle);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-md);
+  color: var(--fg);
+  font-size: var(--fonte-sm);
+}
+
+.popover-filtros {
+  display: flex;
+  gap: var(--esp-2);
+  padding: 0 var(--esp-3) var(--esp-3);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.filtro-modelo {
+  flex: 0 0 auto;
+  padding: var(--esp-1) var(--esp-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--raio-pill);
+  color: var(--fg-dim);
+  font-size: var(--fonte-xxs);
+  cursor: pointer;
+}
+
+.filtro-modelo:hover,
+.filtro-modelo.ativo {
+  border-color: var(--accent);
+  background: var(--accent-tinta);
+  color: var(--accent);
+}
+
+.popover-fora {
+  display: flex;
+  flex-direction: column;
+  padding: var(--esp-3);
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  font-size: var(--fonte-xs);
+  color: var(--fg-dim);
+}
+
+.popover-fora strong { color: var(--fg); font-family: var(--fonte-mono); }
+
+.popover-lista { overflow-y: auto; padding: var(--esp-2); }
+
+.popover-provedor {
+  margin: var(--esp-2) 0 var(--esp-1);
+  font-size: var(--fonte-xxs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+
+.popover-vazio { color: var(--fg-dim); font-size: var(--fonte-xs); }
+
+.modelo-linha {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 var(--esp-3);
+  padding: var(--esp-2) var(--esp-3);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--raio-md);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.modelo-linha:hover { background: var(--bg-controle); }
+.modelo-linha.ativa { border-color: var(--accent); background: var(--accent-tinta); }
+
+.modelo-nome { font-size: var(--fonte-sm); }
+
+.modelo-id {
+  grid-column: 1;
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-xxs);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modelo-caps {
+  grid-column: 1;
+  color: var(--accent);
+  font-size: var(--fonte-xxs);
+}
+
+.modelo-custo {
+  grid-row: 1 / span 3;
+  grid-column: 2;
+  align-self: center;
+  font-size: var(--fonte-xxs);
+  color: var(--fg-dim);
+  font-variant-numeric: var(--fonte-numerica);
+  white-space: nowrap;
+}
+
+/* --- Painel Live -------------------------------------------- */
+
+.live {
+  width: 400px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-painel);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.live.cheia {
+  position: fixed;
+  inset: 48px 0 0;
+  z-index: 30;
+  width: auto;
+  border-left: none;
+  box-shadow: var(--sombra-modal);
+}
+
+.live-cabecalho {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  padding: var(--esp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.live-titulos { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.live-titulos strong { font-size: var(--fonte-sm); }
+
+.live-operacao {
+  font-size: var(--fonte-xxs);
+  color: var(--fg-dim);
+  font-family: var(--fonte-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-barra {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  padding: var(--esp-2) var(--esp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.live-rotulo {
+  flex: 1;
+  font-size: var(--fonte-xxs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+
+.btn-ghost {
+  padding: var(--esp-1) var(--esp-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--raio-sm);
+  color: var(--fg-dim);
+  font-size: var(--fonte-xxs);
+  cursor: pointer;
+}
+
+.btn-ghost:hover { color: var(--fg); background: var(--bg-controle); }
+.btn-ghost.perigo:hover { color: var(--erro); border-color: var(--erro); }
+
+.live-console {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--esp-3);
+  background: var(--bg-profundo);
+  font-family: var(--fonte-mono);
+  font-size: var(--fonte-xxs);
+  line-height: 1.7;
+  user-select: text;
+}
+
+.live-vazio { margin: 0; color: var(--fg-dim); font-family: var(--fonte-familia); }
+
+.live-linha { display: flex; gap: var(--esp-3); }
+
+.live-tempo {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-variant-numeric: var(--fonte-numerica);
+}
+
+.live-texto { white-space: pre-wrap; word-break: break-word; }
+
+.live-linha.comando .live-texto { color: var(--accent); }
+.live-linha.saida .live-texto { color: var(--fg-terminal); }
+.live-linha.aviso .live-texto { color: var(--aviso); }
+.live-linha.erro .live-texto { color: var(--erro); }
+.live-linha.ok .live-texto { color: var(--sucesso); }
+
+.live-cursor {
+  color: var(--accent);
+  animation: piscar 1s steps(1) infinite;
+}
+
+.live-progresso {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-3);
+  padding: var(--esp-2) var(--esp-3);
+  border-top: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: var(--fonte-xxs);
+}
+
+.live-progresso > span:first-child { white-space: nowrap; }
+
+.live-progresso-barra {
+  height: 3px;
+  flex: 1;
+  overflow: hidden;
+  border-radius: var(--raio-pill);
+  background: var(--bg-controle);
+}
+
+.live-progresso-barra > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s;
+}
+
+.live-progresso strong {
+  color: var(--fg);
+  font-variant-numeric: var(--fonte-numerica);
+}
+
+@keyframes piscar {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* --- Tela vazia --------------------------------------------- */
+
+.tela-vazia {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--esp-3);
+  padding: var(--esp-6) var(--esp-4);
+  text-align: center;
+  overflow-y: auto;
+}
+
+.marca-grande {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--raio-lg);
+  background: var(--accent-gradiente);
+  color: var(--fg-sobre-acento);
+  font-weight: 700;
+  font-size: var(--fonte-lg);
+}
+
+.tela-vazia h2 { margin: 0; font-size: var(--fonte-xl); }
+.tela-vazia-sub { margin: 0; color: var(--fg-dim); font-size: var(--fonte-sm); }
+.tela-vazia-aviso { margin: 0; color: var(--fg-dim); font-size: var(--fonte-sm); }
+
+.nova-conversa {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--esp-4);
+  width: min(720px, 100%);
+}
+
+.nova-conversa-campos {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: var(--esp-3);
+  flex-wrap: wrap;
+}
+
+.sugestoes-iniciais {
+  display: flex;
+  justify-content: center;
+  gap: var(--esp-2);
+  flex-wrap: wrap;
+}
+
+.sugestoes-iniciais button {
+  max-width: 220px;
+  padding: var(--esp-2) var(--esp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--raio-pill);
+  color: var(--fg-dim);
+  font-size: var(--fonte-xs);
+  cursor: pointer;
+}
+
+.sugestoes-iniciais button:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.carregando { padding: var(--esp-5); color: var(--fg-dim); }
+
+/* --- Responsivo ---------------------------------------------
+   O Live vira sobreposição antes de espremer a conversa; a
+   sidebar some por último, porque perder a lista de sessões é
+   perder a navegação. */
+
+@media (max-width: 1280px) {
+  .live {
+    position: fixed;
+    top: 48px;
+    right: 0;
+    bottom: 0;
+    z-index: 15;
+    width: min(400px, 92vw);
+    box-shadow: var(--sombra-modal);
+  }
+}
+
+@media (max-width: 1100px) {
+  .composer-dica { display: none; }
+}
+
+@media (max-width: 960px) {
+  .sidebar { display: none; }
+  .topbar-nav a { padding: var(--esp-1) var(--esp-2); }
 }

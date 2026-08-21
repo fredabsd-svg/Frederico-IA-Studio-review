@@ -85,7 +85,7 @@ fn build_orchestrator(
         sink,
         db,
         clock,
-        catalog,
+        std::sync::Arc::new(frederico_model_catalog::CatalogHandle::new(catalog)),
         ToolRegistry::new(),
         frederico_tool_registry::static_jail_resolver(
             Jail::new(std::env::temp_dir().as_path()).unwrap(),
@@ -112,6 +112,9 @@ fn make_events(n_deltas: usize) -> Vec<StreamEvent> {
     out
 }
 
+const STATUS_WAIT_ATTEMPTS: usize = 250;
+const STATUS_WAIT_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Espera o sink ver um evento de status específico. Polling
 /// pequeno — o `FakeProviderAdapter` emite tudo no mesmo tick.
 /// Polling de 20ms; 5s de janela total (250 iteracoes). Era 2s
@@ -121,8 +124,8 @@ fn make_events(n_deltas: usize) -> Vec<StreamEvent> {
 /// pra nao mascarar regressao real mas tolerar slowness de
 /// CI compartilhado.
 async fn wait_for_status(sink: &RecordingEventSink, target: RunStatus) {
-    for _ in 0..250 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..STATUS_WAIT_ATTEMPTS {
+        tokio::time::sleep(STATUS_WAIT_INTERVAL).await;
         let events = sink.events.lock().unwrap();
         if events
             .iter()
@@ -132,6 +135,23 @@ async fn wait_for_status(sink: &RecordingEventSink, target: RunStatus) {
         }
     }
     panic!("sink não viu status {target:?} em 5s");
+}
+
+/// Espera o último status emitido usando a mesma janela tolerante ao
+/// runner compartilhado. Manter a política num único lugar evita que
+/// novos testes reintroduzam a janela de 2s que já flakeou no Windows.
+async fn wait_for_latest_status(sink: &RecordingEventSink) -> RunStatus {
+    for _ in 0..STATUS_WAIT_ATTEMPTS {
+        tokio::time::sleep(STATUS_WAIT_INTERVAL).await;
+        let events = sink.events.lock().unwrap();
+        if let Some(status) = events.iter().rev().find_map(|(_, event)| match event {
+            frederico_provider_engine::event_sink::RecordedEvent::Status(status) => Some(*status),
+            _ => None,
+        }) {
+            return status;
+        }
+    }
+    panic!("sink não viu nenhum status em 5s");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -245,24 +265,7 @@ async fn cancel_idempotent_and_status_persists() {
     );
 
     // Espera o sink ver o status final (Completed ou Cancelled).
-    let final_status = {
-        let mut found = None;
-        for _ in 0..100 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            let events = sink_a.events.lock().unwrap();
-            // Procura o ÚLTIMO status emitido.
-            for (_, ev) in events.iter().rev() {
-                if let frederico_provider_engine::event_sink::RecordedEvent::Status(s) = ev {
-                    found = Some(*s);
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
-        }
-        found.expect("sink não viu nenhum status em 2s")
-    };
+    let final_status = wait_for_latest_status(&sink_a).await;
 
     // Dropa A, abre B.
     drop(orch_a);

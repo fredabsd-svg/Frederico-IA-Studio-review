@@ -1,10 +1,67 @@
 <!--
 Estado: parcialmente implementado
-Verificado contra o código em: 2026-08-06
-Fase correspondente: 0 (modelos, Etapa 2 da Fase 0) + 6 (SpecialistRegistry, Etapa 3)
+Verificado contra o código em: 2026-08-19
+Fase correspondente: 0 (modelos, Etapa 2 da Fase 0) + 6 (SpecialistRegistry, Etapa 3) + 8 (fusão com o remoto, ADR-0052)
 -->
 
 # `frederico-model-catalog`
+
+
+## O catálogo efetivo: embutido fundido com o que o provedor respondeu
+
+Desde 2026-08-19 ([ADR-0052](../decisions/0052-refresh-de-catalogo-no-boot-em-segundo-plano.md)),
+o app consulta o `/models` de cada provedor com credencial **na
+abertura, em tarefa de fundo**, e funde o resultado com o embutido.
+
+A regra, em uma frase: **o remoto decide quais modelos existem; o
+embutido decide quanto custam.**
+
+| Situação | Resultado |
+|---|---|
+| Provedor não respondeu (sem rede, sem credencial, erro) | lista embutida intacta |
+| Modelo no remoto e não no embutido | entra, marcado como `Remoto` |
+| Modelo no embutido e não no remoto | **sai** — aposentado pelo provedor |
+| Modelo nos dois | fica, com os campos do embutido preservados |
+
+### Por que o preço não vem do remoto
+
+Medido em 2026-08-19: o `/models` do OpenRouter devolve preço e
+janela de contexto; o da **OpenAI devolve só a lista de ids**. Se o
+remoto mandasse em tudo, um refresh da OpenAI apagaria todos os
+preços e nenhum modelo dela rodaria — `model_no_price` aborta o run
+antes de qualquer I/O.
+
+### Por que lista vazia é tratada como falha
+
+Um provedor que responde `[]` faria a fusão apagar todos os modelos
+embutidos dele. "Não consegui listar" é muito mais provável que "este
+provedor não tem modelo nenhum", e o custo de errar para o lado
+errado é o usuário perder acesso a tudo daquele provedor.
+
+### O que a fusão nunca presume
+
+Modelo que só o remoto conhece entra **sem capacidade nenhuma
+declarada** e com janela de contexto mínima quando o provedor não a
+informa. Declarar `tools` num modelo que não as suporta faz o run
+falhar no meio, depois de gastar tokens.
+
+### Sem persistência
+
+O refresh vive em memória e refaz a cada abertura (ADR-0052 §D4).
+Abrir offline depois de abrir online mostra o embutido, não a última
+lista vista.
+
+## A unidade de preço tem dois nomes errados
+
+O campo se chama `input_microcents` e o comentário dizia "por mil
+tokens". Nenhum dos dois está certo: é **por milhão**, e a unidade é
+**10⁻⁵ de dólar** (milicentavo), não microcent.
+
+Conferido contra seis entradas de preço público conhecido — GPT-4o
+mini a US$ 0,15/1M gravado como `15000`; Claude 3.5 Haiku a
+US$ 0,80/1M como `80000`. O comentário foi corrigido; o nome do campo
+não, porque renomeá-lo toca schema, JSON, banco e migração.
+
 
 ## O que faz
 

@@ -895,18 +895,17 @@ impl RunExecutor {
                     output: result.output.clone(),
                 });
 
-                // 4a. Adiciona ao contexto: assistant (placeholder
-                //     do tool_call) + tool (resposta). O
+                // 4a. Adiciona ao contexto: assistant (tool_call
+                //     estruturado) + tool (resposta). O
                 //     `ScriptedProviderAdapter` ignora — a integração
                 //     OpenAI-compat real (Etapa 4.1) traduz o
                 //     `Role::Tool` + `tool_call_id` no payload JSON
                 //     que o provider espera.
-                messages.push(ChatMessage::assistant(format!(
-                    "[tool_call id={call_id} name={tool_id} args={args}]",
-                    call_id = call_id,
-                    tool_id = tool_id,
-                    args = serde_json::to_string(&args).unwrap_or_default(),
-                )));
+                messages.push(ChatMessage::assistant_tool_call(
+                    call_id.clone(),
+                    tool_id.to_string(),
+                    serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+                ));
                 messages.push(ChatMessage::tool(
                     tool_id.to_string(),
                     serde_json::to_string(&result.output).unwrap_or_default(),
@@ -1054,7 +1053,8 @@ impl RunExecutor {
                     ok: result.ok,
                     output: output_value.clone(),
                 };
-                persist_journal(event_repo, &message_id, &result_event).await?;
+                let message_seq = persist_journal(event_repo, &message_id, &result_event).await?;
+                self.emit_journaled_event(run_id, message_seq, &result_event);
 
                 // 5.x — Passo 10: grava auditoria (best effort).
                 let audit_entry = AuditEntry {
@@ -1087,7 +1087,8 @@ impl RunExecutor {
                     ok: false,
                     output: output_value.clone(),
                 };
-                persist_journal(event_repo, &message_id, &result_event).await?;
+                let message_seq = persist_journal(event_repo, &message_id, &result_event).await?;
+                self.emit_journaled_event(run_id, message_seq, &result_event);
 
                 // 5.x — Passo 10: grava auditoria da rejeição.
                 let audit_entry = AuditEntry {
@@ -1141,6 +1142,29 @@ impl RunExecutor {
                 // Etapa 6.2 grava quando o usuário responde).
                 Err(ExecutorError::ApprovalRequired)
             }
+        }
+    }
+
+    /// Envia à UI um evento que já foi gravado no journal.
+    ///
+    /// Os eventos vindos do provedor passam por este mesmo contrato no
+    /// loop principal. `ToolResult`, porém, nasce dentro do executor e
+    /// antes ficava apenas no SQLite. Isso deixava o painel Live sem a
+    /// única informação que encerra uma etapa: se a ferramenta terminou,
+    /// se terminou bem e qual saída produziu.
+    fn emit_journaled_event(&self, run_id: RunId, seq: u32, event: &StreamEvent) {
+        let envelope = frederico_provider_engine::types::StreamEventEnvelope {
+            seq,
+            event: event.clone(),
+        };
+        match serde_json::to_value(&envelope) {
+            Ok(payload) => self.event_sink.emit_run_event(run_id, payload),
+            Err(e) => tracing::warn!(
+                run_id = %run_id,
+                seq,
+                error = %e,
+                "RunExecutor: ToolResult ficou no journal, mas não pôde ser emitido para a UI"
+            ),
         }
     }
 

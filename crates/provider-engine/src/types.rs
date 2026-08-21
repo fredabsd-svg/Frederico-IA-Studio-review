@@ -39,6 +39,18 @@ pub struct ChatMessage {
     /// tool calling ignoram.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Chamadas de ferramenta emitidas por uma mensagem `Assistant`.
+    /// Precisam voltar no histórico antes do `Role::Tool`; provedores
+    /// estritos (DeepSeek incluído) rejeitam um resultado órfão.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ChatToolCall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments_json: String,
 }
 
 impl ChatMessage {
@@ -49,6 +61,7 @@ impl ChatMessage {
             content: content.into(),
             name: None,
             tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -59,6 +72,7 @@ impl ChatMessage {
             content: content.into(),
             name: None,
             tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -69,6 +83,7 @@ impl ChatMessage {
             content: content.into(),
             name: None,
             tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -87,6 +102,29 @@ impl ChatMessage {
             content: content.into(),
             name: Some(name.into()),
             tool_call_id: Some(tool_call_id.into()),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// Mensagem do assistente que originou uma chamada de ferramenta.
+    /// O conteúdo pode estar vazio; a informação operacional vive no
+    /// bloco estruturado `tool_calls`.
+    #[must_use]
+    pub fn assistant_tool_call(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments_json: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: String::new(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: vec![ChatToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments_json: arguments_json.into(),
+            }],
         }
     }
 }
