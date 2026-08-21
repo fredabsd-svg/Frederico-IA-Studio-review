@@ -63,6 +63,7 @@ use frederico_provider_engine::event_sink::{
 };
 use frederico_provider_engine::provider_map::ProviderMap;
 use frederico_provider_engine::run_registry::RunRegistry;
+use frederico_provider_engine::types::{StopReason, StreamEvent};
 use frederico_security::SystemClock;
 use frederico_storage::{Database, RunStatus};
 
@@ -525,6 +526,111 @@ async fn reload_without_subscription_recovers_full_content_from_journal() {
     assert!(
         kinds.contains(&"done"),
         "journal deveria ter o evento 'done' (marca fim do stream); kinds: {kinds:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D — tool_result_arrives_on_subscribed_channel_after_journal
+// ---------------------------------------------------------------------------
+
+/// Prova a ponte que alimenta o card de tarefa e o console Ao vivo:
+/// um resultado real de ferramenta é persistido primeiro e depois
+/// emitido no mesmo canal ordenado por `seq` usado pelos demais eventos.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_result_arrives_on_subscribed_channel_after_journal() {
+    let provider = Arc::new(ScriptedProvider::new(
+        E2E_PROVIDER_ID,
+        E2E_MODEL_ID,
+        vec![
+            vec![StreamEvent::ToolCall {
+                id: "call_files_read_live".to_string(),
+                name: "files.read".to_string(),
+                arguments_json: r#"{"path":"hello.txt"}"#.to_string(),
+            }],
+            vec![
+                StreamEvent::Delta {
+                    content: "Arquivo processado.".to_string(),
+                },
+                StreamEvent::Done {
+                    stop_reason: StopReason::Stop,
+                },
+            ],
+        ],
+    ));
+    let provider_id = ProviderId::new(E2E_PROVIDER_ID);
+    let model_id = ModelId::new(E2E_MODEL_ID);
+    let workspace = WorkspaceTempdir::new();
+    let (orch, db, sink) = build_orchestrator_with_channel_sink(provider, &workspace).await;
+
+    let conv =
+        create_test_conversation(&db, &provider_id, &model_id, Some("e2e tool result")).await;
+    let jail = workspace
+        .workspaces_root()
+        .join(conv.id.as_uuid().to_string());
+    std::fs::create_dir_all(&jail).expect("cria jail da conversa");
+    std::fs::write(jail.join("hello.txt"), "conteúdo real").expect("escreve fixture");
+
+    let (user_msg, run_id) = orch
+        .send_message(conv.id, "leia o arquivo".to_string())
+        .await
+        .expect("send_message");
+
+    let status_channel = run_event_channel_for_status(&run_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while sink.status_on(&status_channel).is_none() {
+        if std::time::Instant::now() > deadline {
+            panic!("timeout esperando resultado da ferramenta");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(sink.status_on(&status_channel), Some(RunStatus::Completed));
+
+    let payloads = sink.stream_events_on(&run_event_channel_for_event(&run_id));
+    let envelope = payloads
+        .iter()
+        .find(|payload| {
+            payload
+                .get("event")
+                .and_then(|event| event.get("kind"))
+                .and_then(|kind| kind.as_str())
+                == Some("tool_result")
+        })
+        .unwrap_or_else(|| panic!("tool_result deveria chegar no canal; veio {payloads:?}"));
+    assert_eq!(
+        envelope
+            .get("event")
+            .and_then(|event| event.get("id"))
+            .and_then(|id| id.as_str()),
+        Some("call_files_read_live")
+    );
+    assert_eq!(
+        envelope
+            .get("event")
+            .and_then(|event| event.get("ok"))
+            .and_then(|ok| ok.as_bool()),
+        Some(true)
+    );
+
+    let assistant = frederico_storage::MessageRepo::new(&db)
+        .list_for_conversation(&conv.id)
+        .await
+        .expect("list_for_conversation")
+        .into_iter()
+        .find(|message| message.role == "assistant" && message.id != user_msg.id)
+        .expect("assistant msg");
+    let journal = frederico_storage::MessageEventRepo::new(&db)
+        .list_for_message(&assistant.id, 0)
+        .await
+        .expect("list_for_message");
+    let journal_seq = journal
+        .iter()
+        .find(|event| event.kind == "tool_result")
+        .map(|event| event.seq)
+        .expect("tool_result persistido no journal");
+    assert_eq!(
+        envelope.get("seq").and_then(|seq| seq.as_u64()),
+        Some(u64::from(journal_seq)),
+        "o evento emitido deve carregar o seq já persistido"
     );
 }
 

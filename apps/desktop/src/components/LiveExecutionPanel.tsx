@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Uma linha do console. Sempre derivada de um evento do journal. */
 export interface LinhaLive {
@@ -40,11 +40,21 @@ export function LiveExecutionPanel(props: {
   linhas: LinhaLive[];
   fase: FaseLive;
   operacao: string | null;
+  concluidas: number;
+  total: number;
   onFechar: () => void;
   onCancelar: (() => void) | null;
 }) {
   const consoleRef = useRef<HTMLDivElement>(null);
   const noFundoRef = useRef(true);
+  const [copiado, setCopiado] = useState(false);
+  const [telaCheia, setTelaCheia] = useState(false);
+  const progresso =
+    props.total > 0
+      ? Math.round((props.concluidas / props.total) * 100)
+      : props.fase === "concluido"
+        ? 100
+        : 0;
 
   useEffect(() => {
     const el = consoleRef.current;
@@ -62,7 +72,10 @@ export function LiveExecutionPanel(props: {
   }
 
   return (
-    <aside className="live" aria-label="Execução ao vivo">
+    <aside
+      className={telaCheia ? "live cheia" : "live"}
+      aria-label="Execução ao vivo"
+    >
       <header className="live-cabecalho">
         <span className={`live-dot ${props.fase}`} aria-hidden="true" />
         <div className="live-titulos">
@@ -97,9 +110,19 @@ export function LiveExecutionPanel(props: {
               .map((l) => `${l.tempo} ${l.texto}`)
               .join("\n");
             void navigator.clipboard?.writeText(texto);
+            setCopiado(true);
+            window.setTimeout(() => setCopiado(false), 1500);
           }}
         >
-          Copiar
+          {copiado ? "Copiado ✓" : "Copiar"}
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => setTelaCheia((v) => !v)}
+          aria-label={telaCheia ? "Sair da tela cheia" : "Abrir em tela cheia"}
+          title={telaCheia ? "Sair da tela cheia" : "Tela cheia"}
+        >
+          {telaCheia ? "Reduzir" : "Tela cheia"}
         </button>
       </div>
 
@@ -124,6 +147,19 @@ export function LiveExecutionPanel(props: {
           </span>
         )}
       </div>
+      <footer className="live-progresso">
+        <span>Progresso</span>
+        <div
+          className="live-progresso-barra"
+          role="progressbar"
+          aria-valuenow={progresso}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <i style={{ width: `${progresso}%` }} />
+        </div>
+        <strong data-numerico>{progresso}%</strong>
+      </footer>
     </aside>
   );
 }

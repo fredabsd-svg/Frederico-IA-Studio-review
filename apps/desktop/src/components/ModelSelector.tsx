@@ -15,11 +15,10 @@ import type { ModelDescriptorView } from "../services";
  *    modelo como se fosse o dela seria mentira silenciosa.
  *
  * **O que o protótipo pede e não foi construído:** a linha
- * "Seleção automática" com estratégia multi-modelo por etapa, os
- * favoritos e os chips de filtro por capacidade. Nenhum dos três
- * tem dado por trás — não há roteador multi-modelo por etapa, nem
- * armazenamento de favorito, e capacidade por modelo existe no
- * descritor mas não como filtro. Entram quando houver o que ligar.
+ * "Seleção automática" com estratégia multi-modelo por etapa e os
+ * favoritos. Nenhum dos dois tem dado por trás — não há roteador
+ * multi-modelo por etapa nem armazenamento de favorito. Os chips de
+ * filtro usam somente capacidades reais publicadas no descritor.
  */
 export function ModelSelector(props: {
   catalogo: ModelDescriptorView[];
@@ -29,6 +28,7 @@ export function ModelSelector(props: {
 }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
+  const [filtro, setFiltro] = useState<FiltroModelo>("todos");
   const caixaRef = useRef<HTMLDivElement>(null);
   const buscaRef = useRef<HTMLInputElement>(null);
 
@@ -63,6 +63,7 @@ export function ModelSelector(props: {
     const termo = busca.trim().toLowerCase();
     const mapa = new Map<string, ModelDescriptorView[]>();
     for (const m of props.catalogo) {
+      if (!passaNoFiltro(m, filtro)) continue;
       if (
         termo &&
         !m.display_name.toLowerCase().includes(termo) &&
@@ -76,7 +77,7 @@ export function ModelSelector(props: {
       else mapa.set(m.provider, [m]);
     }
     return mapa;
-  }, [props.catalogo, busca]);
+  }, [props.catalogo, busca, filtro]);
 
   const nenhumResultado = porProvedor.size === 0;
 
@@ -107,6 +108,20 @@ export function ModelSelector(props: {
               placeholder="Buscar modelo…"
               aria-label="Buscar modelo"
             />
+          </div>
+
+          <div className="popover-filtros" aria-label="Filtrar modelos por capacidade">
+            {FILTROS_MODELO.map((opcao) => (
+              <button
+                key={opcao.valor}
+                type="button"
+                className={filtro === opcao.valor ? "filtro-modelo ativo" : "filtro-modelo"}
+                aria-pressed={filtro === opcao.valor}
+                onClick={() => setFiltro(opcao.valor)}
+              >
+                {opcao.rotulo}
+              </button>
+            ))}
           </div>
 
           {/* O modelo da conversa que sumiu do catálogo continua
@@ -146,6 +161,7 @@ export function ModelSelector(props: {
                     >
                       <span className="modelo-nome">{m.display_name}</span>
                       <span className="modelo-id">{m.model}</span>
+                      <span className="modelo-caps">{rotuloCapacidades(m)}</span>
                       <span className="modelo-custo" data-numerico>
                         {custoRelativo(m)}
                       </span>
@@ -159,6 +175,45 @@ export function ModelSelector(props: {
       )}
     </div>
   );
+}
+
+type FiltroModelo = "todos" | "visao" | "ferramentas" | "local";
+
+const FILTROS_MODELO: Array<{ valor: FiltroModelo; rotulo: string }> = [
+  { valor: "todos", rotulo: "Todos" },
+  { valor: "visao", rotulo: "Visão" },
+  { valor: "ferramentas", rotulo: "Ferramentas" },
+  { valor: "local", rotulo: "Local" },
+];
+
+function passaNoFiltro(m: ModelDescriptorView, filtro: FiltroModelo): boolean {
+  if (filtro === "todos") return true;
+  if (filtro === "local") return modeloLocal(m);
+  const capacidades = listaDeStrings(m.capabilities);
+  const modalidades = listaDeStrings(m.modalities);
+  if (filtro === "visao") {
+    return capacidades.some((item) => /vision|image|vis[aã]o/i.test(item)) ||
+      modalidades.some((item) => /image|vision/i.test(item));
+  }
+  return capacidades.some((item) => /tool|function|ferramenta/i.test(item));
+}
+
+function rotuloCapacidades(m: ModelDescriptorView): string {
+  const rotulos: string[] = [];
+  if (passaNoFiltro(m, "visao")) rotulos.push("visão");
+  if (passaNoFiltro(m, "ferramentas")) rotulos.push("ferramentas");
+  if (modeloLocal(m)) rotulos.push("local");
+  return rotulos.length > 0 ? rotulos.join(" · ") : "texto";
+}
+
+function listaDeStrings(valor: unknown): string[] {
+  if (Array.isArray(valor)) return valor.filter((item): item is string => typeof item === "string");
+  if (!valor || typeof valor !== "object") return [];
+  return Object.values(valor).flatMap((item) => listaDeStrings(item));
+}
+
+function modeloLocal(m: ModelDescriptorView): boolean {
+  return /ollama|lm\s?studio|local/i.test(`${m.provider} ${m.model}`);
 }
 
 /**

@@ -128,7 +128,14 @@ export interface MessageEventView {
   id: number;
   message_id: string;
   seq: number;
-  kind: "delta" | "usage" | "tool_call" | "done" | "error" | "cancelled";
+  kind:
+    | "delta"
+    | "usage"
+    | "tool_call"
+    | "tool_result"
+    | "done"
+    | "error"
+    | "cancelled";
   data: unknown;
   created_at: string;
 }
@@ -154,6 +161,12 @@ export type StreamEvent =
       id: string;
       name: string;
       arguments_json: string;
+    }
+  | {
+      kind: "tool_result";
+      id: string;
+      ok: boolean;
+      output: unknown;
     }
   | {
       kind: "done";

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FaseLive } from "./LiveExecutionPanel";
 
 /**
@@ -13,6 +13,7 @@ export interface Etapa {
   argumentos: string;
   estado: "executando" | "concluida" | "falhou" | "cancelada";
   erro?: string;
+  saida?: string;
 }
 
 const ROTULO_FASE: Record<FaseLive, string> = {
@@ -59,6 +60,27 @@ export function TaskProgressCard(props: {
     (e) => e.estado === "concluida",
   ).length;
   const total = props.etapas.length;
+  const ativa = props.etapas.find(
+    (e) => e.estado === "executando" || e.estado === "falhou",
+  );
+
+  useEffect(() => {
+    const automaticas = props.etapas
+      .filter((e) => e.estado === "executando" || e.estado === "falhou")
+      .map((e) => e.id);
+    if (automaticas.length === 0) return;
+    setAbertas((atuais) => {
+      const novas = new Set(atuais);
+      let mudou = false;
+      for (const id of automaticas) {
+        if (!novas.has(id)) {
+          novas.add(id);
+          mudou = true;
+        }
+      }
+      return mudou ? novas : atuais;
+    });
+  }, [props.etapas]);
 
   function alternar(id: string) {
     setAbertas((s) => {
@@ -77,6 +99,12 @@ export function TaskProgressCard(props: {
           <strong className={`tarefa-estado ${props.fase}`} aria-live="polite">
             {ROTULO_FASE[props.fase]}
           </strong>
+          {ativa && (
+            <span className="tarefa-operacao" title={ativa.ferramenta}>
+              {ativa.estado === "falhou" ? "Atenção em " : "Executando "}
+              {ativa.ferramenta}
+            </span>
+          )}
           {total > 0 && (
             <span className="tarefa-contagem" data-numerico>
               {concluidas} de {total}{" "}
@@ -135,6 +163,7 @@ export function TaskProgressCard(props: {
               <div className="etapa-detalhe">
                 {e.erro && <p className="etapa-erro">{e.erro}</p>}
                 <pre>{e.argumentos || "(sem argumentos)"}</pre>
+                {e.saida && <pre className="etapa-saida">{e.saida}</pre>}
               </div>
             )}
           </div>

@@ -52,6 +52,12 @@ const initial: State = {
   catalog: [],
 };
 
+const SUGESTOES_INICIAIS = [
+  "Analisar planilhas e gerar um relatório",
+  "Executar um script Python no sandbox",
+  "Gerar um documento Word com dados",
+] as const;
+
 /**
  * Recarrega janela no meio do stream: para cada mensagem `streaming`,
  * busca `RunGetEvents` com `since_seq: 0` e reconstrói o conteúdo a
@@ -63,6 +69,7 @@ async function reloadStreamingMessage(
   onDelta: (text: string) => void,
   onError: (err: ProviderErrorView) => void,
   onStatus: (status: RunStatusEvent) => void,
+  onLiveEvent: (event: StreamEvent, ocorridoEm: number) => void,
 ): Promise<() => void> {
   if (!message.run_id) {
     // Mensagem sem run_id — não há nada a fazer.
@@ -71,6 +78,11 @@ async function reloadStreamingMessage(
   const events = await getRunEvents(message.id, 0);
   // Replay do journal.
   for (const ev of events) {
+    const liveEvent = streamEventFromJournal(ev);
+    if (liveEvent) {
+      const ocorridoEm = Date.parse(ev.created_at);
+      onLiveEvent(liveEvent, Number.isFinite(ocorridoEm) ? ocorridoEm : Date.now());
+    }
     applyEvent(ev, onDelta, onError, onStatus);
   }
   // Se o run já terminou, não precisa subscrever.
@@ -90,9 +102,80 @@ async function reloadStreamingMessage(
     // porque o reload de janela é raro). A Etapa futura
     // "reconexão por `fromSeq`" usa o `lastSeq()` retornado
     // pelo `RunStreamSubscription`.
+    onLiveEvent(envelope.event, Date.now());
     onEventToCallbacks(envelope.event, onDelta, onError);
   }, onStatus);
   return sub.unlisten;
+}
+
+/** Reconstrói o enum do stream a partir da linha persistida no journal. */
+function streamEventFromJournal(ev: MessageEventView): StreamEvent | null {
+  const data = ev.data as Record<string, unknown> | null;
+  if (!data) return null;
+  switch (ev.kind) {
+    case "delta":
+      return typeof data.content === "string"
+        ? { kind: "delta", content: data.content }
+        : null;
+    case "usage":
+      return typeof data.prompt_tokens === "number" &&
+        typeof data.completion_tokens === "number"
+        ? {
+            kind: "usage",
+            prompt_tokens: data.prompt_tokens,
+            completion_tokens: data.completion_tokens,
+          }
+        : null;
+    case "tool_call":
+      return typeof data.id === "string" &&
+        typeof data.name === "string" &&
+        typeof data.arguments_json === "string"
+        ? {
+            kind: "tool_call",
+            id: data.id,
+            name: data.name,
+            arguments_json: data.arguments_json,
+          }
+        : null;
+    case "tool_result":
+      return typeof data.id === "string" && typeof data.ok === "boolean"
+        ? {
+            kind: "tool_result",
+            id: data.id,
+            ok: data.ok,
+            output: data.output,
+          }
+        : null;
+    case "done":
+      return typeof data.stop_reason === "string"
+        ? {
+            kind: "done",
+            stop_reason: data.stop_reason as
+              | "stop"
+              | "length"
+              | "tool_calls"
+              | "error",
+          }
+        : null;
+    case "error":
+      return {
+        kind: "error",
+        message: {
+          code: typeof data.kind === "string" ? data.kind : "unknown",
+          title: "Erro do provedor",
+          detail:
+            typeof data.upstream_message === "string"
+              ? data.upstream_message
+              : "",
+          action: null,
+          retry_after_secs: null,
+        },
+      };
+    case "cancelled":
+      return { kind: "cancelled" };
+    default:
+      return null;
+  }
 }
 
 function applyEvent(
@@ -162,11 +245,23 @@ export function Chat() {
   // relativos ao run e não ao relógio de parede.
   const inicioRef = useRef<number>(Date.now());
 
+  // Uma sugestão escolhida na tela vazia atravessa a criação da
+  // conversa e chega preenchida ao composer. A chave leva o id da
+  // conversa para nunca vazar o rascunho para outra sessão.
+  useEffect(() => {
+    if (!params.id) return;
+    const key = `frederico:rascunho:${params.id}`;
+    const pending = window.sessionStorage.getItem(key);
+    if (!pending) return;
+    setDraft(pending);
+    window.sessionStorage.removeItem(key);
+  }, [params.id]);
+
   const anotar = useCallback(
-    (tipo: LinhaLive["tipo"], texto: string) => {
+    (tipo: LinhaLive["tipo"], texto: string, ocorridoEm = Date.now()) => {
       setLiveLinhas((ls) => [
         ...ls,
-        { tempo: tempoRelativo(inicioRef.current, Date.now()), tipo, texto },
+        { tempo: tempoRelativo(inicioRef.current, ocorridoEm), tipo, texto },
       ]);
     },
     [],
@@ -182,7 +277,7 @@ export function Chat() {
    * ferramenta, erro, encerramento.
    */
   const registrarEvento = useCallback(
-    (ev: StreamEvent) => {
+    (ev: StreamEvent, ocorridoEm = Date.now()) => {
       switch (ev.kind) {
         case "tool_call":
           setEtapas((es) => [
@@ -196,12 +291,36 @@ export function Chat() {
               estado: "executando" as const,
             },
           ]);
-          anotar("comando", `$ ${ev.name}`);
+          anotar("comando", `$ ${ev.name}`, ocorridoEm);
           break;
+        case "tool_result": {
+          const erro = ev.ok ? undefined : extrairErroDaFerramenta(ev.output);
+          const saida = resumirOutput(ev.output);
+          setEtapas((es) =>
+            es.map((e) =>
+              e.id === ev.id
+                ? {
+                    ...e,
+                    estado: ev.ok ? ("concluida" as const) : ("falhou" as const),
+                    erro,
+                    saida,
+                  }
+                : e,
+            ),
+          );
+          anotar(
+            ev.ok ? "ok" : "erro",
+            `${ev.ok ? "resultado" : "falha"} · ${saida}`,
+            ocorridoEm,
+          );
+          if (!ev.ok) setFase("falhou");
+          break;
+        }
         case "usage":
           anotar(
             "saida",
             `tokens · ${ev.prompt_tokens}↑ ${ev.completion_tokens}↓`,
+            ocorridoEm,
           );
           break;
         case "error":
@@ -212,7 +331,7 @@ export function Chat() {
                 : e,
             ),
           );
-          anotar("erro", ev.message.title || "erro do provedor");
+          anotar("erro", ev.message.title || "erro do provedor", ocorridoEm);
           setFase("falhou");
           break;
         case "cancelled":
@@ -221,7 +340,7 @@ export function Chat() {
               e.estado === "executando" ? { ...e, estado: "cancelada" as const } : e,
             ),
           );
-          anotar("aviso", "execução cancelada pelo usuário");
+          anotar("aviso", "execução cancelada pelo usuário", ocorridoEm);
           setFase("cancelado");
           break;
         case "done":
@@ -233,6 +352,7 @@ export function Chat() {
           anotar(
             ev.stop_reason === "error" ? "erro" : "ok",
             `encerrado · ${ev.stop_reason}`,
+            ocorridoEm,
           );
           setFase(ev.stop_reason === "error" ? "falhou" : "concluido");
           break;
@@ -257,41 +377,85 @@ export function Chat() {
     setState((s) => ({ ...s, conversations: list }));
   }, []);
 
-  const loadCurrent = useCallback(async (id: string) => {
-    const data = await getConversation(id);
-    setState((s) => ({ ...s, current: data }));
-    // Recarrega streams ativos.
-    for (const m of data.messages) {
-      if (m.status === "streaming" && m.run_id) {
-        const runId = m.run_id;
-        const unsub = await reloadStreamingMessage(
-          m,
-          (text) => {
-            accumRef.current.set(m.id, (accumRef.current.get(m.id) ?? "") + text);
-            setState((s) => ({ ...s })); // força re-render
-          },
-          (err) => {
-            errorsRef.current.set(m.id, err);
-            setState((s) => ({ ...s }));
-          },
-          (status) => {
-            if (
-              status.status === "completed" ||
-              status.status === "failed" ||
-              status.status === "cancelled" ||
-              status.status === "timeout"
-            ) {
-              unlistensRef.current.get(runId)?.();
-              unlistensRef.current.delete(runId);
-              setStreamingMessageId(null);
-            }
-          },
-        );
-        unlistensRef.current.set(runId, unsub);
-        setStreamingMessageId(m.id);
+  const loadCurrent = useCallback(
+    async (id: string) => {
+      const data = await getConversation(id);
+      setState((s) => ({ ...s, current: data }));
+
+      // Só o run da resposta mais recente alimenta o painel. O journal
+      // continua guardando todos; repetir cards mortos em cada resposta
+      // antiga só duplicaria informação na tela.
+      const message = [...data.messages]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.run_id);
+
+      for (const unlisten of unlistensRef.current.values()) unlisten();
+      unlistensRef.current.clear();
+      setLiveLinhas([]);
+      setEtapas([]);
+
+      if (!message?.run_id) {
+        setStreamingMessageId(null);
+        setFase("ocioso");
+        return;
       }
-    }
-  }, []);
+
+      const inicio = Date.parse(message.created_at);
+      inicioRef.current = Number.isFinite(inicio) ? inicio : Date.now();
+      accumRef.current.delete(message.id);
+      setFase(faseDaMensagem(message.status));
+
+      const runId = message.run_id;
+      const unsub = await reloadStreamingMessage(
+        message,
+        (text) => {
+          accumRef.current.set(
+            message.id,
+            (accumRef.current.get(message.id) ?? "") + text,
+          );
+          setState((s) => ({ ...s }));
+        },
+        (err) => {
+          errorsRef.current.set(message.id, err);
+          setState((s) => ({ ...s }));
+        },
+        (status) => {
+          if (
+            status.status === "completed" ||
+            status.status === "failed" ||
+            status.status === "cancelled" ||
+            status.status === "timeout"
+          ) {
+            unlistensRef.current.get(runId)?.();
+            unlistensRef.current.delete(runId);
+            setStreamingMessageId(null);
+            setFase(
+              status.status === "completed"
+                ? "concluido"
+                : status.status === "cancelled"
+                  ? "cancelado"
+                  : "falhou",
+            );
+            // Atualiza conteúdo, custo e status sem reiniciar o replay
+            // visual que acabou de chegar.
+            void getConversation(id).then((finalData) => {
+              setState((s) => ({ ...s, current: finalData }));
+            });
+            void refreshConversations();
+          }
+        },
+        registrarEvento,
+      );
+
+      if (message.status === "streaming") {
+        unlistensRef.current.set(runId, unsub);
+        setStreamingMessageId(message.id);
+      } else {
+        setStreamingMessageId(null);
+      }
+    },
+    [refreshConversations, registrarEvento],
+  );
 
   // Carga inicial: lista de conversas + catálogo.
   useEffect(() => {
@@ -318,8 +482,18 @@ export function Chat() {
     };
   }, [params.id, refreshCatalog, refreshConversations, loadCurrent]);
 
-  async function handleNewConversation(provider: string, model: string) {
+  async function handleNewConversation(
+    provider: string,
+    model: string,
+    initialDraft?: string,
+  ) {
     const c = await createConversation(provider, model, null);
+    if (initialDraft) {
+      window.sessionStorage.setItem(
+        `frederico:rascunho:${c.id}`,
+        initialDraft,
+      );
+    }
     await refreshConversations();
     navigate(`/chat/${c.id}`);
   }
@@ -353,78 +527,14 @@ export function Chat() {
     setLiveLinhas([]);
     setEtapas([]);
     setFase("executando");
+    setLiveAberto(true);
     try {
-      const result = await sendMessage(state.current.conversation.id, content);
+      await sendMessage(state.current.conversation.id, content);
       // Recarrega a conversa (traz o user message e o assistant
-      // message com `streaming`).
+      // message com `streaming`) e instala uma única assinatura. A
+      // versão anterior assinava aqui e também dentro de `loadCurrent`,
+      // duplicando cada linha do console.
       await loadCurrent(state.current.conversation.id);
-      // Subscrição ao run.
-      if (result.user_message) {
-        const msgs = await getConversation(state.current.conversation.id);
-        // **Casa pelo `run_id` que o envio devolveu**, não pela
-        // primeira mensagem de assistente da conversa. O `find`
-        // anterior retornava sempre a *primeira*, então a partir do
-        // segundo envio a UI assinava um run já encerrado: a
-        // resposta nova ficava presa em "digitando…" para sempre,
-        // porque nenhum evento daquele run velho ia chegar.
-        const asst = msgs.messages.find(
-          (m) => m.role === "assistant" && m.run_id === result.run_id,
-        );
-        if (asst && asst.run_id) {
-          const runId = asst.run_id;
-          setStreamingMessageId(asst.id);
-          const sub = await subscribeRun(
-            runId,
-            (envelope) => {
-              // PR do bug do stream: o payload é `StreamEventEnvelope
-              // { seq, event }` (não mais `StreamEvent` cru). O `seq`
-              // carrega o número do journal — fica disponível via
-              // `sub.lastSeq()` pra reconexão futura. Aqui, só o
-              // `event` interessa pra acumular o delta.
-              const ev = envelope.event;
-              registrarEvento(ev);
-              if (ev.kind === "delta") {
-                accumRef.current.set(
-                  asst.id,
-                  (accumRef.current.get(asst.id) ?? "") + ev.content,
-                );
-                setState((s) => ({ ...s }));
-              } else if (ev.kind === "error") {
-                errorsRef.current.set(asst.id, ev.message);
-                setState((s) => ({ ...s }));
-              }
-            },
-            (status) => {
-              if (
-                status.status === "completed" ||
-                status.status === "failed" ||
-                status.status === "cancelled" ||
-                status.status === "timeout"
-              ) {
-                unlistensRef.current.get(runId)?.();
-                unlistensRef.current.delete(runId);
-                setStreamingMessageId(null);
-                // O status do run é a palavra final. O evento
-                // `done` pode não chegar (queda de conexão,
-                // timeout do watchdog) e o cabeçalho ficaria preso
-                // em "Executando" para sempre.
-                setFase(
-                  status.status === "completed"
-                    ? "concluido"
-                    : status.status === "cancelled"
-                      ? "cancelado"
-                      : "falhou",
-                );
-                // Re-fetch para pegar status final + usage + cost.
-                if (state.current) {
-                  loadCurrent(state.current.conversation.id);
-                }
-              }
-            },
-          );
-          unlistensRef.current.set(runId, sub.unlisten);
-        }
-      }
     } catch (e) {
       setState((s) => ({
         ...s,
@@ -611,6 +721,8 @@ export function Chat() {
           operacao={
             etapas.find((e) => e.estado === "executando")?.ferramenta ?? null
           }
+          concluidas={etapas.filter((e) => e.estado === "concluida").length}
+          total={etapas.length}
           onFechar={() => setLiveAberto(false)}
           onCancelar={executando ? handleStop : null}
         />
@@ -628,7 +740,7 @@ export function Chat() {
 function TelaVazia(props: {
   catalog: ModelDescriptorView[];
   temConversas: boolean;
-  onCriar: (provider: string, model: string) => void;
+  onCriar: (provider: string, model: string, initialDraft?: string) => void;
 }) {
   const { titulo, sublinha } = saudacao(new Date().getHours());
   return (
@@ -657,18 +769,21 @@ function TelaVazia(props: {
 
 function NewConversationForm(props: {
   catalog: ModelDescriptorView[];
-  onCreate: (provider: string, model: string) => void;
+  onCreate: (provider: string, model: string, initialDraft?: string) => void;
 }) {
-  const [provider, setProvider] = useState("simulated");
-  const [model, setModel] = useState("fake-model-v1");
+  const primeiro = props.catalog[0];
+  const [provider, setProvider] = useState(primeiro?.provider ?? "");
+  const [model, setModel] = useState(primeiro?.model ?? "");
   const models = props.catalog.filter((m) => m.provider === provider);
   return (
     <form
+      className="nova-conversa"
       onSubmit={(e) => {
         e.preventDefault();
         props.onCreate(provider, model);
       }}
     >
+      <div className="nova-conversa-campos">
       <label>
         Provedor:{" "}
         <select
@@ -685,7 +800,7 @@ function NewConversationForm(props: {
             </option>
           ))}
         </select>
-      </label>{" "}
+      </label>
       <label>
         Modelo:{" "}
         <select value={model} onChange={(e) => setModel(e.target.value)}>
@@ -695,8 +810,20 @@ function NewConversationForm(props: {
             </option>
           ))}
         </select>
-      </label>{" "}
+      </label>
       <button type="submit">Criar</button>
+      </div>
+      <div className="sugestoes-iniciais" aria-label="Sugestões de tarefa">
+        {SUGESTOES_INICIAIS.map((sugestao) => (
+          <button
+            key={sugestao}
+            type="button"
+            onClick={() => props.onCreate(provider, model, sugestao)}
+          >
+            {sugestao}
+          </button>
+        ))}
+      </div>
     </form>
   );
 }
@@ -710,6 +837,48 @@ function ErrorView({ err }: { err: ProviderErrorView }) {
       {err.action && <p className="action">→ {err.action}</p>}
     </div>
   );
+}
+
+function faseDaMensagem(status: MessageView["status"]): FaseLive {
+  switch (status) {
+    case "completed":
+      return "concluido";
+    case "failed":
+    case "timeout":
+      return "falhou";
+    case "cancelled":
+      return "cancelado";
+    case "pending":
+    case "streaming":
+      return "executando";
+    default:
+      return "ocioso";
+  }
+}
+
+function resumirOutput(output: unknown): string {
+  if (output === null || output === undefined) return "sem saída";
+  const texto =
+    typeof output === "string"
+      ? output
+      : (() => {
+          try {
+            return JSON.stringify(output);
+          } catch {
+            return String(output);
+          }
+        })();
+  const compacto = texto.replace(/\s+/g, " ").trim();
+  return compacto.length > 240 ? `${compacto.slice(0, 237)}…` : compacto;
+}
+
+function extrairErroDaFerramenta(output: unknown): string {
+  if (output && typeof output === "object") {
+    const data = output as Record<string, unknown>;
+    if (typeof data.error_message === "string") return data.error_message;
+    if (typeof data.message === "string") return data.message;
+  }
+  return resumirOutput(output);
 }
 
 function formatCost(microcents: number): string {
