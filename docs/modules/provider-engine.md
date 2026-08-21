@@ -76,6 +76,11 @@ cofre de produção. Defina `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY` ou
 Sem a variável correspondente, o teste informa `SKIP`; um resultado do
 processo igual a zero não significa que a chamada externa aconteceu.
 
+Os testes de recovery compartilham uma única política de espera pelo
+`RecordingEventSink`: polling de 20 ms por até 5 segundos. Não duplique
+timeouts locais nesses testes. A janela anterior de 2 segundos falhou sob
+carga no runner Windows do CI antes de o evento de status ser observado.
+
 Os testes vivem em `#[cfg(test)] mod tests` em cada arquivo do crate. Os fixtures vivem em `crates/provider-engine/fixtures/<provider>/<scenario>.jsonl` e são carregados por `fake::transport::load_golden_file`.
 
 Para adicionar um cenário novo:
