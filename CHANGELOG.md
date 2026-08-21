@@ -1,5 +1,13 @@
 ## [Não publicado]
 
+### Corrigido — DeepSeek volta a executar ferramentas e gerar relatórios (2026-08-20)
+
+- **O DeepSeek recusava todas as ferramentas antes de responder.** Os nomes internos do Studio usam ponto (`files.read`, `docs.generate`), mas a API do DeepSeek aceita somente letras, números, `_` e `-`. Agora o nome é convertido apenas na fronteira com o provedor e restaurado antes da execução, sem renomear ferramentas nem quebrar conversas existentes.
+- **O resultado de uma ferramenta agora volta ao modelo no formato correto.** A chamada anterior era guardada como texto comum e a resposta da ferramenta perdia o vínculo `tool_call_id`. Provedores tolerantes podiam continuar; o DeepSeek não. O histórico enviado passa a conter a chamada estruturada do assistente e o resultado ligado à mesma identificação.
+- **Erros HTTP deixaram de aparecer todos como “problema de rede”.** Autenticação, saldo, permissão, modelo inexistente, limite de uso e erro do servidor preservam o código e a categoria que vieram do provedor. A mensagem mostrada deixa de mandar o usuário verificar a conexão quando o problema real é a chave ou o saldo.
+- **O modo de raciocínio do DeepSeek V4 fica desligado nesse fluxo.** O V4 o ativa por padrão, mas o Studio ainda não consome `reasoning_content`; ignorá-lo podia acionar o watchdog mesmo com o provedor trabalhando. O chat usa a resposta normal até existir suporte explícito a esse estado.
+- **A tela de provedores consulta o cofre do Windows como fonte de verdade.** Uma marca antiga no banco não faz mais o app dizer que o DeepSeek está configurado quando a credencial foi removida do Windows, e chaves vazias são recusadas ao salvar.
+
 ### Alterado — o Studio ganhou a cara nova (2026-08-20)
 
 - **A tela principal virou um ambiente de trabalho.** Barra superior com a marca, coluna de sessões à esquerda, conversa no centro e um painel de execução ao vivo à direita. Antes eram links de texto no topo e uma lista de conversas sem hierarquia.
@@ -10,6 +18,10 @@
 - **Um botão só para Executar e Cancelar**, no mesmo lugar. Eram dois, e no meio de uma execução era preciso mirar de novo.
 - **A tela vazia cumprimenta pelo horário** — madrugada, manhã, tarde ou noite.
 - **O card de progresso mostra as ferramentas que foram realmente chamadas**, com o estado de cada uma. Não mostra etapas planejadas, porque o núcleo ainda não planeja — inventá-las seria dizer que o app fez algo que não fez.
+- **O card e o console agora recebem também o resultado real de cada ferramenta.** Antes aparecia que uma ferramenta começou, mas o evento que dizia se ela terminou ou falhou ficava somente no histórico interno. Ao reabrir uma sessão, esse histórico recompõe o painel Ao vivo.
+- **O painel Ao vivo pode ocupar a janela inteira, mostra progresso e confirma a cópia do console.** A etapa em curso ou com falha se abre sozinha para deixar o detalhe visível.
+- **O seletor ganhou filtros honestos por visão, ferramentas e execução local.** Eles usam somente capacidades informadas pelo catálogo; não há rótulo inventado para modelo que não declara a capacidade.
+- **A primeira tela ganhou sugestões clicáveis de tarefa.** Ao escolher uma, a sessão é criada e o texto chega pronto ao campo de instrução para revisão antes de executar.
 
 ### Adicionado — a lista de modelos deixa de envelhecer (2026-08-19)
 

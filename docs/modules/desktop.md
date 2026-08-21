@@ -39,7 +39,9 @@ desenhado contra um núcleo que planeja a tarefa antes de executar.
 
 **O núcleo não planeja.** Ele emite `tool_call` quando o modelo
 pede uma ferramenta, e nada antes disso. Então o card lista as
-ferramentas que foram de fato chamadas, na ordem em que foram.
+ferramentas que foram de fato chamadas, na ordem em que foram. O
+`tool_result` correspondente fecha a etapa como concluída ou falha,
+e o journal recompõe card e console quando a sessão é reaberta.
 Escrever os cinco títulos do protótipo daria uma tela mais bonita e
 uma afirmação falsa.
 
@@ -53,7 +55,7 @@ no mesmo componente sem mudar o resto.
 | Arquivos do workspace, na sidebar | não há conceito de arquivo de workspace listável pela UI |
 | Uso do mês, no rodapé da sidebar | custo por sessão existe; agregação por período, não |
 | "Seleção automática" no seletor | não há roteador multi-modelo por etapa |
-| Favoritos e filtros por capacidade | nada persiste favorito; capacidade existe no descritor, mas não como filtro |
+| Favoritos | não há preferência persistida de modelo |
 | Artefatos e referências ao concluir | o núcleo não emite artefato como evento |
 | Catálogo de frases e superfícies pré-app | funcionalidade própria (rede + cache + notificação), fora desta rodada |
 
@@ -87,6 +89,15 @@ A Fase 1 entrega duas operações IPC:
 - `ipc_dispatch(request)` — despacha um `IpcRequest` (do
   `frederico-shared-contracts`) para o handler correspondente.
   Operações da Fase 1: `ping` e `get_app_info`.
+
+### Estado das credenciais de provedores
+
+`ProviderList` usa `CredentialStore::list_providers()` como fonte de
+verdade para o campo `configured`. A tabela `provider_configs` mantém
+metadados e o último resultado conhecido, mas não prova que a chave
+ainda existe: o usuário pode removê-la diretamente no Gerenciador de
+Credenciais do Windows. `ProviderSetCredential` também recusa conteúdo
+vazio ou composto apenas por espaços antes de gravar no cofre.
 
 ### Startup recovery (Etapa 6+ do fase de Ligação, 2026-08-10)
 

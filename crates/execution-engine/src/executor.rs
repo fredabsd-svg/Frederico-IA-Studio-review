@@ -895,18 +895,17 @@ impl RunExecutor {
                     output: result.output.clone(),
                 });
 
-                // 4a. Adiciona ao contexto: assistant (placeholder
-                //     do tool_call) + tool (resposta). O
+                // 4a. Adiciona ao contexto: assistant (tool_call
+                //     estruturado) + tool (resposta). O
                 //     `ScriptedProviderAdapter` ignora — a integração
                 //     OpenAI-compat real (Etapa 4.1) traduz o
                 //     `Role::Tool` + `tool_call_id` no payload JSON
                 //     que o provider espera.
-                messages.push(ChatMessage::assistant(format!(
-                    "[tool_call id={call_id} name={tool_id} args={args}]",
-                    call_id = call_id,
-                    tool_id = tool_id,
-                    args = serde_json::to_string(&args).unwrap_or_default(),
-                )));
+                messages.push(ChatMessage::assistant_tool_call(
+                    call_id.clone(),
+                    tool_id.to_string(),
+                    serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+                ));
                 messages.push(ChatMessage::tool(
                     tool_id.to_string(),
                     serde_json::to_string(&result.output).unwrap_or_default(),

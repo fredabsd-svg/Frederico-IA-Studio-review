@@ -34,6 +34,7 @@ fn trivial_request() -> ChatRequest {
             content: "Reply with the single word: ok".to_string(),
             name: None,
             tool_call_id: None,
+            tool_calls: vec![],
         }],
         tools: vec![],
         temperature: None,

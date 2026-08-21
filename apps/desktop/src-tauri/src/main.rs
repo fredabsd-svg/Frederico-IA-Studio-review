@@ -1416,21 +1416,32 @@ async fn ipc_dispatch(
 
         // --- Etapa 1: Provedores (credenciais) ---
         AppOp::ProviderList => {
-            // Lista provedores conhecidos do storage; por enquanto
-            // a tabela está vazia até o usuário cadastrar o primeiro.
+            // O cofre é a fonte de verdade para "configurado". A tabela
+            // pode sobreviver a uma remoção manual no Credential Manager;
+            // nesse caso não podemos mostrar uma chave que já não existe.
+            let credenciais: std::collections::HashSet<_> = state
+                .credentials
+                .list_providers()
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
             let repo = frederico_storage::ProviderConfigRepo::new(&state.db);
             let list: Vec<ProviderConfigView> = repo
                 .list()
                 .await
                 .map_err(|e| e.to_string())?
                 .into_iter()
-                .map(|c| ProviderConfigView {
-                    provider: c.provider_id,
-                    display_name: c.display_name,
-                    configured: c.configured,
-                    last_ok_at: c.last_ok_at,
-                    last_error_at: c.last_error_at,
-                    last_error: c.last_error,
+                .map(|c| {
+                    let configured = credenciais.contains(&c.provider_id);
+                    ProviderConfigView {
+                        provider: c.provider_id,
+                        display_name: c.display_name,
+                        configured,
+                        last_ok_at: c.last_ok_at,
+                        last_error_at: c.last_error_at,
+                        last_error: c.last_error,
+                    }
                 })
                 .collect();
             Ok(IpcResponse::ok(list).unwrap_or_else(|e| IpcResponse::err(e.to_string())))
@@ -1439,6 +1450,9 @@ async fn ipc_dispatch(
             // DPAPI real: grava no Windows Credential Manager. A
             // mesma instância configurada no `setup` é usada —
             // nada de shim de memória.
+            if value.trim().is_empty() {
+                return Ok(IpcResponse::err("A chave de API não pode estar vazia."));
+            }
             let sec = secrecy::SecretString::new(value.into());
             state
                 .credentials

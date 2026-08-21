@@ -294,6 +294,26 @@ fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value 
                         "content": output_text,
                     })]
                 }
+                Role::Assistant if !m.tool_calls.is_empty() => {
+                    let mut blocks = Vec::new();
+                    if !m.content.is_empty() {
+                        blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": m.content,
+                        }));
+                    }
+                    blocks.extend(m.tool_calls.iter().map(|call| {
+                        let input = serde_json::from_str(&call.arguments_json)
+                            .unwrap_or_else(|_| serde_json::json!({}));
+                        serde_json::json!({
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.name,
+                            "input": input,
+                        })
+                    }));
+                    blocks
+                }
                 _ => vec![serde_json::json!({
                     "type": "text",
                     "text": m.content,
@@ -498,6 +518,27 @@ mod tests {
         assert_eq!(content[0]["type"], "tool_result");
         assert_eq!(content[0]["tool_use_id"], "toolu_01ABC");
         assert_eq!(content[0]["content"], "Hello, world!");
+    }
+
+    #[test]
+    fn build_request_body_keeps_assistant_tool_use_before_result() {
+        let req = ChatRequest::new(
+            ProviderId::new("anthropic"),
+            ModelId::new("claude-3-5-sonnet-latest"),
+            vec![
+                ChatMessage::assistant_tool_call(
+                    "toolu_01ABC",
+                    "files.read",
+                    r#"{"path":"hello.txt"}"#,
+                ),
+                ChatMessage::tool("files.read", "Hello", "toolu_01ABC"),
+            ],
+        );
+        let body = build_request_body(&req, false);
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "tool_use");
+        assert_eq!(body["messages"][0]["content"][0]["id"], "toolu_01ABC");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
     }
 
     #[test]
